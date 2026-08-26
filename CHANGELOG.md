@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.16 - 2026-08-26
+
+- Adds a dedicated fifth full-image evidence pass for visible skin condition, soft-tissue shape and broad age-related appearance without numeric-age guesses or medical diagnosis.
+- Maps bruises, discoloration, pressure or friction marks, scratches, cuts, abrasions, scars, stretch marks, wrinkles, laxity, breast contour, abdominal folds and other positively visible surface details by subject and body region.
+- Strengthens pose reconstruction with anatomical-left/right lean, lean depth, shoulder/hip asymmetry, center-of-mass shift, wall or furniture bracing, and weight-bearing versus merely-touching contacts.
+- Separates standing, sitting, kneeling, crouching, squatting, on-all-fours, reclining and lying states, requiring matching visible support geometry and resolving raised-hand gestures that conflict with invented hand support.
+- Extends all three detail crops and the final image audit to catch invented injuries, smoothed-away natural texture, unsupported injury causes, left/right lean reversals and incorrect support relationships.
+- Caps repetitive `no visible` inventory so final prompts prioritize positively observed reconstruction detail.
+- Advances the cache/reproducibility contract to `discord-faithful-v8-skin-pose-surface-lock` so older prompt telemetry cannot be reused for the new evidence contract.
+
 ## 0.13.15 - 2026-08-26
 
 - Ends plugin-local, shared-FIFO, and Vast capacity waits after 30 seconds with the exact visible error `GPU not available`; other failures retain their sanitized actionable message.

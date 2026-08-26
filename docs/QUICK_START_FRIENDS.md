@@ -17,7 +17,7 @@ KREA2 Vision Suite adds a private Vision magnifier, an Interrogate upload tab, a
 6. Open a server channel, complete the first-run disclosure, choose **Local GPU**, and allow the current server.
 7. Click the magnifier on an image, or open **Prompt History → Interrogate** to upload one. You can queue multiple images; each enters the shared FIFO and runs one at a time.
 
-Manual ZIP alternative: download the complete [v0.13.15 ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.15-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply before extracting it**. Then extract it and run **`START HERE - INSTALL.bat`**. If the ZIP was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
+Manual ZIP alternative: download the complete [v0.13.16 ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.16-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply before extracting it**. Then extract it and run **`START HERE - INSTALL.bat`**. If the ZIP was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
 
 If setup is interrupted, double-click **Repair KREA2 Vision Suite.bat** on the desktop. The installer resumes verified downloads instead of starting them over.
 

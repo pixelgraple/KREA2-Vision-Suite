@@ -42,6 +42,7 @@ from app.services.discord_vision import (
     HERETIC_CROP_PASS,
     HERETIC_POSE_PASS,
     HERETIC_SINGLE_COMPOSER_SYSTEM,
+    HERETIC_SKIN_PASS,
     HERETIC_SUBJECT_PASS,
     KEEP_ALIVE,
     LEGACY_MODEL_ID,
@@ -51,6 +52,8 @@ from app.services.discord_vision import (
     VISION_MODEL,
     PIPELINE_ID,
     POSE_GEOMETRY_CHECKLIST,
+    POSE_SUPPORT_LEAN_CHECKLIST,
+    SKIN_BODY_SURFACE_CHECKLIST,
     DatasetGuidanceReceipt,
     DiscordDescribeResponse,
     DiscordVisionBackendError,
@@ -220,7 +223,7 @@ class FakeOllama:
 
 class FakeHereticProvider:
     def __init__(self):
-        self.evidence=iter([AGE_CLEAR+"\n"+prose(140),prose(130),prose(130),prose(100),prose(100),prose(100)])
+        self.evidence=iter([AGE_CLEAR+"\n"+prose(140),prose(130),prose(130),prose(130),prose(100),prose(100),prose(100)])
         self.image_calls=0
         self.text_calls=0
         self.image_prompts=[]
@@ -523,6 +526,10 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertIn("do not infer transgender", HERETIC_CROP_FOCUS["hips, groin and upper legs"].lower())
         self.assertIn("apparent subject-to-camera distance", HERETIC_POSE_PASS.lower())
         self.assertIn('begin the first sentence with exactly "the primary subject is standing"', HERETIC_POSE_PASS.lower())
+        self.assertIn('"the primary subject is on all fours"', HERETIC_POSE_PASS.lower())
+        self.assertIn('"the primary subject is lying"', HERETIC_POSE_PASS.lower())
+        self.assertIn("hands merely gesturing near the camera do not establish all fours", HERETIC_POSE_PASS.lower())
+        self.assertIn("a forward-bent kneeling torso is neither reclining nor lying", HERETIC_POSE_PASS.lower())
         self.assertIn("subject is visibly standing", HERETIC_AUDIT_SYSTEM.lower())
         pose = POSE_GEOMETRY_CHECKLIST.lower()
         for required in (
@@ -542,12 +549,43 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertIn("a bright highlight alone is not proof", APPEARANCE_SURFACE_CHECKLIST.lower())
         self.assertIn("hair wetness or dryness", HERETIC_AUDIT_SYSTEM.lower())
 
+        skin = SKIN_BODY_SURFACE_CHECKLIST.lower()
+        for required in (
+            "bruise or discoloration",
+            "scratch, cut, abrasion",
+            "friction or rope-pattern mark",
+            "middle-aged-adult-presenting",
+            "older-adult-presenting",
+            "crow's-feet",
+            "breast shape, hang",
+            "abdominal softness",
+            "pose-induced fold",
+            "never diagnose disease",
+        ):
+            self.assertIn(required, skin)
+        self.assertIn("skin, soft-tissue and visible-age-appearance map", HERETIC_SKIN_PASS.lower())
+        self.assertIn("do not pad", HERETIC_SKIN_PASS.lower())
+        self.assertIn("independently audit visible skin and soft tissue", HERETIC_AUDIT_SYSTEM.lower())
+
+        lean = POSE_SUPPORT_LEAN_CHECKLIST.lower()
+        for required in (
+            "subject's left",
+            "subject's right",
+            "slight, moderate or deep",
+            "weight-bearing, bracing, resting or merely touching",
+            "braces against a wall",
+            "support relationship uncertain",
+        ):
+            self.assertIn(required, lean)
+        self.assertIn("anatomical-left or anatomical-right lean", HERETIC_POSE_AUDIT_SYSTEM.lower())
+        self.assertIn("left lean changed to a right lean", HERETIC_AUDIT_SYSTEM.lower())
+
         off_frame = OFF_FRAME_EVIDENCE_RULE.lower()
         for required in (
             "crop boundary is an evidence boundary",
             "unknown, not absent",
             "decisive support geometry",
-            "lower-body support state is outside the frame",
+            "whole-body support state is outside the frame",
             "never complete hidden legs",
             "avoid long inventories",
         ):
@@ -681,6 +719,16 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertIn("vulva", repaired.lower())
         self.assertNotIn("penis", repaired.lower())
 
+    def test_final_prompt_caps_unique_no_visible_inventory(self):
+        source = (
+            "A clearly adult woman kneels on a bed, no visible jewelry, no visible tattoos, "
+            "soft lighting creates no visible hard shadows, no visible scars, no visible bracelets, "
+            "no visible necklaces, " + prose(390)
+        )
+        cleaned = _clean_final_prompt(source, {})
+        self.assertLessEqual(cleaned.lower().count("no visible "), 2)
+        self.assertIn("kneels", cleaned.lower())
+
     def test_unverified_anatomy_is_removed_instead_of_invented(self):
         required = _derive_grounding_requirements("", [], anatomy_consensus="NOT_ESTABLISHED")
         cleaned = _clean_final_prompt(
@@ -712,6 +760,76 @@ class DiscordVisionTests(unittest.TestCase):
         )
         recovered = DiscordVisionService._heretic_pose_evidence(raw)
         self.assertTrue(recovered.lower().startswith("the primary subject is crouching"))
+
+    def test_on_all_fours_is_distinct_and_cannot_drift_to_reclining(self):
+        pose = (
+            "The primary subject is on all fours on a bed. Both knees and shins visibly carry lower-body weight "
+            "while both hands are planted on the bed and visibly bear upper-body weight; the pelvis is elevated "
+            "and the torso leans deeply forward without resting on the mattress. " + prose(80)
+        )
+        recovered = DiscordVisionService._heretic_pose_evidence(pose)
+        self.assertTrue(recovered.lower().startswith("the primary subject is on all fours"))
+        required = _derive_grounding_requirements(recovered, [])
+        self.assertIn("on_all_fours", required)
+        faithful = "The primary subject is on all fours with both knees and both hands bearing weight on the bed. " + prose(390)
+        _validate_required_grounding(faithful, required)
+        with self.assertRaisesRegex(DiscordVisionRejected, "reclining"):
+            _validate_required_grounding(faithful + " The primary subject is reclining on the bed.", required)
+        cleaned = _clean_final_prompt(
+            "The primary subject is on all fours on the bed. The primary subject is reclining on the bed. " + prose(390),
+            required,
+        )
+        self.assertIn("on all fours", cleaned.lower())
+        self.assertNotIn("reclining", cleaned.lower())
+
+    def test_pose_state_requires_matching_support_and_rejects_gesture_contact_conflict(self):
+        with self.assertRaisesRegex(DiscordVisionRejected, "sitting without visible pelvic support"):
+            DiscordVisionService._heretic_pose_evidence(
+                "The primary subject is sitting while balanced only on both feet. " + prose(80)
+            )
+        with self.assertRaisesRegex(DiscordVisionRejected, "reclining without visible torso support"):
+            DiscordVisionService._heretic_pose_evidence(
+                "The primary subject is reclining with only her raised pelvis and thighs touching the bed. " + prose(80)
+            )
+        resolved = DiscordVisionService._heretic_pose_evidence(
+            "The primary subject is kneeling with both knees resting on the bed while her pelvis stays raised. "
+            "Both hands are raised in V gestures, yet both hands are planted and weight-bearing on the bed. "
+            + prose(80)
+        )
+        self.assertIn("raised in a visible gesture and are not weight-bearing", resolved.lower())
+        self.assertNotIn("planted and weight-bearing", resolved.lower())
+        required = _derive_grounding_requirements(resolved, [])
+        self.assertIn("raised_hand_gesture", required)
+        cleaned = _clean_final_prompt(
+            "The primary subject is kneeling on the bed. Both hands are raised in V gestures, but both hands are "
+            "planted and weight-bearing on the bed. " + prose(390),
+            required,
+        )
+        self.assertNotIn("planted and weight-bearing", cleaned.lower())
+        _validate_required_grounding(cleaned, required)
+        valid = DiscordVisionService._heretic_pose_evidence(
+            "The primary subject is kneeling with both knees and shins resting on the bed while her pelvis stays "
+            "raised and both hands form V gestures without supporting her weight. " + prose(80)
+        )
+        self.assertTrue(valid.lower().startswith("the primary subject is kneeling"))
+
+    def test_lying_is_distinct_from_reclining_and_squatting_from_crouching(self):
+        lying = _derive_grounding_requirements(
+            "The primary subject is lying on her side with the side of her torso broadly supported by the bed. " + prose(80),
+            [],
+        )
+        self.assertIn("lying", lying)
+        with self.assertRaisesRegex(DiscordVisionRejected, "reclining"):
+            _validate_required_grounding(
+                "The primary subject is reclining at an angle against the headboard. " + prose(390),
+                lying,
+            )
+        squatting = _derive_grounding_requirements(
+            "The primary subject is squatting on both feet with the pelvis unsupported. " + prose(80),
+            [],
+        )
+        self.assertIn("squatting", squatting)
+        self.assertNotIn("crouching", squatting)
 
     def test_deep_feet_supported_pose_locks_crouching_and_removes_seated_drift(self):
         pose = (
@@ -977,6 +1095,7 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertTrue(
             any("AUDITED DRAFT PROMPT" in user and STYLE_MARKER not in user for user in composer_users)
         )
+        self.assertTrue(all("SKIN, SOFT-TISSUE AND VISIBLE-AGE-APPEARANCE" in user for user in composer_users))
         self.assertTrue(all(STYLE_MARKER not in user for user in non_composer_users))
         self.assertEqual(result.dataset_guidance.sample_count, SAMPLE_SIZE)
         self.assertEqual(result.dataset_guidance.sample_digest, guidance.sample_digest)
@@ -987,6 +1106,7 @@ class DiscordVisionTests(unittest.TestCase):
         )
         serialized = json.dumps(reproducibility)
         self.assertEqual(reproducibility["pipeline_id"], PIPELINE_ID)
+        self.assertEqual(reproducibility["full_image_passes"], 5)
         self.assertEqual(
             reproducibility["dataset_guidance"], result.dataset_guidance.model_dump()
         )
@@ -1058,7 +1178,7 @@ class DiscordVisionTests(unittest.TestCase):
             result=service.describe(image,model="llamacpp::heretic-8b-q8_0")
         self.assertEqual(result.prompt_words,400)
         self.assertIn("8B Q8_0",result.model)
-        self.assertEqual(pipeline.provider.image_calls,9)
+        self.assertEqual(pipeline.provider.image_calls,10)
         self.assertEqual(pipeline.provider.text_calls,2)
         self.assertEqual(legacy_ollama.evidence_calls,0)
         self.assertEqual(legacy_ollama.compose_calls,0)
@@ -1172,7 +1292,7 @@ class DiscordVisionTests(unittest.TestCase):
             result=service.describe(image,on_progress=lambda _status,stage,_ahead: stages.append(stage),model="llamacpp::heretic-8b-q8_0")
         self.assertEqual(result.prompt_words,400)
         self.assertIn("faithful recreation",result.model)
-        self.assertEqual(pipeline.provider.image_calls,12)
+        self.assertEqual(pipeline.provider.image_calls,13)
         self.assertTrue(any("no reliable extra evidence" in stage for stage in stages))
 
     def test_heretic_rechecks_malformed_first_pass_once_then_continues(self):
@@ -1203,7 +1323,7 @@ class DiscordVisionTests(unittest.TestCase):
                 model="llamacpp::heretic-8b-q8_0",
             )
         self.assertEqual(result.prompt_words,400)
-        self.assertEqual(pipeline.provider.image_calls,10)
+        self.assertEqual(pipeline.provider.image_calls,11)
         self.assertTrue(any("independently rechecking" in stage for stage in progress))
 
     def test_heretic_builds_variants_separately_when_batched_json_fails_twice(self):
@@ -1323,7 +1443,7 @@ class DiscordVisionTests(unittest.TestCase):
             image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
             result=service.describe(image,model="llamacpp::heretic-8b-q8_0")
         self.assertEqual(result.prompt_words,400)
-        self.assertEqual(pipeline.provider.image_calls,9)
+        self.assertEqual(pipeline.provider.image_calls,10)
         self.assertEqual(pipeline.provider.text_calls,2)
 
     def test_uncertain_or_minor_age_status_stops_before_other_passes_and_composer(self):
@@ -2266,7 +2386,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             blocked = remote.post("/api/discord-errors", headers={"X-Krea2-Vision-Token": TOKEN}, json=payload)
             accepted = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.15"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.16"},
                 json=payload,
             )
         self.assertEqual(denied.status_code, 401)
@@ -2287,7 +2407,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
             response = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.15"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.16"},
                 json={
                     "event_id": "e" * 32,
                     "model_id": "llamacpp::heretic-4b-q8_0",

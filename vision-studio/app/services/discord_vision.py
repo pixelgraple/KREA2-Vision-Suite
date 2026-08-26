@@ -68,7 +68,7 @@ HERETIC_EVIDENCE_MAX_WORDS = 450
 HERETIC_CROP_MAX_WORDS = 180
 KEEP_ALIVE = "5m"
 HERETIC_WARM_SECONDS = 15.0
-PIPELINE_ID = "discord-faithful-v7-participant-role-lock"
+PIPELINE_ID = "discord-faithful-v8-skin-pose-surface-lock"
 log = logging.getLogger("studio.discord_vision")
 
 WORD_RE = re.compile(r"\b[\w'’-]+\b", re.UNICODE)
@@ -138,19 +138,23 @@ FACE_DETAIL_CHECKLIST = """Treat each visible face as precise geometry rather th
 
 APPEARANCE_SURFACE_CHECKLIST = """Inspect appearance and surface state without beautifying or guessing: hair color, roots, highlights, length, parting, curl or wave pattern, tied sections, loose strands and whether it is visibly dry, damp, wet, clumped or windblown; visible eye color; freckles, moles, scars, tattoos, tan lines, makeup and readable writing with exact body or garment placement, scale, orientation and color. Describe skin or fabric as matte, damp, wet, sweaty, oily, glossy or reflective only when direct texture evidence supports it; a bright highlight alone is not proof of wet or oily skin."""
 
+SKIN_BODY_SURFACE_CHECKLIST = """Inspect every visible skin and soft-tissue region separately and preserve natural variation instead of beautifying it. For each stable Subject A/B/C label, inspect the face, neck, shoulders, breasts or chest, upper arms, elbows, forearms, hands, torso, abdomen and stomach, waist, hips, buttocks, thighs, knees, calves, ankles and feet wherever visible. Record the exact location, side, color, shape, size, direction, edge quality and extent of any bruise or discoloration, redness, pressure mark, indentation, scratch, cut, abrasion, scab, burn-like mark, friction or rope-pattern mark, scar, stretch mark, vein, blemish, freckle, mole, tattoo, wrinkle, crease, dimple, cellulite or other visible surface difference. Describe an injury mechanism such as rope burn only when the visible pattern itself strongly supports that appearance; otherwise use literal non-causal wording such as linear abrasion, patterned redness or pressure mark. Record visible age-related appearance only as broad visual evidence: adult-presenting, middle-aged-adult-presenting, older-adult-presenting, or visually indeterminate; never state a numeric age or treat apparent age as identity. Inspect forehead lines, crow's-feet, under-eye texture, nasolabial folds, neck lines, sun spots and skin laxity when visible. Describe breast shape, hang, lower contour or visible ptosis; abdominal softness, muscular definition, folds, overhang, loose or lax skin, stretch marks and compression; and loose, firm or folded tissue elsewhere only when pixels support it. Distinguish a persistent-looking surface feature from a temporary pose-induced fold, garment indentation, shadow, highlight, snow, dirt, makeup or compression. Never diagnose disease, abuse, pregnancy, weight history or the cause of a mark, and never infer damage, age, tissue shape or skin quality through clothing, shadow, blur, crop or occlusion. If a requested region is not sufficiently visible, omit it rather than producing a long negative inventory."""
+
+POSE_SUPPORT_LEAN_CHECKLIST = """Resolve lean, balance and external support explicitly. State whether the torso and whole-body centerline are vertical or lean toward the subject's left, subject's right, forward or backward, and whether the lean is slight, moderate or deep; never confuse image-left with the subject's anatomical left. Compare left and right shoulder height, hip height and weight loading when visible. Separate a side bend from torso rotation, pelvic rotation, spinal arch, forward hinge and camera roll. Name every visible support or contact with a wall, floor, bed, chair, furniture, prop or another person, including the exact body region touching it and whether that contact is weight-bearing, bracing, resting or merely touching. For reclining or lying bodies, identify the visible side, back, front, shoulder, hip, pelvis, thigh, arm or head surfaces carrying weight. For standing bodies, state which foot or feet bear weight, any hip shift, foot offset and whether a hand, shoulder, back or hip braces against a wall or object. If contact or center-of-mass evidence is cropped or ambiguous, state only what is visible and leave the support relationship uncertain."""
+
 PARTICIPANT_PRESENTATION_CHECKLIST = """Assign every visible person a stable label, Subject A, Subject B, Subject C and so on, ordered left-to-right and then foreground-to-background, and preserve those labels through every evidence pass, crop, audit and final prompt. For each subject separately, record only visually supported presentation as feminine-presenting, masculine-presenting, androgynous or mixed-presenting, or visually unclear. Keep presentation, directly visible anatomy and identity as three separate facts. Bind every visible breast, penis, vulva or buttocks observation to the correct stable subject label; never transfer anatomy between subjects. When directly supported, use precise combinations such as "a feminine-presenting adult with a directly visible penis" or "a masculine-presenting adult with a directly visible vulva." Never infer transgender, cisgender, trans woman, trans man, femboy, tgirl, man or woman identity from presentation, clothing, face, body shape or genitals. Use an identity label or pronouns only when they appear in an explicit uploader-supplied identity or role note, and preserve that supplied label without treating it as pixel evidence."""
 
 INTERACTION_TOPOLOGY_CHECKLIST = """For scenes with two or more people, build an explicit participant interaction map using the stable Subject A, Subject B, Subject C labels. For every action state the actor, action, target and exact contact body regions; record who faces whom, who is in front of or behind whom, who is left or right, above or below, nearer or farther from the camera, and every overlap or occlusion. Trace each subject's head, torso, pelvis, arms, hands, legs, knees and feet independently so limbs, anatomy, clothing, gaze, poses and roles are never swapped. For intimate activity involving visibly adult participants, describe only directly visible actions and contacts in neutral literal language after establishing the complete support and joint geometry; never infer penetration, relationship, identity or an obscured contact."""
 
-OFF_FRAME_EVIDENCE_RULE = """OFF-FRAME EVIDENCE RULE: A crop boundary is an evidence boundary. Every body region, joint, contact, support surface, garment, prop and anatomical feature outside the visible pixels is unknown, not absent and not reconstructable from plausibility. Choose standing, sitting, kneeling, crouching, squatting, reclining or lying only when the visible frame contains the decisive support geometry needed to distinguish that state. If the pelvis, knees, feet or support surface needed for that decision is cropped or occluded, use the visually-uncertain posture state and say that the lower-body support state is outside the frame or not visually established. Never complete hidden legs, buttocks, groin, furniture, floor contacts or garment coverage from context. In final generation prompts, omit unsupported off-frame detail and avoid long inventories of things that are merely unseen. Uploader-supplied context may be preserved as supplied context, but it must never be presented as pixel evidence."""
+OFF_FRAME_EVIDENCE_RULE = """OFF-FRAME EVIDENCE RULE: A crop boundary is an evidence boundary. Every body region, joint, contact, support surface, garment, prop and anatomical feature outside the visible pixels is unknown, not absent and not reconstructable from plausibility. Choose standing, sitting, kneeling, crouching, squatting, on all fours, reclining or lying only when the visible frame contains the decisive support geometry needed to distinguish that state. If the pelvis, knees, feet, hands, torso or support surface needed for that decision is cropped or occluded, use the visually-uncertain posture state and say that the whole-body support state is outside the frame or not visually established. Never complete hidden legs, buttocks, groin, furniture, floor contacts or garment coverage from context. In final generation prompts, omit unsupported off-frame detail and avoid long inventories of things that are merely unseen. Uploader-supplied context may be preserved as supplied context, but it must never be presented as pixel evidence."""
 
-POSE_GEOMETRY_CHECKLIST = f"""Solve the pose as body mechanics, not as a mood word. For every visible subject, determine the primary support state first: standing, sitting, kneeling, crouching or squatting, on all fours, reclining or lying, suspended, or visually uncertain. {OFF_FRAME_EVIDENCE_RULE} Name every weight-bearing contact that is visible and every visible non-contact that distinguishes alternatives: left and right foot, toes, left and right knee, shin, hip or buttocks, back, elbow, forearm, hand and any furniture, ground, wall, prop or other subject. Compare hip height with knee height only when both landmarks are visible, and state whether each visible knee is straight, slightly flexed, deeply bent or touching the support surface. Trace visible left and right legs independently through visible hip, thigh, knee, calf, ankle, heel, foot and toes; then trace visible left and right arms independently through visible shoulder, upper arm, elbow, forearm, wrist, hand and fingers. Stop each trace at the crop boundary instead of completing a hidden limb. State torso pitch as upright, slightly bent, moderately bent or deeply bent forward, backward or sideways, adding an approximate visible angle range only when defensible; describe spinal arch or rounding, abdominal compression or extension, pelvic tilt, hip rotation and shoulder-to-hip twist only where visible. State head and neck yaw, pitch and roll, over-shoulder turns, gaze and facial expression. Record stance width, foot offset, limb overlap, occlusion, foreshortening and full-leg visibility only when the relevant anatomy is in frame. Explicitly state decisive exclusions such as not kneeling, not crouching, not squatting or neither knee touching the floor only when the visible support geometry proves them. If a conventional intimate pose label such as all fours, doggy style, missionary or rear-entry is unmistakable for visibly adult participants, state it only after the complete geometry; the label never replaces joint, contact and orientation evidence. {INTERACTION_TOPOLOGY_CHECKLIST}"""
+POSE_GEOMETRY_CHECKLIST = f"""Solve the pose as body mechanics, not as a mood word. For every visible subject, determine the primary support state first: standing, sitting, kneeling, crouching or squatting, on all fours, reclining or lying, suspended, or visually uncertain. {OFF_FRAME_EVIDENCE_RULE} Name every weight-bearing contact that is visible and every visible non-contact that distinguishes alternatives: left and right foot, toes, left and right knee, shin, hip or buttocks, back, elbow, forearm, hand and any furniture, ground, wall, prop or other subject. Compare hip height with knee height only when both landmarks are visible, and state whether each visible knee is straight, slightly flexed, deeply bent or touching the support surface. Trace visible left and right legs independently through visible hip, thigh, knee, calf, ankle, heel, foot and toes; then trace visible left and right arms independently through visible shoulder, upper arm, elbow, forearm, wrist, hand and fingers. Stop each trace at the crop boundary instead of completing a hidden limb. State torso pitch as upright, slightly bent, moderately bent or deeply bent forward, backward or sideways, adding an approximate visible angle range only when defensible; describe spinal arch or rounding, abdominal compression or extension, pelvic tilt, hip rotation and shoulder-to-hip twist only where visible. {POSE_SUPPORT_LEAN_CHECKLIST} State head and neck yaw, pitch and roll, over-shoulder turns, gaze and facial expression. Record stance width, foot offset, limb overlap, occlusion, foreshortening and full-leg visibility only when the relevant anatomy is in frame. Explicitly state decisive exclusions such as not kneeling, not crouching, not squatting or neither knee touching the floor only when the visible support geometry proves them. If a conventional intimate pose label such as all fours, doggy style, missionary or rear-entry is unmistakable for visibly adult participants, state it only after the complete geometry; the label never replaces joint, contact and orientation evidence. {INTERACTION_TOPOLOGY_CHECKLIST}"""
 
-BODY_WARDROBE_CHECKLIST = f"""Map body visibility and wardrobe region by region: head and neck; shoulders, chest and torso; stomach and abdomen; waist, hips and groin; buttocks; thighs, knees, calves, ankles, feet and visible soles; upper arms, elbows, forearms, wrists, hands and fingers. For each relevant region, state what is visibly bare, covered, cropped or occluded; cropped means unknown, never bare, clothed or absent. Name every supported garment layer and its coverage, including shirts or tops, bras, jackets, pants, shorts, leggings, skirts, underwear or panties, arm sleeves, socks, shoes and other footwear; record exactly where each garment sits on the visible body, cut, fit, material, texture, pattern, color, transparency, closures and condition. Place jewelry and accessories exactly: earrings, facial jewelry, rings, wrist or ankle bracelets and beads, collars, chokers or lace necklaces, belts and hair accessories. {APPEARANCE_SURFACE_CHECKLIST} Never infer clothing or anatomy under an occlusion or beyond a crop boundary."""
+BODY_WARDROBE_CHECKLIST = f"""Map body visibility and wardrobe region by region: head and neck; shoulders, chest and torso; stomach and abdomen; waist, hips and groin; buttocks; thighs, knees, calves, ankles, feet and visible soles; upper arms, elbows, forearms, wrists, hands and fingers. For each relevant region, state what is visibly bare, covered, cropped or occluded; cropped means unknown, never bare, clothed or absent. Name every supported garment layer and its coverage, including shirts or tops, bras, jackets, pants, shorts, leggings, skirts, underwear or panties, arm sleeves, socks, shoes and other footwear; record exactly where each garment sits on the visible body, cut, fit, material, texture, pattern, color, transparency, closures and condition. Place jewelry and accessories exactly: earrings, facial jewelry, rings, wrist or ankle bracelets and beads, collars, chokers or lace necklaces, belts and hair accessories. {APPEARANCE_SURFACE_CHECKLIST} {SKIN_BODY_SURFACE_CHECKLIST} Never infer clothing, skin condition or anatomy under an occlusion or beyond a crop boundary."""
 
 CAMERA_DETAIL_CHECKLIST = """State the shot scale and apparent subject-to-camera distance, such as extreme close-up, close-up, medium, three-quarter, full-body or wide/environmental. Specify whether the view is front, rear, profile, side or three-quarter; camera height relative to the subject; straight-on, overhead/top-down, slightly top-down, low-angle or ground-level direction; any visible roll, perspective distortion or foreshortening; subject placement, crop boundaries and which body parts are closest to the lens. Describe only visual geometry, never guessed lens or EXIF values."""
 
-FINAL_DETAIL_CHECKLIST = f"""Carry forward every supported facial micro-detail: eye color and openness, eyelids, lashes, eyebrow placement and asymmetry, nose shape or scrunch, lip and mouth shape, visible emotion, freckles, makeup and precisely located skin marks. {PARTICIPANT_PRESENTATION_CHECKLIST} Put the primary support state and full pose proof early only when the visible geometry establishes them. If support state is not visually established, state the crop boundary and uncertainty once, then omit categorical standing, sitting, kneeling, crouching, squatting, reclining or lying claims. Preserve joint-by-joint and contact-by-contact geometry only for visible joints and contacts: left and right feet, knees, hips, legs, shoulders, elbows, wrists, hands and fingers; hip-to-knee height; torso bend amount and direction; spinal arch or rounding; stomach or abdominal compression; pelvic tilt; shoulder-to-hip twist; head and neck rotation; gaze; stance width; foot offset; weight-bearing surfaces; decisive exclusions; and the camera geometry that proves the pose. {OFF_FRAME_EVIDENCE_RULE} {APPEARANCE_SURFACE_CHECKLIST} Carry forward which visible body regions are bare, covered, cropped or occluded; every visible garment layer and its exact body position, including each shirt or top, bra, jacket, pants, shorts, leggings, skirt, underwear or panties, arm sleeve, sock and shoe layer; wrist or ankle beads and bracelets, collars, chokers, lace necklaces and other jewelry; directly visible anatomy; shot scale, apparent camera distance, camera height and viewing angle; and the placed foreground, midground and background. {INTERACTION_TOPOLOGY_CHECKLIST} Omit an item when the evidence does not visibly support it, never invent what is hidden, and never pad the prompt with repetitive no-visible or no-inferred clauses."""
+FINAL_DETAIL_CHECKLIST = f"""Carry forward every supported facial micro-detail: eye color and openness, eyelids, lashes, eyebrow placement and asymmetry, nose shape or scrunch, lip and mouth shape, visible emotion, freckles, makeup and precisely located skin marks. {PARTICIPANT_PRESENTATION_CHECKLIST} {SKIN_BODY_SURFACE_CHECKLIST} Put the primary support state and full pose proof early only when the visible geometry establishes them. If support state is not visually established, state the crop boundary and uncertainty once, then omit categorical standing, sitting, kneeling, crouching, squatting, on-all-fours, reclining or lying claims. Preserve joint-by-joint and contact-by-contact geometry only for visible joints and contacts: left and right feet, knees, hips, legs, shoulders, elbows, wrists, hands and fingers; hip-to-knee height; torso bend amount and direction; spinal arch or rounding; stomach or abdominal compression; pelvic tilt; shoulder-to-hip twist; head and neck rotation; gaze; stance width; foot offset; weight-bearing surfaces; decisive exclusions; and the camera geometry that proves the pose. {POSE_SUPPORT_LEAN_CHECKLIST} {OFF_FRAME_EVIDENCE_RULE} {APPEARANCE_SURFACE_CHECKLIST} Carry forward which visible body regions are bare, covered, cropped or occluded; every visible garment layer and its exact body position, including each shirt or top, bra, jacket, pants, shorts, leggings, skirt, underwear or panties, arm sleeve, sock and shoe layer; wrist or ankle beads and bracelets, collars, chokers, lace necklaces and other jewelry; directly visible anatomy; shot scale, apparent camera distance, camera height and viewing angle; and the placed foreground, midground and background. {INTERACTION_TOPOLOGY_CHECKLIST} Omit an item when the evidence does not visibly support it, never invent what is hidden, and never pad the prompt with repetitive no-visible or no-inferred clauses."""
 
 SUBJECT_PASS = f"""Inspect every visible person, including partial or background figures. After the required AGE_STATUS first line, write exhaustive grounded prose covering the exact subject count and each subject separately. {PARTICIPANT_PRESENTATION_CHECKLIST} {FACE_DETAIL_CHECKLIST} {BODY_WARDROBE_CHECKLIST} Describe the complete pose and action, including standing, sitting, kneeling, crouching or reclining orientation; whether the body lies on a side, back or front; balance and weight support; torso, pelvis and head direction; limb bends, crossings and overlaps; contact with the ground, furniture, props or other subjects; and interactions. {INTERACTION_TOPOLOGY_CHECKLIST} When CLEARLY_ADULT applies and the image directly shows breasts, external genital anatomy or buttocks, name only the visible anatomy neutrally rather than hiding it behind a vague term. Describe hair color, roots and highlights, texture, length, parting, hairstyle and loose strands. Do not discuss the wider scene, lighting or camera except where needed to disambiguate a subject. Aim for 320-620 words after the sentinel."""
 
@@ -164,9 +168,11 @@ HERETIC_VISION_SYSTEM = """You are a meticulous visual-evidence observer for an 
 
 HERETIC_SUBJECT_PASS = f"""Inspect every visible person or character, including partial and background figures. Write exhaustive grounded prose covering the exact subject count and each subject separately. {PARTICIPANT_PRESENTATION_CHECKLIST} {FACE_DETAIL_CHECKLIST} {BODY_WARDROBE_CHECKLIST} Describe the complete pose and action, including standing, sitting, kneeling, crouching or reclining orientation; whether the body lies on a side, back or front; balance and weight support; torso, pelvis and head direction; limb bends, crossings and overlaps; contact with the ground, furniture, props or other subjects; and interactions. {INTERACTION_TOPOLOGY_CHECKLIST} If the image directly shows breasts, external genital anatomy or buttocks, name only the visible anatomy neutrally rather than hiding it behind a vague term. Describe hair color, roots and highlights, texture, length, parting, hairstyle and loose strands. Describe what is visible directly without an age-status classification or policy commentary. Do not discuss the wider scene, lighting or camera except where needed to disambiguate a subject. Aim for 320-620 words."""
 
-HERETIC_POSE_PASS = f"""Create a literal pose-and-contact blueprint from the original image. This is the highest-priority reconstruction constraint after exact subject count. Begin the first sentence with exactly "The primary subject is standing", "The primary subject is sitting", "The primary subject is kneeling", "The primary subject is crouching", "The primary subject is reclining", or "The primary subject's posture is visually uncertain", choosing only what the visible pixels support. If the frame omits any decisive pelvis, knee, foot or support-surface evidence needed to distinguish those states, the uncertain sentence is mandatory even when one state seems contextually likely. Never substitute vague wording such as positioned, leaning or weight-shifted for a visible primary state. {POSE_GEOMETRY_CHECKLIST} Explicitly name the state and body mechanics of every additional subject only when their visible support geometry establishes it. {CAMERA_DETAIL_CHECKLIST} Distinguish a standing forward bend from kneeling, crouching or squatting only using visible feet, knee clearance, hip height and camera evidence; distinguish a waist hinge from deep knee flexion; distinguish sitting from reclining; and distinguish an arched back from a rounded back. State only visible geometry. Do not infer identity from anatomy, invent hidden anatomy, use a generic pose label without geometry, write JSON, policy commentary or generic quality language. Aim for 320-450 words."""
+HERETIC_SKIN_PASS = f"""Create a literal skin, soft-tissue and visible-age-appearance map from the original image. Keep stable Subject A/B/C labels and inspect each visible person independently. {SKIN_BODY_SURFACE_CHECKLIST} Begin with the face and proceed region by region across every visible skin surface, but mention only positively visible features and meaningful uncertainty; do not pad the result with repeated statements that marks are absent. Explain whether a fold or contour is caused visibly by posture, compression or garment pressure when that distinction is supported. Preserve natural body shape, breast contour, abdominal contour and age-related texture without flattering, smoothing, exaggerating or diagnosing. Return dense prose without JSON, headings, bullets, policy commentary, identity claims or generic quality language. Aim for 260-450 words."""
 
-HERETIC_POSE_AUDIT_SYSTEM = f"""You are a pose-geometry verifier. Compare the supplied original image against the proposed pose blueprint and return one corrected, complete pose blueprint, not commentary about the prior text. Begin with the same mandatory primary-state sentence required by the pose pass. Re-solve every item independently: {POSE_GEOMETRY_CHECKLIST} {CAMERA_DETAIL_CHECKLIST} Treat visible foot support, knee-to-floor clearance, hip-to-knee height, torso pitch, spinal curve, pelvic rotation, left/right limb paths, hand contacts, head/neck turn and full-leg/foot visibility as separate facts. Correct any broad pose word that conflicts with those facts. Use sitting only when the pelvis or buttocks visibly contacts and is supported by a seat, ground or other surface. A body visibly supported entirely by the feet with deeply flexed knees and no pelvic contact is crouching or squatting, not sitting. If decisive support geometry lies outside the crop, replace every categorical support-state claim with the visually-uncertain sentence and explicitly identify the crop boundary; uncertainty is the correct result, not a weakened guess. Return dense prose without JSON, headings, bullets, policy commentary or generic quality language. Aim for 320-450 words."""
+HERETIC_POSE_PASS = f"""Create a literal pose-and-contact blueprint from the original image. This is the highest-priority reconstruction constraint after exact subject count. Begin the first sentence with exactly "The primary subject is standing", "The primary subject is sitting", "The primary subject is kneeling", "The primary subject is crouching", "The primary subject is squatting", "The primary subject is on all fours", "The primary subject is reclining", "The primary subject is lying", or "The primary subject's posture is visually uncertain", choosing only what the visible pixels support. If the frame omits any decisive pelvis, knee, foot, hand, torso or support-surface evidence needed to distinguish those states, the uncertain sentence is mandatory even when one state seems contextually likely. Never substitute vague wording such as positioned, leaning or weight-shifted for a visible primary state. {POSE_GEOMETRY_CHECKLIST} Explicitly name the state and body mechanics of every additional subject only when their visible support geometry establishes it. {CAMERA_DETAIL_CHECKLIST} Distinguish a standing forward bend from kneeling, crouching or squatting only using visible feet, knee clearance, hip height and camera evidence; distinguish a waist hinge from deep knee flexion; distinguish sitting from reclining; and distinguish an arched back from a rounded back. Kneeling means one or both knees or shins visibly carry weight while the pelvis is not resting on the support. On all fours requires visible knee or shin support plus visible hand, forearm or elbow weight-bearing; hands merely gesturing near the camera do not establish all fours. Reclining requires a visibly angled torso partly supported by a surface, while lying requires the front, back or side of the torso to carry broad support; a forward-bent kneeling torso is neither reclining nor lying merely because a bed or floor is beneath it. State only visible geometry. Do not infer identity from anatomy, invent hidden anatomy, use a generic pose label without geometry, write JSON, policy commentary or generic quality language. Aim for 320-450 words."""
+
+HERETIC_POSE_AUDIT_SYSTEM = f"""You are a pose-geometry verifier. Compare the supplied original image against the proposed pose blueprint and return one corrected, complete pose blueprint, not commentary about the prior text. Begin with the same mandatory primary-state sentence required by the pose pass. Re-solve every item independently: {POSE_GEOMETRY_CHECKLIST} {CAMERA_DETAIL_CHECKLIST} Treat visible foot support, knee-to-floor clearance, hip-to-knee height, torso pitch, spinal curve, pelvic rotation, left/right limb paths, hand contacts, head/neck turn and full-leg/foot visibility as separate facts. Independently recheck the subject's anatomical-left or anatomical-right lean, forward or backward lean depth, shoulder and hip height asymmetry, center-of-mass shift, wall or furniture bracing, and every visible weight-bearing versus merely-touching contact. Correct any broad pose word that conflicts with those facts. Use sitting only when the pelvis or buttocks visibly contacts and is supported by a seat, ground or other surface. A body visibly supported entirely by the feet with deeply flexed knees and no pelvic contact is crouching or squatting, not sitting. One or both knees or shins carrying weight with the pelvis raised is kneeling, not reclining. Use on all fours only when both lower-limb support and hand, forearm or elbow weight-bearing are visible; raised hands or finger gestures are not support. Use reclining only for an angled torso visibly supported by a surface and lying only for broad front, back or side torso support. A forward-bent kneeling body is not reclining or lying merely because a bed or floor is beneath it. If decisive support geometry lies outside the crop, replace every categorical support-state claim with the visually-uncertain sentence and explicitly identify the crop boundary; uncertainty is the correct result, not a weakened guess. Return dense prose without JSON, headings, bullets, policy commentary or generic quality language. Aim for 320-450 words."""
 
 HERETIC_ANATOMY_VERIFY_SYSTEM = """You are a narrow visual anatomy verifier. Inspect only the externally visible groin anatomy in the supplied original image or trusted groin crop. Do not infer gender identity, transgender or cisgender status, hidden anatomy, or anatomy from clothing, shadows, hair, pose, or contextual expectation. A vulva means directly visible external vulvar anatomy; do not call it a vagina. A penis means directly visible penile anatomy. If the pixels are occluded, ambiguous, too small, or merely suggestive, choose NOT_ESTABLISHED. The first line must be exactly one of: ANATOMY_STATUS: VISIBLE_VULVA, ANATOMY_STATUS: VISIBLE_PENIS, ANATOMY_STATUS: VISIBLE_BOTH, or ANATOMY_STATUS: NOT_ESTABLISHED. After that line, give one short sentence naming only the visible pixel evidence. Do not output JSON, headings, policy commentary or identity labels."""
 
@@ -176,14 +182,14 @@ HERETIC_COMPOSER_SYSTEM = f"""You write evidence-grounded KREA2 positive prompts
 
 HERETIC_SINGLE_COMPOSER_SYSTEM = f"""You write one evidence-grounded KREA2 positive prompt for faithful reference-image reconstruction. Return strict JSON with exactly one string key named prompt containing one cohesive English natural-language paragraph. Target 450-550 words and never finish below 400 words; the accepted hard range is 350-850 words. Preserve every supported non-negotiable fact, exact subject count, stable Subject A/B/C mapping, presentation, directly visible anatomy, actor/action/target roles, pose geometry, wardrobe, props, spatial layout, lighting and colors. Apply this mandatory final-detail checklist: {FINAL_DETAIL_CHECKLIST} Also cover location cues, objects, focus, lighting, shadows, reflections, materials, textures, imperfections, atmosphere and color treatment. Do not turn absent or uncertain items into claims, apply an age-status classification, identify a real person, or add facts absent from the evidence. An explicit uploader-supplied identity or role note may provide identity labels and pronouns, but it never overrides pixel-grounded anatomy, pose, participant mapping or contact geometry. Never emit LoRA, model, adapter, embedding, or any other angle-bracketed tag; omit it entirely. Do not include headings, lists, a negative prompt, refusal language, analysis commentary, checklist commentary or generic quality-spam."""
 
-HERETIC_AUDIT_SYSTEM = f"""You are a strict reference-image reconstruction auditor. Compare the supplied original image against the draft KREA2 prompt. Return dense natural-language correction notes only: list details that are missing, contradicted, overclaimed or given the wrong importance. Audit every supported item in this checklist: {FINAL_DETAIL_CHECKLIST} Recheck the pose and support geometry from pixels rather than trusting the draft: primary support state; every visible weight-bearing contact; every visible knee, foot, hand and body-surface contact or non-contact; hip-to-knee height; left/right limb paths; torso pitch and bend amount; spinal arch or rounding; abdominal compression; pelvic and shoulder rotation; head/neck orientation; gaze; crop and camera height. Explicitly call out contradictions such as standing rendered as kneeling, a waist bend rendered as a squat, or both planted feet omitted when those facts are visible. If the joints or support surfaces needed to distinguish standing, sitting, kneeling, crouching or reclining lie outside the crop, require the support state to remain visually undetermined and call out every invented off-frame body part, contact, garment, anatomy item, furniture item or pose claim. For every multi-person image, audit stable Subject A/B/C mapping, presentation, the correct subject-to-anatomy association, clothing, actor/action/target roles, spatial order and contact body regions independently; explicitly call out any swapped participant, limb, anatomy or action. Also prioritize exact subject count, key props, foreground/midground/background layout, lighting, colors, materials, hair wetness or dryness, skin/fabric surface state, tattoos, marks and visible text. A draft that merely implies a standing pose through leg placement is incomplete only when the subject is visibly standing; otherwise preserve uncertainty. If exposed external genital anatomy is directly visible, require the anatomically correct neutral noun instead of omitting it or hiding it behind "bare groin"; anatomy never establishes transgender, cisgender or other identity. Do not penalize omission of a detail that the image does not reveal, never convert uncertainty into a claim, and flag repetitive no-visible/no-inferred padding. Do not write a replacement prompt, JSON, headings, policy commentary or generic quality language. Do not invent facts absent from the original image."""
+HERETIC_AUDIT_SYSTEM = f"""You are a strict reference-image reconstruction auditor. Compare the supplied original image against the draft KREA2 prompt. Return dense natural-language correction notes only: list details that are missing, contradicted, overclaimed or given the wrong importance. Audit every supported item in this checklist: {FINAL_DETAIL_CHECKLIST} Recheck the pose and support geometry from pixels rather than trusting the draft: primary support state; every visible weight-bearing contact; every visible knee, foot, hand and body-surface contact or non-contact; hip-to-knee height; left/right limb paths; torso pitch and bend amount; anatomical-left or anatomical-right lean; forward or backward lean depth; shoulder and hip height asymmetry; center-of-mass shift; wall, floor, furniture or person support; spinal arch or rounding; abdominal compression; pelvic and shoulder rotation; head/neck orientation; gaze; crop and camera height. Explicitly call out contradictions such as standing rendered as kneeling, a waist bend rendered as a squat, both planted feet omitted, a left lean changed to a right lean, or a merely touching hand changed into weight-bearing support when those facts are visible. Independently audit visible skin and soft tissue by region: facial maturity and lines, bruising or discoloration, redness, pressure or friction marks, scratches, cuts, abrasions, scabs, scars, stretch marks, tattoos, veins, wrinkles, laxity, breast contour or ptosis, abdominal softness or folds, cellulite and pose-induced compression. Correct any invented mark, smoothed-away texture, unsupported injury cause, numeric age, or confusion between a shadow, garment indentation, pose fold and persistent-looking surface feature. If the joints or support surfaces needed to distinguish standing, sitting, kneeling, crouching or reclining lie outside the crop, require the support state to remain visually undetermined and call out every invented off-frame body part, contact, garment, anatomy item, furniture item or pose claim. For every multi-person image, audit stable Subject A/B/C mapping, presentation, the correct subject-to-anatomy association, clothing, actor/action/target roles, spatial order and contact body regions independently; explicitly call out any swapped participant, limb, anatomy or action. Also prioritize exact subject count, key props, foreground/midground/background layout, lighting, colors, materials, hair wetness or dryness, skin/fabric surface state, tattoos, marks and visible text. A draft that merely implies a standing pose through leg placement is incomplete only when the subject is visibly standing; otherwise preserve uncertainty. If exposed external genital anatomy is directly visible, require the anatomically correct neutral noun instead of omitting it or hiding it behind "bare groin"; anatomy never establishes transgender, cisgender or other identity. Do not penalize omission of a detail that the image does not reveal, never convert uncertainty into a claim, and flag repetitive no-visible/no-inferred padding. Do not write a replacement prompt, JSON, headings, policy commentary or generic quality language. Do not invent facts absent from the original image."""
 
 HERETIC_CROP_PASS = """This is a close crop from the original image with a trusted region label. Inspect only directly visible details that matter for faithful reconstruction. Follow the supplied region-specific checklist feature by feature, including asymmetry and exact placement. State when an important feature is visibly cropped or occluded, but do not guess hidden detail or inventory categories outside this crop. Return dense prose without JSON, headings, policy commentary or generic quality language. Aim for 140-300 words."""
 
 HERETIC_CROP_FOCUS = {
-    "upper face and hair": FACE_DETAIL_CHECKLIST + " Also record hairline, roots, highlights, parting, hairstyle, loose strands, ears and any earrings or facial jewelry visible in this crop.",
-    "torso, clothing and hands": "Map the neck, shoulders, chest, torso, waist, upper arms, elbows, forearms, wrists, hands and fingers. Record what is bare, covered or occluded; every visible top, shirt, bra, jacket, arm sleeve or underwear edge; neckline, collar, choker or lace necklace; wrist beads, bracelets, rings and other jewelry; garment layering, fit, material, texture, pattern, color, transparency, closures and condition; hand pose, finger placement, contact and held props. Name directly visible anatomy neutrally without inferring beneath clothing.",
-    "hips, groin and upper legs": "Inspect the hips and groin first, at pixel-detail level, then map the buttocks, thighs and knees. Record what is bare, covered, cropped or occluded and every visible pants, shorts, leggings, skirt, underwear or panties layer, including exactly where displaced clothing sits. If a penis is directly visible, use the exact phrase 'a visible penis'; if a vulva is directly visible, use the exact phrase 'a visible vulva'; otherwise state that external genital anatomy is not visibly established. Do not infer transgender, cisgender or other identity from anatomy. Record garment fit, material, texture, pattern, color, transparency, closures and condition; leg crossings, bends, weight support and contact geometry. Never replace directly visible anatomy with a vague phrase such as bare groin.",
+    "upper face and hair": FACE_DETAIL_CHECKLIST + " Also record hairline, roots, highlights, parting, hairstyle, loose strands, ears and any earrings or facial jewelry visible in this crop. Inspect forehead lines, crow's-feet, under-eye texture, nasolabial folds, sun spots, discoloration, bruises, scratches, cuts, scars, redness, blemishes, skin laxity and other positively visible facial surface features with exact placement; distinguish skin texture from makeup, shadow, hair and highlight.",
+    "torso, clothing and hands": "Map the neck, shoulders, chest, torso, waist, upper arms, elbows, forearms, wrists, hands and fingers. Record what is bare, covered or occluded; every visible top, shirt, bra, jacket, arm sleeve or underwear edge; neckline, collar, choker or lace necklace; wrist beads, bracelets, rings and other jewelry; garment layering, fit, material, texture, pattern, color, transparency, closures and condition; hand pose, finger placement, contact and held props. Inspect every visible skin surface for bruises, discoloration, redness, pressure or friction marks, scratches, cuts, abrasions, scabs, burns, scars, stretch marks, wrinkles, veins, tattoos and garment indentations. Preserve visible breast contour, hang or ptosis and abdominal softness, folds, overhang, skin laxity, stretch marks, muscular definition and pose-induced compression without guessing through clothing. Name directly visible anatomy neutrally without inferring beneath clothing.",
+    "hips, groin and upper legs": "Inspect the hips and groin first, at pixel-detail level, then map the buttocks, thighs and knees. Record what is bare, covered, cropped or occluded and every visible pants, shorts, leggings, skirt, underwear or panties layer, including exactly where displaced clothing sits. If a penis is directly visible, use the exact phrase 'a visible penis'; if a vulva is directly visible, use the exact phrase 'a visible vulva'; otherwise state that external genital anatomy is not visibly established. Do not infer transgender, cisgender or other identity from anatomy. Inspect positively visible skin and soft-tissue condition, including bruises, discoloration, redness, pressure or rope-pattern marks, scratches, cuts, abrasions, scars, stretch marks, veins, tattoos, cellulite, dimpling, loose or folded skin and garment or pose compression, with exact body placement and side. Record garment fit, material, texture, pattern, color, transparency, closures and condition; leg crossings, bends, weight support and contact geometry. Never replace directly visible anatomy with a vague phrase such as bare groin.",
 }
 
 
@@ -399,7 +405,7 @@ class DiscordDescribeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     classification: Literal["usable"] = "usable"
-    pipeline_id: Literal["discord-faithful-v7-participant-role-lock"] = PIPELINE_ID
+    pipeline_id: Literal["discord-faithful-v8-skin-pose-surface-lock"] = PIPELINE_ID
     dataset_guidance: DatasetGuidanceReceipt = Field(
         default_factory=disabled_dataset_guidance_receipt
     )
@@ -573,7 +579,7 @@ def _distinct_sentence_order_variants(variants: list[str]) -> list[str]:
 
 
 PRIMARY_POSTURE_EVIDENCE_RE = re.compile(
-    r"^\s*The primary subject is (standing|sitting|kneeling|crouching|reclining)\b",
+    r"^\s*The primary subject is (standing|sitting|kneeling|crouching|squatting|on all fours|reclining|lying)\b",
     re.IGNORECASE,
 )
 PRIMARY_POSTURE_UNCERTAIN_RE = re.compile(
@@ -586,7 +592,7 @@ OFF_FRAME_POSTURE_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 PRIMARY_POSTURE_SENTINEL_RE = re.compile(
-    r"^\s*(?:The primary subject is (?:standing|sitting|kneeling|crouching|reclining)\b|"
+    r"^\s*(?:The primary subject is (?:standing|sitting|kneeling|crouching|squatting|on all fours|reclining|lying)\b|"
     r"The primary subject's posture is visually uncertain\b)",
     re.IGNORECASE,
 )
@@ -605,11 +611,23 @@ POSTURE_OUTPUT_PATTERNS = {
         re.IGNORECASE,
     ),
     "crouching": re.compile(
-        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:crouches?|crouching|squatting)\b|\b(?:crouches?|crouching|squatting)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
+        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:crouches?|crouching)\b|\b(?:crouches?|crouching)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
+        re.IGNORECASE,
+    ),
+    "squatting": re.compile(
+        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:squats?|squatting)\b|\b(?:squats?|squatting)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
+        re.IGNORECASE,
+    ),
+    "on_all_fours": re.compile(
+        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\bon all fours\b|\bon all fours\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
         re.IGNORECASE,
     ),
     "reclining": re.compile(
-        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:reclines?|reclining|lying)\b|\b(?:reclines?|reclining|lying)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
+        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:reclines?|reclining)\b|\b(?:reclines?|reclining)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
+        re.IGNORECASE,
+    ),
+    "lying": re.compile(
+        rf"(?:\b{PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,140}}\b(?:lies?|lying)\b|\b(?:lies?|lying)\b[^.!?]{{0,140}}\b{PRIMARY_SUBJECT_NOUN}\b)",
         re.IGNORECASE,
     ),
     "posture_not_established": re.compile(
@@ -634,11 +652,23 @@ POSTURE_CONTRADICTION_PATTERNS = {
         re.IGNORECASE,
     ),
     "crouching": re.compile(
-        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:crouches?|crouching|squats?|squatting)\b",
+        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:crouches?|crouching)\b",
+        re.IGNORECASE,
+    ),
+    "squatting": re.compile(
+        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:squats?|squatting)\b",
+        re.IGNORECASE,
+    ),
+    "on_all_fours": re.compile(
+        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\bon all fours\b",
         re.IGNORECASE,
     ),
     "reclining": re.compile(
-        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:reclines?|reclining|lying)\b",
+        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:reclines?|reclining)\b",
+        re.IGNORECASE,
+    ),
+    "lying": re.compile(
+        rf"\b{STRICT_PRIMARY_SUBJECT_NOUN}\b[^.!?]{{0,100}}\b(?:lies?|lying)\b",
         re.IGNORECASE,
     ),
 }
@@ -684,12 +714,33 @@ SEATED_PELVIC_SUPPORT_RE = re.compile(
     r"\b(?:sits?|seated)\b[^.!?]{0,80}\b(?:on|against)\b[^.!?]{0,50}\b(?:seat|chair|bench|ground|floor|surface|snow|bed|furniture|support)\b",
     re.IGNORECASE,
 )
+KNEE_SHIN_SUPPORT_RE = re.compile(
+    r"\b(?:knees?|shins?|lower legs?)\b[^.!?]{0,100}\b(?:bear(?:ing)? weight|carr(?:y|ies|ying) weight|weight-bearing|support(?:ing)?|press(?:ed|ing)?|plant(?:ed)?|rest(?:s|ing)?|contact(?:s|ing)?|touch(?:es|ing)?)\b[^.!?]{0,65}\b(?:bed|mattress|floor|ground|surface|snow|cushion|support)\b|"
+    r"\b(?:bed|mattress|floor|ground|surface|snow|cushion|support)\b[^.!?]{0,80}\b(?:knees?|shins?|lower legs?)\b[^.!?]{0,70}\b(?:bear(?:ing)? weight|carr(?:y|ies|ying) weight|weight-bearing|support(?:ing)?|press(?:ed|ing)?|plant(?:ed)?|rest(?:s|ing)?|contact(?:s|ing)?|touch(?:es|ing)?)\b",
+    re.IGNORECASE,
+)
+UPPER_LIMB_SUPPORT_RE = re.compile(
+    r"\b(?:hands?|palms?|forearms?|elbows?)\b[^.!?]{0,100}\b(?:bear(?:ing)? weight|weight-bearing|support(?:ing)?|brace(?:d|s|ing)?|press(?:ed|ing)?|plant(?:ed)?|rest(?:s|ing)?|contact(?:s|ing)?)\b[^.!?]{0,65}\b(?:bed|mattress|floor|ground|surface|cushion|support)\b|"
+    r"\b(?:bed|mattress|floor|ground|surface|cushion|support)\b[^.!?]{0,80}\b(?:hands?|palms?|forearms?|elbows?)\b[^.!?]{0,70}\b(?:bear(?:ing)? weight|weight-bearing|support(?:ing)?|brace(?:d|s|ing)?|press(?:ed|ing)?|plant(?:ed)?|rest(?:s|ing)?|contact(?:s|ing)?)\b",
+    re.IGNORECASE,
+)
+HAND_GESTURE_RE = re.compile(
+    r"\b(?:both\s+)?hands?\b[^.!?]{0,100}\b(?:raised|lifted|gestur(?:e|es|ing)|peace signs?|v signs?|v gestures?|fingers? extended)\b|"
+    r"\b(?:peace signs?|v signs?|v gestures?)\b[^.!?]{0,80}\b(?:hands?|fingers?)\b",
+    re.IGNORECASE,
+)
+TORSO_SURFACE_SUPPORT_RE = re.compile(
+    r"\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,110}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?|lies? against|lying against)\b[^.!?]{0,70}\b(?:bed|mattress|floor|ground|surface|cushion|support|wall|furniture)\b|"
+    r"\b(?:bed|mattress|floor|ground|surface|cushion|support|wall|furniture)\b[^.!?]{0,90}\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,70}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?)\b",
+    re.IGNORECASE,
+)
 EXPOSED_GROIN_CANDIDATE_RE = re.compile(
     r"\b(?:bare|exposed|uncovered|nude|naked)\b[^.!?]{0,80}\b(?:groin|genitals?|pubic region|pelvis|lower body|waist down)\b|"
     r"\b(?:groin|genitals?|pubic region|pelvis|lower body|waist down)\b[^.!?]{0,80}\b(?:bare|exposed|uncovered|nude|naked)\b",
     re.IGNORECASE,
 )
 POSE_GEOMETRY_EVIDENCE_PATTERNS = {
+    "raised_hand_gesture": HAND_GESTURE_RE,
     "both_feet_weight_bearing": re.compile(
         r"\bboth feet\b[^.!?]{0,100}\b(?:planted|support(?:ing)?|bear(?:ing)?|weight-bearing|flat on|firmly on)\b",
         re.IGNORECASE,
@@ -738,6 +789,7 @@ POSE_GEOMETRY_EVIDENCE_PATTERNS = {
     ),
 }
 POSE_GEOMETRY_OUTPUT_PATTERNS = {
+    "raised_hand_gesture": POSE_GEOMETRY_EVIDENCE_PATTERNS["raised_hand_gesture"],
     "both_feet_weight_bearing": POSE_GEOMETRY_EVIDENCE_PATTERNS["both_feet_weight_bearing"],
     "knees_clear_surface": POSE_GEOMETRY_EVIDENCE_PATTERNS["knees_clear_surface"],
     "hips_above_knees": POSE_GEOMETRY_EVIDENCE_PATTERNS["hips_above_knees"],
@@ -755,8 +807,11 @@ GROUNDING_FACT_LABELS = {
     "sitting": "the primary subject is explicitly sitting or seated",
     "kneeling": "the primary subject is explicitly kneeling",
     "crouching": "the primary subject is explicitly crouching",
+    "squatting": "the primary subject is explicitly squatting",
+    "on_all_fours": "the primary subject is explicitly on all fours with visible upper- and lower-limb support",
     "reclining": "the primary subject is explicitly reclining",
-    "posture_not_established": "the primary subject's lower-body support state is not established by the visible crop, so no categorical standing, sitting, kneeling, crouching, squatting or reclining state may be asserted",
+    "lying": "the primary subject is explicitly lying with broad torso support",
+    "posture_not_established": "the primary subject's lower-body support state is not established by the visible crop, so no categorical standing, sitting, kneeling, crouching, squatting, on-all-fours, reclining or lying state may be asserted",
     "visible_penis": "a penis is directly visible at the groin and must be named neutrally",
     "visible_vulva": "a vulva is directly visible at the groin and must be named neutrally",
     "anatomy_not_established": "external genital anatomy is not independently established, so no penis, vulva or vagina may be named",
@@ -771,6 +826,7 @@ GROUNDING_FACT_LABELS = {
     "one_foot_offset": "one foot is visibly offset forward or behind the other",
     "ground_level_low_angle": "the camera is at ground or floor level with an upward low-angle view",
     "full_legs_and_feet_visible": "the full legs and both feet remain visible in the composition",
+    "raised_hand_gesture": "one or both hands are raised in a visible gesture and are not weight-bearing",
 }
 NEGATED_VISIBILITY_RE = re.compile(
     r"\b(?:no|not|neither|without|cannot|can't|unable|uncertain|ambiguous|hidden|covered|occluded)\b",
@@ -823,6 +879,36 @@ def _needs_anatomy_verification(detail_evidence: list[str]) -> bool:
     return False
 
 
+def _has_positive_pose_support(pattern: re.Pattern[str], pose_evidence: str) -> bool:
+    """Return support geometry only when the matching clause is not negated."""
+
+    for match in pattern.finditer(str(pose_evidence or "")):
+        if not re.search(r"\b(?:no|not|never|neither|without)\b", match.group(0), re.IGNORECASE):
+            return True
+    return False
+
+
+def _resolve_hand_gesture_support_conflict(pose_evidence: str) -> str:
+    """Prefer visible raised-hand gestures over a contradictory support claim."""
+
+    candidate = str(pose_evidence or "")
+    if not HAND_GESTURE_RE.search(candidate) or not _has_positive_pose_support(UPPER_LIMB_SUPPORT_RE, candidate):
+        return candidate
+    clauses = [item.strip() for item in re.split(r"(?<=[,;.!?])\s*", candidate) if item.strip()]
+    output: list[str] = []
+    inserted = False
+    for clause in clauses:
+        if _has_positive_pose_support(UPPER_LIMB_SUPPORT_RE, clause):
+            if HAND_GESTURE_RE.search(clause) and not inserted:
+                output.append("One or both hands are raised in a visible gesture and are not weight-bearing.")
+                inserted = True
+            continue
+        output.append(clause)
+    if not inserted:
+        output.append("One or both hands are raised in a visible gesture and are not weight-bearing.")
+    return " ".join(output).strip()
+
+
 def _locked_posture_from_pose(pose_evidence: str) -> str | None:
     """Resolve support geometry before trusting a possibly inconsistent label."""
 
@@ -834,7 +920,7 @@ def _locked_posture_from_pose(pose_evidence: str) -> str | None:
     ):
         return "crouching"
     posture_match = PRIMARY_POSTURE_EVIDENCE_RE.search(pose_text)
-    return posture_match.group(1).casefold() if posture_match else None
+    return posture_match.group(1).casefold().replace(" ", "_") if posture_match else None
 
 
 def _derive_grounding_requirements(
@@ -931,6 +1017,8 @@ def _validate_required_grounding(prompt: str, required_facts: dict[str, str] | N
         missing.append("the independently verified penis must not be changed into a vulva or vagina")
     if "anatomy_not_established" in required and ANY_VISIBLE_ANATOMY_TERM_RE.search(prompt):
         missing.append("unverified external genital anatomy must not be invented")
+    if "raised_hand_gesture" in required and _has_positive_pose_support(UPPER_LIMB_SUPPORT_RE, prompt):
+        missing.append("a raised hand gesture must not be changed into upper-limb weight support")
     if missing:
         raise DiscordVisionRejected(
             "The local composer dropped non-negotiable image facts: " + "; ".join(missing)
@@ -949,9 +1037,9 @@ def _dedupe_prompt_clauses(prompt: str) -> str:
         marker_words = len(_words(marker))
         if marker in seen and 3 <= marker_words <= 40:
             continue
-        if marker.startswith("no visible "):
+        if re.search(r"\bno visible\b", marker):
             no_visible_count += 1
-            if no_visible_count > 10:
+            if no_visible_count > 2:
                 continue
         seen.add(marker)
         output.append(clause)
@@ -982,12 +1070,15 @@ def _apply_posture_lock(prompt: str, required_facts: dict[str, str] | None) -> s
     if locked is None:
         return prompt
     contradictory_terms_by_posture = {
-        "standing": re.compile(r"\b(?:sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|reclines?|reclining|lying)\b", re.I),
-        "sitting": re.compile(r"\b(?:stands?|standing|kneels?|kneeling|crouches?|crouching|squats?|squatting|reclines?|reclining|lying)\b", re.I),
-        "kneeling": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|crouches?|crouching|squats?|squatting|reclines?|reclining|lying)\b", re.I),
-        "crouching": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|reclines?|reclining|lying)\b", re.I),
-        "reclining": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting)\b", re.I),
-        "posture_not_established": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|reclines?|reclining|lying)\b", re.I),
+        "standing": re.compile(r"\b(?:sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
+        "sitting": re.compile(r"\b(?:stands?|standing|kneels?|kneeling|crouches?|crouching|squats?|squatting|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
+        "kneeling": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|crouches?|crouching|squats?|squatting|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
+        "crouching": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|squats?|squatting|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
+        "squatting": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
+        "on_all_fours": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|reclines?|reclining|lies?|lying)\b", re.I),
+        "reclining": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|on all fours|lies?|lying)\b", re.I),
+        "lying": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|on all fours|reclines?|reclining)\b", re.I),
+        "posture_not_established": re.compile(r"\b(?:stands?|standing|sits?|sitting|seated|kneels?|kneeling|crouches?|crouching|squats?|squatting|on all fours|reclines?|reclining|lies?|lying)\b", re.I),
     }
     contradictory_terms = contradictory_terms_by_posture[locked]
     clauses = [item.strip() for item in re.split(r"(?<=[,;.!?])\s*", str(prompt or "")) if item.strip()]
@@ -1002,9 +1093,18 @@ def _apply_posture_lock(prompt: str, required_facts: dict[str, str] | None) -> s
     return " ".join(output).strip()
 
 
+def _apply_hand_gesture_lock(prompt: str, required_facts: dict[str, str] | None) -> str:
+    if "raised_hand_gesture" not in (required_facts or {}):
+        return prompt
+    return _resolve_hand_gesture_support_conflict(prompt)
+
+
 def _clean_final_prompt(prompt: str, required_facts: dict[str, str] | None) -> str:
     return _dedupe_prompt_clauses(
-        _apply_posture_lock(_apply_anatomy_lock(prompt, required_facts), required_facts)
+        _apply_hand_gesture_lock(
+            _apply_posture_lock(_apply_anatomy_lock(prompt, required_facts), required_facts),
+            required_facts,
+        )
     )
 
 
@@ -1316,7 +1416,7 @@ class DiscordVisionService:
             "estimated_vram_mb": spec.estimated_vram_mb,
             "measured_peak_vram_mb": max(0, int(measured.get("peak_delta_mb") or 0)),
             "safety_reserve_mb": max(0, int(self.settings.llama_cpp_vram_headroom_mb)),
-            "full_image_passes": 4,
+            "full_image_passes": 5,
             "detail_crops": 3,
             "pose_geometry_verification": True,
             "image_audits": 2,
@@ -1360,16 +1460,33 @@ class DiscordVisionService:
     @staticmethod
     def _heretic_pose_evidence(raw: str) -> str:
         candidate = DiscordVisionService._heretic_evidence(raw, maximum_words=HERETIC_EVIDENCE_MAX_WORDS)
+        candidate = _resolve_hand_gesture_support_conflict(candidate)
         locked_posture = _locked_posture_from_pose(candidate)
+        if locked_posture == "sitting" and not SEATED_PELVIC_SUPPORT_RE.search(candidate):
+            raise DiscordVisionRejected("The local pose pass called the subject sitting without visible pelvic support.")
+        knee_shin_support = _has_positive_pose_support(KNEE_SHIN_SUPPORT_RE, candidate)
+        upper_limb_support = _has_positive_pose_support(UPPER_LIMB_SUPPORT_RE, candidate)
+        torso_support = _has_positive_pose_support(TORSO_SURFACE_SUPPORT_RE, candidate)
+        if locked_posture == "kneeling" and not knee_shin_support:
+            raise DiscordVisionRejected("The local pose pass called the subject kneeling without visible knee or shin support.")
+        if locked_posture == "on_all_fours" and (
+            not knee_shin_support or not upper_limb_support
+        ):
+            raise DiscordVisionRejected("The local pose pass called the subject on all fours without both upper- and lower-limb support.")
+        if locked_posture in {"reclining", "lying"} and not torso_support:
+            raise DiscordVisionRejected(
+                f"The local pose pass called the subject {locked_posture} without visible torso support."
+            )
         sentinel = PRIMARY_POSTURE_EVIDENCE_RE.search(candidate)
-        if locked_posture and sentinel is not None and sentinel.group(1).casefold() != locked_posture:
+        sentinel_posture = sentinel.group(1).casefold().replace(" ", "_") if sentinel is not None else None
+        if locked_posture and sentinel is not None and sentinel_posture != locked_posture:
             candidate = PRIMARY_POSTURE_EVIDENCE_RE.sub(
-                f"The primary subject is {locked_posture}",
+                f"The primary subject is {locked_posture.replace('_', ' ')}",
                 candidate,
                 count=1,
             )
         elif locked_posture and not PRIMARY_POSTURE_SENTINEL_RE.search(candidate):
-            candidate = f"The primary subject is {locked_posture}. {candidate}"
+            candidate = f"The primary subject is {locked_posture.replace('_', ' ')}. {candidate}"
         if not PRIMARY_POSTURE_SENTINEL_RE.search(candidate):
             raise DiscordVisionRejected("The local pose pass did not return the required support-state sentinel.")
         return candidate
@@ -1750,36 +1867,44 @@ class DiscordVisionService:
                             required_facts,
                         )
 
-                report("running", "Pass 1 of 4 — subject, expression, hair and clothing", 0)
+                report("running", "Pass 1 of 5 — subject, expression, hair and clothing", 0)
                 check_cancelled()
                 subject=inspect_with_retry(
-                    "Pass 1 of 4",
+                    "Pass 1 of 5",
                     HERETIC_VISION_SYSTEM,
                     HERETIC_SUBJECT_PASS,
                     lambda raw:self._heretic_evidence(raw,maximum_words=450),
                 )
                 clearly_adult=True
 
-                report("running", "Pass 2 of 4 — scene, background, location and objects", 0)
+                report("running", "Pass 2 of 5 — skin condition, visible marks, soft tissue and age-related appearance", 0)
+                check_cancelled()
+                skin_surface=inspect_with_retry(
+                    "Pass 2 of 5",
+                    HERETIC_VISION_SYSTEM,
+                    HERETIC_SKIN_PASS,
+                    lambda raw:self._heretic_evidence(raw,maximum_words=450),
+                )
+                report("running", "Pass 3 of 5 — scene, background, location and objects", 0)
                 check_cancelled()
                 scene=inspect_with_retry(
-                    "Pass 2 of 4",
+                    "Pass 3 of 5",
                     HERETIC_VISION_SYSTEM,
                     SCENE_PASS,
                     lambda raw:self._heretic_evidence(raw,maximum_words=350),
                 )
-                report("running", "Pass 3 of 4 — composition, lighting, materials and color", 0)
+                report("running", "Pass 4 of 5 — composition, lighting, materials and color", 0)
                 check_cancelled()
                 craft=inspect_with_retry(
-                    "Pass 3 of 4",
+                    "Pass 4 of 5",
                     HERETIC_VISION_SYSTEM,
                     CRAFT_PASS,
                     lambda raw:self._heretic_evidence(raw,maximum_words=350),
                 )
-                report("running", "Pass 4 of 4 — exact body pose, limb geometry and camera-relative placement", 0)
+                report("running", "Pass 5 of 5 — exact body pose, lean, support, limb geometry and camera-relative placement", 0)
                 check_cancelled()
                 pose=inspect_with_retry(
-                    "Pass 4 of 4",
+                    "Pass 5 of 5",
                     HERETIC_VISION_SYSTEM,
                     HERETIC_POSE_PASS,
                     self._heretic_pose_evidence,
@@ -1793,7 +1918,7 @@ class DiscordVisionService:
                     self._heretic_pose_evidence,
                     max_output_tokens=HERETIC_POSE_AUDIT_MAX_TOKENS,
                 )
-                evidence=[subject,scene,craft,pose_verification]
+                evidence=[subject,skin_surface,scene,craft,pose_verification]
                 anatomy_consensus_status = "NOT_ESTABLISHED"
                 with tempfile.TemporaryDirectory(prefix="krea2-heretic-crops-") as crop_dir:
                     cropper=ImageProcessor(
@@ -1880,9 +2005,10 @@ class DiscordVisionService:
                     "distinctive props; foreground/midground/background layout; lighting; and color.\n\n"
                     "SUBJECT EVIDENCE:\n"+evidence[0]+"\n\n"
                     "INITIAL POSE BLUEPRINT:\n"+pose+"\n\n"
-                    "IMAGE-VERIFIED POSE AND CONTACT LOCK — THIS OVERRIDES THE INITIAL BLUEPRINT AND ALL GENERIC POSE WORDING:\n"+evidence[3]+"\n\n"
-                    "SCENE EVIDENCE:\n"+evidence[1]+"\n\n"
-                    "COMPOSITION, LIGHTING, MATERIAL, TEXTURE AND COLOR EVIDENCE:\n"+evidence[2]+"\n\n"
+                    "IMAGE-VERIFIED POSE, LEAN, SUPPORT AND CONTACT LOCK — THIS OVERRIDES THE INITIAL BLUEPRINT AND ALL GENERIC POSE WORDING:\n"+evidence[4]+"\n\n"
+                    "SKIN, SOFT-TISSUE AND VISIBLE-AGE-APPEARANCE EVIDENCE:\n"+evidence[1]+"\n\n"
+                    "SCENE EVIDENCE:\n"+evidence[2]+"\n\n"
+                    "COMPOSITION, LIGHTING, MATERIAL, TEXTURE AND COLOR EVIDENCE:\n"+evidence[3]+"\n\n"
                     "CLOSE-CROP EVIDENCE:\n"+"\n\n".join(crop_evidence)
                     +"\n\nINDEPENDENT VISIBLE-ANATOMY LOCK — THIS OVERRIDES ALL OTHER EVIDENCE:\n"+anatomy_lock_text
                 )
@@ -1916,7 +2042,8 @@ class DiscordVisionService:
                     "The audited draft already consolidates the full visual evidence and the selected dataset/local-feedback style. "
                     "Preserve every supported fact, stable Subject A/B/C mapping, subject-to-anatomy association, actor/action/target roles and the draft's writing structure without reintroducing discarded details."
                     + "\n\nAUDITED DRAFT PROMPT:\n" + draft
-                    + "\n\nIMAGE-VERIFIED POSE AND CONTACT LOCK:\n" + pose_verification
+                    + "\n\nIMAGE-VERIFIED POSE, LEAN, SUPPORT AND CONTACT LOCK:\n" + pose_verification
+                    + "\n\nSKIN, SOFT-TISSUE AND VISIBLE-AGE-APPEARANCE EVIDENCE LOCK:\n" + skin_surface
                     + "\n\nFINAL RECONSTRUCTION AUDIT CORRECTIONS:\n" + audit
                     + "\n\nINDEPENDENT VISIBLE-ANATOMY LOCK:\n" + anatomy_lock_text
                     + "\n\nReturn the corrected final prompts. Do not add anything the original image does not show."
@@ -1931,7 +2058,7 @@ class DiscordVisionService:
                 return DiscordDescribeResponse(
                     prompt=repaired.prompt,
                     prompt_variants=repaired.prompt_variants,
-                    model=f"{spec.label} — faithful recreation (4 evidence passes, pose verification, 3 detail crops, final image audit)",
+                    model=f"{spec.label} — faithful recreation (5 evidence passes, pose verification, 3 detail crops, final image audit)",
                     prompt_words=repaired.prompt_words,
                     dataset_guidance=dataset_guidance_receipt(dataset_guidance, feedback_context),
                 )

@@ -12,31 +12,37 @@ The model counts every visible person and assigns stable Subject A/B/C labels. E
 
 Identity is not inferred from presentation, clothing, body shape, or anatomy. An uploader note may supply known identity labels or pronouns for the current session; that note is preserved as supplied context, not presented as pixel evidence.
 
-### 2. Scene inventory
+### 2. Skin, soft-tissue, and visible-age appearance
+
+The model maps positively visible surface details by subject and body region: bruising or discoloration, pressure and friction marks, scratches, cuts, abrasions, scars, stretch marks, wrinkles, veins, tattoos, laxity, breast contour, abdominal softness or folds, cellulite, garment indentation, and pose-induced compression. Broad adult age-related appearance may be described when supported, but numeric age and medical or injury-cause diagnosis are prohibited.
+
+The pass distinguishes a persistent-looking feature from shadow, highlight, makeup, dirt, snow, garment pressure, and temporary pose folds. Cropped or obscured skin is treated as unknown rather than smooth or undamaged.
+
+### 3. Scene inventory
 
 Foreground, midground, and background are mapped independently. Objects receive frame-relative placement, depth, overlap, occlusion, and activity. Text is transcribed only when clearly readable.
 
-### 3. Visual construction
+### 4. Visual construction
 
 The model records shot scale, apparent distance, camera height and direction, focus plane, depth of field, motion, light source/direction/softness/color, highlights, shadows, reflections, materials, texture, color palette, contrast, and visible processing.
 
-### 4. Pose and interaction geometry
+### 5. Pose, lean, support, and interaction geometry
 
-The pose pass starts with visible weight-bearing contacts and traces every visible limb independently. It records joint bends, hip-to-knee relation, stance width, foot offset, torso pitch, spine, abdominal compression/extension, pelvis, shoulders, head, neck, gaze, foreshortening, overlaps, and contact between subjects or props.
+The pose pass starts with visible weight-bearing contacts and traces every visible limb independently. It records joint bends, hip-to-knee relation, stance width, foot offset, torso pitch, anatomical-left/right and forward/backward lean, lean depth, shoulder and hip height asymmetry, center-of-mass shift, spine, abdominal compression/extension, pelvis, head, neck, gaze, foreshortening, overlaps, and contact between subjects or props. Wall, floor, bed, furniture, prop, and person contacts are classified as weight-bearing, bracing, resting, or merely touching when visible.
 
 Conventional pose names never replace geometry. A label such as standing, kneeling, all fours, missionary, or rear-entry may be used only when visible support and participant geometry establish it.
 
-### 5. Detail crops
+### 6. Detail crops
 
 Three region-specific crops provide higher-detail evidence for important areas while retaining a full-image reference. Crops are evidence aids, not permission to infer what lies outside their boundaries.
 
-### 6. Pose verification
+### 7. Pose verification
 
 An independent check attempts to falsify the proposed support state and contact map. If feet, knees, pelvis, or support surfaces are not visible enough to distinguish standing from kneeling or sitting, the state remains uncertain.
 
-### 7. Reconstruction audit
+### 8. Reconstruction audit
 
-The merged evidence is compared with the original image for subject count, attribute binding, pose, wardrobe, anatomy, props, scene, camera, light, and unsupported additions.
+The merged evidence is compared with the original image for subject count, attribute binding, pose, lean, support, wardrobe, anatomy, natural skin and soft-tissue appearance, visible marks, props, scene, camera, light, and unsupported additions.
 
 ## Draft, image audit, and three variants
 

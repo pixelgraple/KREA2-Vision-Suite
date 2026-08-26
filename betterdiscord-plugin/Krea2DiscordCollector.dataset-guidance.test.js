@@ -141,7 +141,7 @@ test("failure diagnostics are absent by default and require the exact separate t
     assert.equal(multipartValue(on.body, "diagnostic_username"), "garlicjr2");
 });
 
-test("successful responses require the v7 participant-role pipeline and a consistent eight-sample receipt", () => {
+test("successful responses require the v8 skin-pose-surface pipeline and a consistent eight-sample receipt", () => {
     const applied = parseVisionPromptResponse(JSON.stringify(responsePayload(true)), {
         expectedDatasetGuidance: true,
         expectedFeedbackDigest: EMPTY_FEEDBACK.digest

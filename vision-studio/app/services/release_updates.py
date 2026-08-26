@@ -49,7 +49,7 @@ def _parse_version(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())
 
 
-def detect_current_version(application_root: Path, fallback: str = "0.13.15") -> str:
+def detect_current_version(application_root: Path, fallback: str = "0.13.16") -> str:
     root = Path(application_root).resolve()
     for candidate in (root / "VERSION", root.parent / "VERSION"):
         try:

