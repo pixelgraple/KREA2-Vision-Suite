@@ -178,6 +178,10 @@ async function testStaleContributionConsentRepromptsOrFallsBackToOptOut() {
 await testStaleContributionConsentRepromptsOrFallsBackToOptOut();
 
 const pluginSource = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
+assert.match(pluginSource, /document\.body\.append\(root\)/, "Prompt History must be a detached overlay, not a Discord layout child");
+assert.match(pluginSource, /root\.dataset\.floating = "true"/, "Prompt History must use the fixed overlay rail");
+assert.doesNotMatch(pluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/, "Prompt History must never mutate Discord's member-list layout");
+assert.doesNotMatch(pluginSource, /this\.ensureHistoryRail\(\);\s*\n\s*if \(!this\.getVerifiedRoute/, "Image scans must not rebuild the rail");
 assert.match(pluginSource, /Optional identity or role notes/);
 assert.match(pluginSource, /Identity is never inferred from pixels or anatomy/);
 assert.match(pluginSource, /Uploader-supplied identity or role metadata \(not inferred from pixels\)/);
@@ -306,8 +310,10 @@ assert.doesNotMatch(builtPluginSource, /krea2history:\/\//);
 assert.match(builtPluginSource, /\/v1\/oauth\/start/);
 assert.match(builtPluginSource, /Connect Discord for Online API/);
 assert.match(builtPluginSource, /window\.open\(authorizeUrl, "_blank", "noopener,noreferrer"\)/);
-assert.match(builtPluginSource, /membersWrap_/);
-assert.match(builtPluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/);
+assert.match(builtPluginSource, /document\.body\.append\(root\)/);
+assert.match(builtPluginSource, /root\.dataset\.detached = "true"/);
+assert.doesNotMatch(builtPluginSource, /membersWrap_/);
+assert.doesNotMatch(builtPluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/);
 assert.match(builtPluginSource, /--krea2-text: #f3f5f7/);
 assert.match(builtPluginSource, /--krea2-muted: #a8b0bd/);
 assert.match(builtPluginSource, /\.krea2-history-prompt[\s\S]*?-webkit-text-fill-color: var\(--krea2-text\)/);

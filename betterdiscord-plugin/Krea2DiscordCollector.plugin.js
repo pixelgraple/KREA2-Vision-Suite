@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.19
+ * @version 0.13.20
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.19";
+const PLUGIN_VERSION = "0.13.20";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1392,14 +1392,17 @@ const CSS = `
     --krea2-text: #f3f5f7;
     --krea2-muted: #a8b0bd;
     --krea2-subtle: #828c9b;
-    align-self: stretch;
     box-sizing: border-box;
     width: var(--krea2-history-width);
     min-width: 268px;
     max-width: min(440px, 38vw);
-    position: relative;
+    position: fixed;
+    z-index: 100;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
     display: flex;
-    flex: 0 0 auto;
     flex-direction: column;
     overflow: hidden;
     color: var(--krea2-text);
@@ -1417,19 +1420,15 @@ const CSS = `
     -webkit-text-fill-color: currentColor;
 }
 
-#${HISTORY_ROOT_ID}[data-floating="false"] {
-    position: relative;
-    z-index: 3;
-    height: 100%;
+#${HISTORY_ROOT_ID}[data-floating="true"] {
+    position: fixed;
+    z-index: 100;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
     min-height: 0;
-}
-
-.krea2-history-layout-parent {
-    min-width: 0 !important;
-}
-
-.krea2-history-layout-parent > #${HISTORY_ROOT_ID} {
-    order: 2147483647;
+    box-shadow: -14px 0 32px rgba(0, 0, 0, .28);
 }
 
 #${HISTORY_ROOT_ID}[data-collapsed="true"] {
@@ -2930,16 +2929,23 @@ async function readResponseBytes(response, onProgress, maxBytes = MAX_IMAGE_BYTE
             const {done, value} = await reader.read();
             if (done) break;
             if (!value?.byteLength) continue;
-            loaded += value.byteLength;
+            const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+            loaded += chunk.byteLength;
             if (loaded > maxBytes) {
                 await reader.cancel("Image size limit exceeded").catch(() => {});
                 throw new Error(`Image is larger than the ${Math.round(maxBytes / 1024 / 1024)} MB limit.`);
             }
-            chunks.push(Buffer.from(value));
+            chunks.push(chunk);
             onProgress?.(loaded, Number.isFinite(announcedSize) ? announcedSize : null);
         }
 
-        return new Uint8Array(Buffer.concat(chunks));
+        const bytes = new Uint8Array(loaded);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
+        return bytes;
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -2965,20 +2971,26 @@ async function readBoundedResponseText(response, maxBytes = MAX_VISION_RESPONSE_
             const {done, value} = await reader.read();
             if (done) break;
             if (!value?.byteLength) continue;
-            loaded += value.byteLength;
+            const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+            loaded += chunk.byteLength;
             if (loaded > maxBytes) {
                 await reader.cancel("Vision response size limit exceeded").catch(() => {});
                 throw new Error("Vision Prompt Studio returned an oversized response.");
             }
-            chunks.push(Buffer.from(value));
+            chunks.push(chunk);
         }
-        bytes = Buffer.concat(chunks);
+        bytes = new Uint8Array(loaded);
+        let offset = 0;
+        for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+        }
     }
     else {
-        bytes = Buffer.from(await response.arrayBuffer());
+        bytes = new Uint8Array(await response.arrayBuffer());
         if (bytes.byteLength > maxBytes) throw new Error("Vision Prompt Studio returned an oversized response.");
     }
-    return bytes.toString("utf8");
+    return new TextDecoder("utf-8", {fatal: false}).decode(bytes);
 }
 
 function findMessageRoot(image) {
@@ -3370,6 +3382,7 @@ class Krea2DiscordCollector {
         this.imageLoadHandlers = new Map();
         this.observer = null;
         this.scanFrame = null;
+        this.scanTimer = null;
         this.routeTimer = null;
         this.onboardingTimer = null;
         this.shortcutHandler = null;
@@ -3503,7 +3516,9 @@ class Krea2DiscordCollector {
         this.installContextMenus();
         this.ensureHistoryRail();
         void this.refreshHistory();
-        this.historyPollTimer = setInterval(() => void this.refreshHistory(), HISTORY_POLL_MS);
+        this.historyPollTimer = setInterval(() => {
+            if (this.historyRoot?.isConnected && this.settings.historyCollapsed !== true) void this.refreshHistory();
+        }, HISTORY_POLL_MS);
         this.updateInitialTimer = setTimeout(() => {
             this.updateInitialTimer = null;
             if (this.running) void this.checkForSuiteUpdate();
@@ -3511,10 +3526,14 @@ class Krea2DiscordCollector {
         this.updateCheckTimer = setInterval(() => void this.checkForSuiteUpdate(), UPDATE_CHECK_INTERVAL_MS);
 
         this.observer = new MutationObserver(mutations => {
-            if (mutations.some(mutation => mutation.type === "childList" || mutation.attributeName === "src" || mutation.attributeName === "href")) {
-                this.scheduleScan();
-                this.ensureHistoryRail();
-            }
+            const hasPotentialMessageImage = mutations.some(mutation => {
+                if (mutation.type === "attributes") return mutation.target instanceof HTMLImageElement;
+                return [...mutation.addedNodes].some(node =>
+                    node.nodeType === Node.ELEMENT_NODE &&
+                    (node.matches?.("img") || node.querySelector?.("img"))
+                );
+            });
+            if (hasPotentialMessageImage) this.scheduleScan();
         });
         this.observer.observe(document.body, {
             childList: true,
@@ -3545,6 +3564,8 @@ class Krea2DiscordCollector {
 
         if (this.scanFrame !== null) cancelAnimationFrame(this.scanFrame);
         this.scanFrame = null;
+        if (this.scanTimer !== null) clearTimeout(this.scanTimer);
+        this.scanTimer = null;
         if (this.routeTimer !== null) clearInterval(this.routeTimer);
         this.routeTimer = null;
         if (this.onboardingTimer !== null) clearTimeout(this.onboardingTimer);
@@ -3591,10 +3612,6 @@ class Krea2DiscordCollector {
         document.getElementById(HISTORY_MODAL_ID)?.remove();
         document.getElementById(PRODUCT_MODAL_ID)?.remove();
         document.getElementById(ONBOARDING_MODAL_ID)?.remove();
-        for (const layout of document.querySelectorAll(".krea2-history-layout-parent")) {
-            layout.classList.remove("krea2-history-layout-parent");
-        }
-
         for (const controller of this.controllers) controller.abort();
         this.controllers.clear();
         this.inflightByHash.clear();
@@ -4070,39 +4087,26 @@ class Krea2DiscordCollector {
     }
 
     scheduleScan() {
-        if (!this.running || this.scanFrame !== null) return;
-        this.scanFrame = requestAnimationFrame(() => {
-            this.scanFrame = null;
-            this.scan();
-        });
+        if (!this.running || this.scanFrame !== null || this.scanTimer !== null) return;
+        this.scanTimer = setTimeout(() => {
+            this.scanTimer = null;
+            if (!this.running || this.scanFrame !== null) return;
+            this.scanFrame = requestAnimationFrame(() => {
+                this.scanFrame = null;
+                this.scan();
+            });
+        }, 160);
     }
 
     ensureHistoryRail() {
         if (!this.running || !document.body) return;
-        const membersWrap = document.querySelector('[class*="membersWrap_"]');
-        const membersColumn = membersWrap?.parentElement || null;
-        const layout = membersColumn?.parentElement || null;
-        if (!membersWrap || !membersColumn || !layout) {
-            this.historyRoot?.remove();
-            this.historyRoot = null;
-            for (const previous of document.querySelectorAll(".krea2-history-layout-parent")) {
-                previous.classList.remove("krea2-history-layout-parent");
-            }
-            return;
-        }
-
-        if (this.historyRoot?.isConnected && this.historyRoot.parentElement === layout) return;
+        if (this.historyRoot?.isConnected && this.historyRoot.parentElement === document.body) return;
         this.historyRoot?.remove();
         document.getElementById(HISTORY_ROOT_ID)?.remove();
-        for (const previous of document.querySelectorAll(".krea2-history-layout-parent")) {
-            if (previous !== layout) previous.classList.remove("krea2-history-layout-parent");
-        }
-
-        layout.classList.add("krea2-history-layout-parent");
         const root = this.createHistoryRail();
-        root.dataset.floating = "false";
-        root.dataset.detached = "false";
-        membersColumn.insertAdjacentElement("afterend", root);
+        root.dataset.floating = "true";
+        root.dataset.detached = "true";
+        document.body.append(root);
         this.historyRoot = root;
         this.renderHistoryRail(root);
     }
@@ -4111,7 +4115,7 @@ class Krea2DiscordCollector {
         const root = document.createElement("aside");
         root.id = HISTORY_ROOT_ID;
         root.dataset.collapsed = this.settings.historyCollapsed ? "true" : "false";
-        root.dataset.floating = "false";
+        root.dataset.floating = "true";
         root.style.setProperty("--krea2-history-width", `${this.settings.historyWidth}px`);
         root.setAttribute("aria-label", "KREA2 prompt history");
 
@@ -4709,6 +4713,7 @@ class Krea2DiscordCollector {
         this.settings.historyCollapsed = collapsed === true;
         if (this.historyRoot) this.historyRoot.dataset.collapsed = this.settings.historyCollapsed ? "true" : "false";
         this.api.Data.save("settings", this.settings);
+        if (!this.settings.historyCollapsed) void this.refreshHistory(true);
     }
 
     beginHistoryResize(event) {
@@ -7337,13 +7342,18 @@ class Krea2DiscordCollector {
 
     scan() {
         if (!this.running) return;
-        this.ensureHistoryRail();
         if (!this.getVerifiedRoute()) {
             this.removeAllButtons();
             return;
         }
 
-        for (const image of document.querySelectorAll("img")) this.enhanceImage(image);
+        const messageArea = document.querySelector('[data-list-id="chat-messages"]')?.closest('[class*="chatContent_"]')
+            || document.querySelector('[class*="chatContent_"]');
+        if (!messageArea) {
+            this.removeAllButtons();
+            return;
+        }
+        for (const image of messageArea.querySelectorAll("img")) this.enhanceImage(image);
         for (const [image, handler] of this.imageLoadHandlers) {
             if (image.isConnected) continue;
             image.removeEventListener("load", handler);
