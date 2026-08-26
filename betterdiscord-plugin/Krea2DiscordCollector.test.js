@@ -7,6 +7,7 @@ const path = require("node:path");
 const Plugin = require("./Krea2DiscordCollector.plugin.js");
 const {
     applyPromptPreset,
+    base64Url,
     buildOperationalErrorReport,
     buildVisionMultipartBody,
     chooseBestMediaUrl,
@@ -591,6 +592,8 @@ assert.equal(
     sha256Hex(Buffer.from("abc")),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 );
+assert.equal(base64Url(Buffer.from([0xff, 0xff, 0xff])), "____");
+assert.match(base64Url(Buffer.from("legacy Electron compatibility", "utf8")), /^[A-Za-z0-9_-]+$/);
 
 assert.equal(decodeHtmlEntities("cats &amp; dogs &#33;"), "cats & dogs !");
 assert.deepEqual(evaluatePromptValue(

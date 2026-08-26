@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.21
+ * @version 0.13.22
  * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
@@ -22,7 +22,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.21";
+const PLUGIN_VERSION = "0.13.22";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1352,6 +1352,15 @@ function sha256Hex(bytes) {
     return createHash("sha256")
         .update(Buffer.from(view.buffer, view.byteOffset, view.byteLength))
         .digest("hex");
+}
+
+function base64Url(bytes) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/g, "");
 }
 
 function detectImageFormat(bytes) {
@@ -6092,11 +6101,11 @@ class Krea2DiscordCollector {
         if (saved && Number(saved.authVersion) === 2 && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
         let installationId = String(this.api.Data.load("remoteVisionInstallationId") || "");
         if (!/^[A-Za-z0-9_-]{24,128}$/.test(installationId)) {
-            installationId = randomBytes(32).toString("base64url");
+            installationId = base64Url(randomBytes(32));
             this.api.Data.save("remoteVisionInstallationId", installationId);
         }
-        const enrollmentId = `enr_${randomBytes(32).toString("base64url")}`;
-        const enrollmentSecret = randomBytes(48).toString("base64url");
+        const enrollmentId = `enr_${base64Url(randomBytes(32))}`;
+        const enrollmentSecret = base64Url(randomBytes(48));
         let response;
         try {
             response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/oauth/start`, {method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({installation_id:installationId,enrollment_id:enrollmentId,enrollment_secret:enrollmentSecret}),redirect:"manual",maxRedirects:0,timeout:15000,signal});
@@ -7695,6 +7704,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     applyPromptPreset,
     buildPromptFeedbackContext,
     buildOperationalErrorReport,
+    base64Url,
     buildVisionCacheProfile,
     buildVisionMultipartBody,
     classifyPromptMetadata,
