@@ -34,6 +34,13 @@ Startup also checks free space before either
 artifact download and keeps a separate 6 GiB reserve; insufficient storage fails
 the worker cleanly instead of leaving a partial model.
 
+Downloads and model startup have hard time limits. A synthetic local inference
+must succeed before the worker advertises readiness, and the launcher continues
+probing llama.cpp afterward. If the model server or PyWorker dies, or repeated
+health checks fail, the container exits non-zero so Vast can discard the
+zero-capacity worker and recruit a replacement. Partial downloads remain
+resumable on any retained worker disk.
+
 The public route is `/v1/chat/completions`. Requests are strictly serialized;
 the local BetterDiscord plugin never receives the Vast API key and continues to
 talk only to Vision Studio at `127.0.0.1:7870`.

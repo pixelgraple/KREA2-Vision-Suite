@@ -34,8 +34,13 @@ emit_event() {
 tail -n 0 -F "$LOG_DIR/llama-server.log" &
 LOG_TAIL_PID=$!
 LLAMA_PID=""
+PYWORKER_PID=""
 
 terminate() {
+  if [[ -n "$PYWORKER_PID" ]]; then
+    kill "$PYWORKER_PID" 2>/dev/null || true
+    wait "$PYWORKER_PID" 2>/dev/null || true
+  fi
   if [[ -n "$LLAMA_PID" ]]; then
     kill "$LLAMA_PID" 2>/dev/null || true
     wait "$LLAMA_PID" 2>/dev/null || true
@@ -84,7 +89,12 @@ download_verified() {
   remaining_bytes=$((expected_bytes - partial_bytes))
   require_download_space "$remaining_bytes"
   emit_event "KREA2_MODEL_DOWNLOAD $(basename "$path")"
-  aria2c \
+  local download_timeout_seconds="${KREA2_DOWNLOAD_TIMEOUT_SECONDS:-1200}"
+  if [[ ! "$download_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    emit_event "KREA2_MODEL_ERROR invalid download timeout"
+    exit 1
+  fi
+  if ! timeout --signal=TERM "$download_timeout_seconds" aria2c \
     --allow-overwrite=true \
     --auto-file-renaming=false \
     --continue=true \
@@ -100,7 +110,10 @@ download_verified() {
     --timeout=60 \
     --dir "$(dirname "$path.part")" \
     --out "$(basename "$path.part")" \
-    "$url"
+    "$url"; then
+    emit_event "KREA2_MODEL_ERROR artifact download failed or timed out: $(basename "$path")"
+    exit 1
+  fi
   if ! verify_file "$path.part" "$expected_bytes" "$expected_sha"; then
     emit_event "KREA2_MODEL_ERROR artifact verification failed: $(basename "$path")"
     exit 1
@@ -146,23 +159,85 @@ echo "KREA2_MODEL_RUNTIME library path ready: $LLAMA_SERVER_LIB_DIR" \
   >> "$LOG_DIR/llama-server.log" 2>&1 &
 LLAMA_PID=$!
 
-(
-  # This monitor is a background subshell. It must not inherit the main
-  # process's cleanup trap or a successful readiness exit will kill the model
-  # server that it just verified.
-  trap - EXIT INT TERM
-  for _ in $(seq 1 1800); do
-    if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-      emit_event "KREA2_MODEL_ERROR llama-server exited during startup"
-      exit 1
-    fi
-    if curl --fail --silent http://127.0.0.1:18000/health >/dev/null; then
-      emit_event "KREA2_MODEL_READY"
-      exit 0
-    fi
-    sleep 1
-  done
-  emit_event "KREA2_MODEL_ERROR llama-server startup timed out"
-) &
+python3 /opt/krea2/worker.py &
+PYWORKER_PID=$!
 
-python3 /opt/krea2/worker.py
+fail_worker() {
+  emit_event "KREA2_MODEL_ERROR $*"
+  if [[ -n "$PYWORKER_PID" ]]; then
+    kill "$PYWORKER_PID" 2>/dev/null || true
+    wait "$PYWORKER_PID" 2>/dev/null || true
+    PYWORKER_PID=""
+  fi
+  exit 1
+}
+
+startup_timeout_seconds="${KREA2_STARTUP_TIMEOUT_SECONDS:-900}"
+if [[ ! "$startup_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  fail_worker "invalid startup timeout"
+fi
+
+health_ready=false
+for _ in $(seq 1 "$startup_timeout_seconds"); do
+  kill -0 "$LLAMA_PID" 2>/dev/null || fail_worker "llama-server exited during startup"
+  kill -0 "$PYWORKER_PID" 2>/dev/null || fail_worker "Vast PyWorker exited during startup"
+  if curl --fail --silent --max-time 2 http://127.0.0.1:18000/health >/dev/null; then
+    health_ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$health_ready" == true ]] || fail_worker "llama-server startup timed out"
+
+# A health endpoint alone is not enough: prove that the loaded model can
+# actually complete a request before advertising capacity to Vast.
+self_test_ready=false
+for _ in 1 2 3; do
+  if curl --fail --silent --max-time 120 \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"gemma4-26b-a4b-heretic-q3-k-l","messages":[{"role":"user","content":"Return exactly ready."}],"temperature":0,"max_tokens":16,"stream":false}' \
+      http://127.0.0.1:18000/v1/chat/completions \
+      -o /tmp/krea2-startup-self-test.json \
+    && python3 -c 'import json; d=json.load(open("/tmp/krea2-startup-self-test.json", encoding="utf-8")); assert d["choices"][0]["message"]["content"].strip()' ; then
+    self_test_ready=true
+    break
+  fi
+  sleep 10
+done
+rm -f -- /tmp/krea2-startup-self-test.json
+[[ "$self_test_ready" == true ]] || fail_worker "model inference self-test failed"
+
+emit_event "KREA2_MODEL_READY"
+
+# Keep supervising both processes after readiness. A failed model server can
+# no longer leave a billable zero-capacity worker alive indefinitely: repeated
+# health failures make the container exit non-zero so Vast can recruit a
+# replacement from the workergroup.
+health_failure_limit="${KREA2_HEALTH_FAILURE_LIMIT:-6}"
+if [[ ! "$health_failure_limit" =~ ^[1-9][0-9]*$ ]]; then
+  fail_worker "invalid health failure limit"
+fi
+health_failures=0
+while kill -0 "$PYWORKER_PID" 2>/dev/null; do
+  kill -0 "$LLAMA_PID" 2>/dev/null || fail_worker "llama-server exited after readiness"
+  if curl --fail --silent --max-time 2 http://127.0.0.1:18000/health >/dev/null; then
+    health_failures=0
+  else
+    health_failures=$((health_failures + 1))
+    if (( health_failures >= health_failure_limit )); then
+      fail_worker "llama-server failed repeated health checks"
+    fi
+  fi
+  sleep 5
+done
+
+if wait "$PYWORKER_PID"; then
+  worker_status=0
+else
+  worker_status=$?
+fi
+PYWORKER_PID=""
+if (( worker_status != 0 )); then
+  emit_event "KREA2_MODEL_ERROR Vast PyWorker exited with status $worker_status"
+fi
+exit "$worker_status"
