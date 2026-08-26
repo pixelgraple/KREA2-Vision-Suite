@@ -149,6 +149,7 @@ class LlamaCppProvider(VisionProvider):
         image_max_tokens: int = 4096,
         image_max_side: int | None = None,
         gpu_layers: int | str = "all",
+        fit_target_mb: int | None = None,
         *,
         http=None,
         popen_factory=None,
@@ -172,6 +173,7 @@ class LlamaCppProvider(VisionProvider):
         self.image_max_tokens = int(image_max_tokens)
         self.image_max_side = int(image_max_side) if image_max_side is not None else None
         self.gpu_layers = gpu_layers
+        self.fit_target_mb = int(fit_target_mb) if fit_target_mb is not None else None
         self.http = http or requests
         self._popen = popen_factory or subprocess.Popen
         self._sleep = sleeper
@@ -216,10 +218,12 @@ class LlamaCppProvider(VisionProvider):
         if self.image_max_side is not None and not 64 <= self.image_max_side <= 8192:
             raise LlamaCppProviderError("The llama.cpp image side limit is invalid.")
         if isinstance(self.gpu_layers, bool) or not (
-            self.gpu_layers == "all"
+            self.gpu_layers in {"all", "auto"}
             or isinstance(self.gpu_layers, int) and 0 <= self.gpu_layers <= 10000
         ):
             raise LlamaCppProviderError("The llama.cpp GPU layer limit is invalid.")
+        if self.fit_target_mb is not None and not 256 <= self.fit_target_mb <= 262144:
+            raise LlamaCppProviderError("The llama.cpp adaptive-fit target is invalid.")
         if not 0 < self.startup_timeout <= 1800:
             raise LlamaCppProviderError("The llama.cpp startup timeout is invalid.")
         if not PUBLIC_MODEL_ID.fullmatch(self.alias):
@@ -254,8 +258,6 @@ class LlamaCppProvider(VisionProvider):
             "0",
             "--image-max-tokens",
             str(self.image_max_tokens),
-            "--n-gpu-layers",
-            str(self.gpu_layers),
             "--reasoning",
             "off",
             "--reasoning-format",
@@ -265,6 +267,19 @@ class LlamaCppProvider(VisionProvider):
             "--api-key",
             self.api_key,
         ]
+        if self.gpu_layers != "auto":
+            command.extend(["--n-gpu-layers", str(self.gpu_layers)])
+        if self.fit_target_mb is not None:
+            command.extend(
+                [
+                    "--fit",
+                    "on",
+                    "--fit-target",
+                    str(self.fit_target_mb),
+                    "--fit-ctx",
+                    str(self.context),
+                ]
+            )
         if self.image_min_tokens is not None:
             command.extend(["--image-min-tokens", str(self.image_min_tokens)])
         command.append("--mmproj-offload" if self.mmproj_offload else "--no-mmproj-offload")

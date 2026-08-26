@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 from ..config import Settings, ROOT
-from ..models.factory import provider_for
+from ..models.factory import llama_cpp_runtime_profile, provider_for
 from ..schemas.prompt import PromptControls, PromptResult, StudioState
 from ..schemas.visual_analysis import CriticReport, Evaluation, SubjectCensus, VisualAnalysis
 from .json_guard import instance_template, looks_like_schema, parse_or_repair
@@ -34,6 +34,48 @@ VRAM_ADMISSION_JITTER_MB = 64
 
 class GpuCapacityError(RuntimeError):
     pass
+
+
+def gpu_capacity_requirements(
+    active_settings: Settings,
+    spec: ModelSpec,
+    measured_peak_mb: int = 0,
+) -> dict[str, int | bool | None | str]:
+    """Build the admission contract used by both execution and the model UI."""
+
+    measured = max(0, int(measured_peak_mb))
+    headroom = max(0, int(active_settings.llama_cpp_vram_headroom_mb))
+    allocation_target = max(0, int(active_settings.llama_cpp_model_allocation_target_mb))
+    full_model_allocation = max(0, int(spec.estimated_vram_mb), measured)
+    adaptive = False
+    fit_target_mb = None
+    minimum_gpu_allocation_mb = full_model_allocation
+    if spec.backend == "llama_cpp":
+        profile = llama_cpp_runtime_profile(active_settings, spec)
+        adaptive = profile.adaptive_gpu_fit
+        fit_target_mb = profile.fit_target_mb
+        if adaptive:
+            minimum_gpu_allocation_mb = min(
+                full_model_allocation,
+                max(0, int(profile.minimum_gpu_allocation_mb)),
+            )
+    full_required = full_model_allocation + headroom
+    required = minimum_gpu_allocation_mb + headroom if adaptive else full_required
+    return {
+        "model_id": spec.public_id,
+        "estimated_vram_mb": max(0, int(spec.estimated_vram_mb)),
+        "last_measured_peak_mb": measured,
+        "headroom_mb": headroom,
+        "model_allocation_target_mb": allocation_target,
+        "estimate_exceeds_target": bool(
+            allocation_target and spec.estimated_vram_mb > allocation_target
+        ),
+        "adaptive_gpu_fit": adaptive,
+        "runtime_fit_target_mb": fit_target_mb,
+        "minimum_gpu_allocation_mb": minimum_gpu_allocation_mb,
+        "full_gpu_required_vram_mb": full_required,
+        "required_vram_mb": required,
+    }
 
 
 class ProviderTeardownError(RuntimeError):
@@ -102,9 +144,8 @@ class StudioPipeline:
             context_length=active_settings.context_length,
         ) or {}
         measured = max(0, int(previous.get("peak_delta_mb") or 0))
-        headroom = max(0, active_settings.llama_cpp_vram_headroom_mb)
-        allocation_target = max(0, active_settings.llama_cpp_model_allocation_target_mb)
-        required = max(spec.estimated_vram_mb, measured) + headroom
+        requirements = gpu_capacity_requirements(active_settings, spec, measured)
+        required = int(requirements["required_vram_mb"])
         deadline = time.monotonic() + min(30.0, max(5.0, active_settings.forge_unload_timeout_seconds))
         while True:
             try:
@@ -117,23 +158,21 @@ class StudioPipeline:
                 break
             time.sleep(0.5)
         capacity = {
-            "model_id": spec.public_id,
-            "estimated_vram_mb": spec.estimated_vram_mb,
-            "last_measured_peak_mb": measured,
-            "headroom_mb": headroom,
-            "model_allocation_target_mb": allocation_target,
-            "estimate_exceeds_target": bool(
-                allocation_target and spec.estimated_vram_mb > allocation_target
-            ),
-            "required_vram_mb": required,
+            **requirements,
             "free_vram_mb_after_handoff": current.free_mb,
             "admission_tolerance_mb": VRAM_ADMISSION_JITTER_MB,
         }
         if current.free_mb + VRAM_ADMISSION_JITTER_MB < required:
+            adaptive_detail = ""
+            if bool(requirements["adaptive_gpu_fit"]):
+                adaptive_detail = (
+                    f" The model supports adaptive CPU/GPU layer fitting; its full-GPU "
+                    f"profile would require {requirements['full_gpu_required_vram_mb']} MiB."
+                )
             raise GpuCapacityError(
-                f"Local Vision needs {required} MiB of free VRAM after Forge handoff, "
+                f"Local Vision needs at least {required} MiB of free VRAM after Forge handoff, "
                 f"but only {current.free_mb} MiB is available after the bounded "
-                f"{VRAM_ADMISSION_JITTER_MB} MiB measurement tolerance."
+                f"{VRAM_ADMISSION_JITTER_MB} MiB measurement tolerance.{adaptive_detail}"
             )
         return capacity, current
 

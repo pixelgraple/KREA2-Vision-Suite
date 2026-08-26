@@ -103,7 +103,7 @@ The default WD14 device is CPU, keeping it out of Forge's shared VRAM. The WD14 
 
 `STUDIO_USE_SHARED_GENERATION_QUEUE=true` uses `%TEMP%\forge_shared_generation_queue`, with Forge-compatible tickets and `generation.lock` ownership. The Studio waits behind an image generation; if Studio owns the slot, Forge waits. The same `local_gpu` rule covers Ollama and llama.cpp. This is an ordered FIFO queue, not a race-prone process check. Do not change the queue directory unless your Forge configuration has also changed.
 
-`KREA2_GPU_AVAILABILITY_TIMEOUT_SECONDS=30` bounds shared-GPU admission. A request that cannot acquire capacity in time exits with `GPU not available`, removes its ticket, and cannot strand later Discord jobs. The timeout does not cancel inference after the GPU has already been acquired.
+Local Discord Vision requests wait in the exact Forge/KreaForge FIFO until their turn or until the user cancels them. Ordinary local queue contention never becomes a false `GPU not available` error after 30 seconds. Once Vision reaches the FIFO head, it holds the shared lock, asks both configured Forge endpoints to unload/pause, runs the complete interrogation and three-prompt composition, unloads its local model, and only then releases the queue. Remote serverless worker/request limits remain separately bounded by their provider configuration.
 
 ## Troubleshooting
 

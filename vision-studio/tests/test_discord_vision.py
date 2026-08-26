@@ -258,6 +258,7 @@ class FakeHereticPipeline:
     def __init__(self):
         self.provider=FakeHereticProvider()
         self.events=[]
+        self.slot_kwargs=[]
         self.spec=ModelSpec("llamacpp::heretic-8b-q8_0","Heretic — Qwen3-VL 8B Q8_0","llama_cpp","qwen3-vl-heretic-8b-q8-0",True,8192,2048,13312)
         self.telemetry=type("Telemetry",(),{"get":lambda _self,_model_id,**_kwargs:{}})()
 
@@ -270,8 +271,10 @@ class FakeHereticPipeline:
 
     @contextmanager
     def _provider_slot(self,_active,_spec,progress,**kwargs):
+        self.slot_kwargs.append(dict(kwargs))
         self.events.append("queue-enter")
         progress("Shared Forge/Ollama GPU queue acquired")
+        progress("Verifying free VRAM for the selected local Vision model")
         supplier=kwargs.get("provider_supplier")
         provider=(supplier() if callable(supplier) else None) or self.provider
         retained=False
@@ -813,6 +816,13 @@ class DiscordVisionTests(unittest.TestCase):
         )
         self.assertTrue(valid.lower().startswith("the primary subject is kneeling"))
 
+    def test_reclining_directly_on_couch_or_cushions_is_valid_torso_support(self):
+        for surface in ("a couch", "the sofa cushions", "an upholstered seat"):
+            recovered = DiscordVisionService._heretic_pose_evidence(
+                f"The primary subject is reclining on {surface} with her torso angled back. " + prose(80)
+            )
+            self.assertIn("reclining", recovered.lower())
+
     def test_lying_is_distinct_from_reclining_and_squatting_from_crouching(self):
         lying = _derive_grounding_requirements(
             "The primary subject is lying on her side with the side of her torso broadly supported by the bed. " + prose(80),
@@ -1259,9 +1269,10 @@ class DiscordVisionTests(unittest.TestCase):
             pipeline=pipeline,
             warm=warm,
         )
+        progress=[]
         with tempfile.TemporaryDirectory() as temporary:
             image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
-            result=service.describe(image,model="llamacpp::heretic-8b-q8_0")
+            result=service.describe(image,on_progress=lambda *values: progress.append(values),model="llamacpp::heretic-8b-q8_0")
         self.assertEqual(result.prompt_words,400)
         self.assertIn("8B Q8_0",result.model)
         self.assertEqual(pipeline.provider.image_calls,10)
@@ -1277,9 +1288,52 @@ class DiscordVisionTests(unittest.TestCase):
         for region in HERETIC_CROP_FOCUS:
             self.assertTrue(any(f"CROP REGION: {region}." in prompt for prompt in crop_prompts))
         self.assertEqual(pipeline.events[-1:], ["queue-exit"])
+        self.assertIsNone(pipeline.slot_kwargs[0]["queue_timeout_seconds"])
+        self.assertIn(("running","Verifying free VRAM for the selected local Vision model",0),progress)
         self.assertLess(pipeline.events.index("warm-retained-before-queue-release"), pipeline.events.index("queue-exit"))
         self.assertTrue(service.warm.status()["active"])
         warm.evict()
+
+    def test_legacy_local_vision_does_not_apply_gpu_wait_deadline(self):
+        class TimeoutAwareQueue(FakeQueue):
+            def __init__(self, events):
+                super().__init__(events)
+                self.received_timeout = "not-called"
+
+            @contextmanager
+            def slot(self, status=None, cancel_check=None, timeout_seconds=None):
+                self.received_timeout = timeout_seconds
+                if cancel_check is not None:
+                    cancel_check()
+                with super().slot(status=status) as lease:
+                    if status is not None:
+                        status("Forge handoff complete")
+                    yield lease
+
+        events=[]
+        queue=TimeoutAwareQueue(events)
+        handoff=FakeHandoff(queue,events)
+        ollama=FakeOllama(
+            [AGE_CLEAR + "\n" + prose(140), prose(130), prose(130)],
+            prose(400),
+        )
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID,gpu_availability_timeout_seconds=.05),
+            queue=queue,
+            handoff=handoff,
+            ollama=ollama,
+            dataset_sampler=FakeDatasetSampler(),
+        )
+        progress=[]
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"
+            image.write_bytes(image_bytes())
+            result=service.describe(image,on_progress=lambda *values: progress.append(values))
+
+        self.assertEqual(result.classification,"usable")
+        self.assertIsNone(queue.received_timeout)
+        self.assertIn(("running","Forge handoff complete",0),progress)
+        self.assertEqual(events[-1],"queue-exit")
 
     def test_remote_gemma_selection_skips_local_queue_warm_residency(self):
         pipeline=FakeHereticPipeline()
@@ -2399,6 +2453,39 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.assertEqual(stage, "GPU not available")
         self.assertEqual(public_error, "GPU not available")
         self.assertEqual(http_detail, "GPU not available")
+
+    def test_nested_local_capacity_failure_is_actionable_instead_of_generic(self):
+        cause = api_module.GpuCapacityError(
+            "Local Vision needs at least 8192 MiB of free VRAM after Forge handoff, but only 7000 MiB is available."
+        )
+        error = DiscordVisionBackendError("The selected Heretic vision pipeline is unavailable.")
+        error.__cause__ = cause
+
+        stage, public_error, http_detail = api_module.backend_public_failure(
+            error,
+            "llamacpp::gemma4-12b-heretic-q8_0",
+        )
+
+        self.assertEqual(stage, "GPU not available")
+        self.assertIn("needs at least 8192 MiB", public_error)
+        self.assertEqual(http_detail, public_error)
+
+    def test_nested_remote_transport_failure_is_actionable_instead_of_generic(self):
+        cause = api_module.RemoteGatewayProviderError(
+            "The remote Vision connection ended before a response was returned. It retried once; please retry the image."
+        )
+        error = DiscordVisionBackendError("The selected Heretic vision pipeline is unavailable.")
+        error.__cause__ = cause
+
+        stage, public_error, http_detail = api_module.backend_public_failure(
+            error,
+            "vast::gemma4-26b-a4b-heretic-q3_k_l",
+        )
+
+        self.assertEqual(stage, "Remote Vision failed")
+        self.assertIn("connection ended before a response", public_error)
+        self.assertNotIn("selected Heretic vision pipeline", public_error)
+        self.assertEqual(http_detail, public_error)
 
     def test_rejected_and_backend_failures_store_safe_actionable_public_outcomes(self):
         class FailingService(StubDiscordService):

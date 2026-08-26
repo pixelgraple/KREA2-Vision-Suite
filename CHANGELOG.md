@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.24 - 2026-08-26
+
+- Fixes false local Gemma 4 12B capacity failures caused by a fixed GPU-layer count competing with the measured full-GPU admission estimate.
+- Uses llama.cpp's native adaptive layer fitting for both local Gemma 4 12B variants, with a 4,096 MiB fit target and the existing independent 4,096 MiB shared-machine safety reserve.
+- Keeps fixed-profile Qwen and larger Gemma models on their existing full-GPU admission contract.
+- Shows the adaptive minimum, full-GPU requirement, fit target, current free VRAM, measured peak and safety reserve separately in the model-status API.
+- Preserves the actionable nested llama.cpp, local-capacity and remote-gateway failure reason instead of replacing it with the generic `selected Heretic vision pipeline is unavailable` message.
+- Adds regression coverage for adaptive launch arguments, adaptive admission and nested public error reporting.
+- Real production-path smoke verification completed with local Gemma 4 12B Heretic Q8_0: three prompt variants, 564-word primary result, 13,364 MiB measured peak allocation, and verified post-job unload.
+- Removes the 30-second deadline from local plugin submissions and local shared-FIFO acquisition. Local Vision now remains queued until its turn or explicit cancellation, while Online API capacity remains separately bounded.
+- Verifies that queue-head Vision ownership covers Forge/KreaForge handoff, the complete interrogation, model unload, and FIFO release in that order.
+- Live contention smoke verified a local Gemma 4 12B request remained queued for 33.7 seconds, then completed with HTTP 200 and three prompt variants while Krea Forge waited behind Vision; Vision unloaded before Krea Forge became FIFO head.
+- Keeps every post-acquisition progress update in the `running` state instead of incorrectly flipping an active interrogation back to `queued`.
+- Accepts direct, grounded reclining support such as reclining on a couch, sofa cushions or an upholstered seat while retaining rejection of contradictory unsupported-pose claims.
+
 ## 0.13.18 - 2026-08-26
 
 - Separates being near a wall, pillar or column from actually touching, resting on, bracing against or transferring weight into it.

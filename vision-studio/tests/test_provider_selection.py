@@ -51,6 +51,23 @@ def llama_spec(root: Path | None = None) -> ModelSpec:
     )
 
 
+def gemma12_spec(root: Path | None = None) -> ModelSpec:
+    root = root or Path("C:/private-model-root")
+    return ModelSpec(
+        "llamacpp::gemma4-12b-heretic-q8_0",
+        "Heretic — Gemma 4 12B Q8_0",
+        "llama_cpp",
+        "gemma4-12b-heretic-q8-0",
+        True,
+        8192,
+        2048,
+        20992,
+        server_exe=root / "llama-server.exe",
+        model_path=root / "body.gguf",
+        mmproj_path=root / "mmproj.gguf",
+    )
+
+
 class ProviderFactoryTests(unittest.TestCase):
     def test_ollama_uses_provider_tag_and_model_caps(self):
         configured = replace(settings, context_length=65536, max_output_tokens=12000)
@@ -84,6 +101,17 @@ class ProviderFactoryTests(unittest.TestCase):
         self.assertEqual(kwargs["max_tokens"], 2048)
         self.assertEqual(kwargs["model_path"], spec.model_path)
         self.assertEqual(kwargs["mmproj_path"], spec.mmproj_path)
+
+    def test_gemma12_uses_adaptive_fit_with_the_configured_safety_reserve(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            spec = gemma12_spec(Path(temporary))
+            configured = replace(settings, llama_cpp_vram_headroom_mb=4096)
+            with patch.object(factory_module, "LlamaCppProvider", return_value="provider") as create:
+                self.assertEqual(provider_for(configured, spec), "provider")
+        kwargs = create.call_args.kwargs
+        self.assertEqual(kwargs["gpu_layers"], "auto")
+        self.assertEqual(kwargs["fit_target_mb"], 4096)
+        self.assertFalse(kwargs["mmproj_offload"])
 
 
 class FakeQueue:
@@ -294,6 +322,42 @@ class PipelineSelectionTests(unittest.TestCase):
         self.assertEqual(current.free_mb, 29607)
         self.assertEqual(capacity["free_vram_mb_after_handoff"], 29607)
         sleep.assert_called_once_with(0.5)
+
+    def test_gemma12_adaptive_capacity_keeps_reserve_without_requiring_full_gpu_profile(self):
+        runner = self.runner()
+        runner.telemetry = FakeStore(measured=20543)
+        spec = gemma12_spec()
+        active = runner._active_settings(spec)
+        with patch.object(
+            pipeline_module,
+            "query_gpu_memory",
+            return_value=GpuMemory(32607, 8615, 23992, 1.0),
+        ):
+            capacity, current = runner._capacity_for(active, spec)
+        self.assertEqual(current.free_mb, 23992)
+        self.assertTrue(capacity["adaptive_gpu_fit"])
+        self.assertEqual(capacity["runtime_fit_target_mb"], 4096)
+        self.assertEqual(capacity["minimum_gpu_allocation_mb"], 4096)
+        self.assertEqual(capacity["required_vram_mb"], 8192)
+        self.assertEqual(capacity["full_gpu_required_vram_mb"], 25088)
+
+    def test_gemma12_adaptive_capacity_still_fails_below_reserve_and_minimum_allocation(self):
+        runner = self.runner()
+        runner.telemetry = FakeStore(measured=20543)
+        spec = gemma12_spec()
+        active = runner._active_settings(spec)
+        with (
+            patch.object(
+                pipeline_module,
+                "query_gpu_memory",
+                return_value=GpuMemory(32607, 24507, 8100, 1.0),
+            ),
+            patch.object(pipeline_module.time, "monotonic", side_effect=[0.0, 31.0]),
+            patch.object(pipeline_module.time, "sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(GpuCapacityError, "at least 8192 MiB"):
+                runner._capacity_for(active, spec)
+        sleep.assert_not_called()
 
     def test_post_handoff_capacity_accepts_only_bounded_nvml_jitter(self):
         runner = self.runner()

@@ -54,7 +54,7 @@ The supported product is intentionally focused on Discord image interrogation. T
 
 ### Complete Windows package
 
-Download [Krea2VisionSuite-v0.13.23-win64.zip](releases/Krea2VisionSuite-v0.13.23-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.24-win64.zip](releases/Krea2VisionSuite-v0.13.24-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -191,7 +191,7 @@ See [Privacy and diagnostics](docs/PRIVACY_AND_DIAGNOSTICS.md) for the complete 
 
 The installer displays model parameter size, quantization, expected download size, conservative VRAM allocation, measured peak where available, a separate 4,096 MiB safety reserve, and admission requirement.
 
-The recommended default is Qwen3-VL 8B Heretic for users near a 12 GiB model-allocation target. Smaller 2B and 4B choices reduce memory pressure; larger Gemma/Qwen/GLM variants require substantially more VRAM or an optional 24 GB remote worker.
+The recommended default is Qwen3-VL 8B Heretic for users near a 12 GiB model-allocation target. Smaller 2B and 4B choices reduce memory pressure. Local Gemma 4 12B models use llama.cpp's adaptive CPU/GPU layer fitting: after the shared Forge handoff, the runtime chooses a safe split while retaining the separate 4,096 MiB reserve. The model card reports both its lower adaptive admission requirement and its full-GPU requirement. Larger Gemma/Qwen/GLM variants still require substantially more VRAM or an optional 24 GB remote worker.
 
 Model bodies and multimodal projectors are downloaded from their original model repositories and hash-verified. They are not relicensed under MIT and are not embedded as source files in this repository. Review each model card and license before downloading.
 
@@ -201,7 +201,7 @@ See [models and VRAM](docs/MODELS.md).
 
 Local Discord jobs use the same FIFO handoff as configured Forge/KREA work. Discord processes exactly one image per queue turn and releases the ticket immediately. It may keep a selected model warm for up to 15 seconds only while the shared GPU is idle. Any non-Discord ticket cancels the warm window and evicts the model before the waiting work runs.
 
-A Discord image that cannot begin GPU submission or acquire the shared GPU within 30 seconds becomes a visible terminal error reading **GPU not available**. It is removed from the active queue, does not block later submissions, and emits a privacy-minimal operational report. Other failures show their sanitized actionable error instead of remaining indefinitely queued.
+Local Discord images remain in the exact Forge/KREA FIFO until their turn or until the user cancels them. Waiting behind real local work is not reported as a GPU failure. When a local Vision ticket reaches the head, Vision holds the lock, pauses/unloads both configured Forge endpoints and resident Ollama models, completes all evidence passes, audits and three prompts, unloads, then releases the queue. Online API capacity remains separately bounded; a remote worker-capacity timeout becomes **GPU not available** and emits a privacy-minimal operational report.
 
 The optional Vast worker may scale from zero to five workers. `min_load=0` avoids paying for permanently idle GPU compute. The deployed eight-second idle timeout lets a worker finish its current request before active compute scales down; one cold worker may retain model storage for faster wake-up, so storage charges can remain while GPU compute is stopped.
 

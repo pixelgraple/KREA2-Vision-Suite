@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.13.23
+# Krea2 Discord Vision v0.13.24
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
@@ -28,7 +28,7 @@ An optional **Identity or role notes** field lets the uploader provide known lab
 
 Every press of Start creates one normal authenticated Vision job. Uploaded images join the same plugin submission chain and exact shared Forge/Krea FIFO as message magnifiers, so users may queue several images while each image still runs one at a time and yields correctly. The form clears immediately after enqueueing so another image can be selected. The completed job opens in the existing prompt-history result viewer with its retained local thumbnail and all three generated prompts.
 
-If an image cannot begin submission or acquire GPU capacity within 30 seconds, its card becomes a terminal **GPU not available** error and no longer blocks later images. Other failures show the sanitized error returned by the local or remote provider.
+Local images remain queued until their shared Forge/KreaForge FIFO turn or until the user cancels them; local contention does not expire after 30 seconds. Online API worker-capacity waits remain bounded and may end as **GPU not available**. Other failures show the sanitized error returned by the local or remote provider.
 
 Upload bytes remain in request memory. Prompt History stores sanitized job metadata and generated prompt text in the private local Vision SQLite database until the user selects **Clear history**. For reliable previews across reloads, the plugin stores one small local thumbnail per image under `<configured save folder>\.krea2-history-thumbnails`. It does not copy the full-resolution source image or create prompt sidecars.
 

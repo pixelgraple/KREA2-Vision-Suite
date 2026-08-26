@@ -9,7 +9,12 @@ from ..config import ROOT, settings
 from ..schemas.prompt import PromptControls, StudioState
 from ..services.history import PresetStore
 from ..services.image_processor import ImageProcessor
-from ..services.pipeline import StudioPipeline, VRAM_ADMISSION_JITTER_MB
+from ..services.pipeline import (
+    GpuCapacityError,
+    StudioPipeline,
+    VRAM_ADMISSION_JITTER_MB,
+    gpu_capacity_requirements,
+)
 from ..services.discord_vision import (
     DiscordDescribeResponse,
     DiscordVisionBackendError,
@@ -29,6 +34,8 @@ from ..services.feedback_guidance import parse_feedback_context
 from ..services.discord_jobs import DiscordVisionJobStore
 from ..services.discord_sessions import DiscordVisionSessionStore
 from ..models.remote_access import RemoteAccess
+from ..models.llama_cpp_provider import LlamaCppProviderError
+from ..models.remote_gateway_provider import RemoteGatewayProviderError
 from ..services.model_catalog import available_model_specs, public_model_statuses
 from ..services.model_downloads import ModelDownloadBusy, ModelDownloadError, ModelDownloadManager
 from ..services.release_updates import ReleaseUpdateManager, SuiteUpdateBusy, SuiteUpdateError
@@ -82,22 +89,30 @@ def readable_error(exc: Exception):
 
 def backend_public_failure(exc: Exception, requested_model: str) -> tuple[str,str,str]:
     messages=[]
+    chain=[]
     current: BaseException | None=exc
     seen=set()
     while current is not None and id(current) not in seen and len(messages)<5:
         seen.add(id(current))
+        chain.append(current)
         messages.append(str(current))
         current=current.__cause__ or current.__context__
     detail=" ".join(messages)
     lowered=detail.casefold()
+    capacity_error=next((item for item in chain if isinstance(item,GpuCapacityError)),None)
+    if capacity_error is not None:
+        public=f"GPU not available: {sanitize_operational_error(str(capacity_error))}"
+        return "GPU not available",public,public
     if "gpu not available" in lowered:
         return "GPU not available","GPU not available","GPU not available"
     if requested_model.startswith("vast::"):
         if ("timed out" in lowered or "timeout" in lowered) and ("worker" in lowered or "ready" in lowered or "queue" in lowered):
             return "GPU not available","GPU not available","GPU not available"
-        public=f"Remote Vision error: {sanitize_operational_error(str(exc))}"
+        actionable=next((item for item in chain if isinstance(item,RemoteGatewayProviderError)),exc)
+        public=f"Remote Vision error: {sanitize_operational_error(str(actionable))}"
         return "Remote Vision failed",public,public
-    public=f"Local Vision error: {sanitize_operational_error(str(exc))}"
+    actionable=next((item for item in chain if isinstance(item,LlamaCppProviderError)),exc)
+    public=f"Local Vision error: {sanitize_operational_error(str(actionable))}"
     return (
         "Local Vision failed",
         public,
@@ -671,6 +686,7 @@ def public_discord_models(request:Request,response:Response):
     telemetry=MeasuredPeakStore(telemetry_path)
     try: memory=query_gpu_memory()
     except GpuTelemetryError: memory=None
+    specs={spec.public_id:spec for spec in available_model_specs(settings)}
     available=[]
     for public_item in public_model_statuses(settings):
         if public_item["public_id"] not in HERETIC_MODEL_IDS: continue
@@ -681,12 +697,22 @@ def public_discord_models(request:Request,response:Response):
         remote=not bool(item.get("local_gpu"))
         reserve=0 if remote else max(0,settings.llama_cpp_vram_headroom_mb)
         estimate=max(0,int(item.get("estimated_vram_mb") or 0))
-        required=0 if remote else max(estimate,peak)+reserve
+        spec=specs.get(item["public_id"])
+        requirements=(
+            gpu_capacity_requirements(pipeline._active_settings(spec),spec,peak)
+            if not remote and spec is not None
+            else {}
+        )
+        required=0 if remote else int(requirements.get("required_vram_mb") or max(estimate,peak)+reserve)
         item.update({
             "last_measured_peak_mb":peak,
             "safety_reserve_mb":reserve,
             "admission_tolerance_mb":0 if remote else VRAM_ADMISSION_JITTER_MB,
             "admission_required_mb":required,
+            "full_gpu_required_mb":0 if remote else int(requirements.get("full_gpu_required_vram_mb") or required),
+            "adaptive_gpu_fit":False if remote else bool(requirements.get("adaptive_gpu_fit")),
+            "runtime_fit_target_mb":None if remote else requirements.get("runtime_fit_target_mb"),
+            "minimum_gpu_allocation_mb":0 if remote else int(requirements.get("minimum_gpu_allocation_mb") or max(estimate,peak)),
             "available_vram_mb":None if remote else memory.free_mb if memory else None,
             "total_vram_mb":None if remote else memory.total_mb if memory else None,
             "allocation_target_mb":0 if remote else max(0,settings.llama_cpp_model_allocation_target_mb),

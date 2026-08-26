@@ -2,7 +2,7 @@
 
 ## Normal installation: one guided setup
 
-1. Download the complete [v0.13.23 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.23-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
+1. Download the complete [v0.13.24 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.24-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
 2. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
 3. Double-click **`START HERE - INSTALL.bat`** in the extracted folder.
 4. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.
@@ -78,7 +78,7 @@ Do not paste a shared provider key into copies sent to friends. A public multi-u
 
 The Vision backend uses `%TEMP%\forge_shared_generation_queue`. Discord takes exactly one image per turn, releases the FIFO immediately, and rejoins at the tail when more Discord work is waiting. Its selected model may remain warm for up to 15 seconds only while the shared GPU is idle. A Forge/KREA/other ticket immediately cancels that warm window and evicts the Vision model before the competing ticket runs.
 
-If a Discord image cannot begin submission or acquire GPU capacity within 30 seconds, it ends with **GPU not available**, leaves the active queue, and allows later jobs to continue. Other terminal failures show their sanitized provider error. Required privacy-minimal error reporting contains only anonymous technical fields; rich image diagnostics remain a separate opt-in setting.
+Local Discord images stay in the shared FIFO until their turn or until the user cancels them; normal Forge/KreaForge contention has no 30-second failure deadline. Once local Vision owns the FIFO head, it keeps Forge/KreaForge paused for the full interrogation, unloads its model, and releases the slot. Online API worker-capacity timeouts remain bounded and appear as **GPU not available**. Other terminal failures show their sanitized provider error. Required privacy-minimal error reporting contains only anonymous technical fields; rich image diagnostics remain a separate opt-in setting.
 
 At the head of a llama.cpp Vision turn, queue-owned handoff asks reachable queue-aware Forge instances to unload and unloads resident Ollama runners before the authoritative VRAM check. Model files and Ollama's installed model list are never deleted.
 

@@ -1068,7 +1068,7 @@ function testLocalVisionQueueVisibility() {
 
 testLocalVisionQueueVisibility();
 
-async function testLocalSubmissionTimesOutAfterThirtySecondsWithoutGpu() {
+async function testRemoteSubmissionTimesOutAfterThirtySecondsWithoutGpu() {
     const collector = new Plugin();
     collector.running = true;
     collector.generation = 12;
@@ -1122,7 +1122,25 @@ async function testLocalSubmissionTimesOutAfterThirtySecondsWithoutGpu() {
     }
 }
 
-await testLocalSubmissionTimesOutAfterThirtySecondsWithoutGpu();
+await testRemoteSubmissionTimesOutAfterThirtySecondsWithoutGpu();
+
+function testLocalSubmissionWaitsWithoutDeadline() {
+    const collector = new Plugin();
+    collector.renderHistoryRail = () => {};
+    const id = collector.addLocalVisionSubmission({config: {visionModel: "llamacpp::gemma4-12b-heretic-q8_0"}});
+    let timerStored = false;
+    const storeTimer = collector.localVisionSubmissionTimers.set.bind(collector.localVisionSubmissionTimers);
+    collector.localVisionSubmissionTimers.set = (...args) => {
+        timerStored = true;
+        return storeTimer(...args);
+    };
+    collector.armLocalVisionSubmissionTimeout(id, null, "llamacpp::gemma4-12b-heretic-q8_0");
+    assert.equal(timerStored, false);
+    assert.equal(collector.localVisionSubmissionTimers.has(id), false);
+    assert.equal(collector.localVisionSubmissions.get(id).status, "queued");
+}
+
+testLocalSubmissionWaitsWithoutDeadline();
 
 async function testOperationalErrorFallsBackDirectlyWhenBrokerCannotDeliver() {
     const collector = new Plugin();

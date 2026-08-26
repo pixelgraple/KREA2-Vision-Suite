@@ -272,6 +272,39 @@ class LlamaCppProviderTests(unittest.TestCase):
             self.assertEqual(resized.size, (512, 768))
             provider.unload()
 
+    def test_adaptive_fit_leaves_gpu_layers_unset_and_preserves_four_gib_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            server, model, mmproj = self.files(Path(temporary))
+            launch = {}
+
+            def popen(command, **_kwargs):
+                launch["command"] = command
+                return FakeProcess()
+
+            provider = LlamaCppProvider(
+                server,
+                model,
+                mmproj,
+                "gemma4-12b-heretic-q8-0",
+                context=8192,
+                max_tokens=2048,
+                api_key="f" * 32,
+                mmproj_offload=False,
+                image_min_tokens=256,
+                image_max_tokens=256,
+                gpu_layers="auto",
+                fit_target_mb=4096,
+                http=FakeHttp(),
+                popen_factory=popen,
+                sleeper=lambda _: None,
+            )
+            command = launch["command"]
+            self.assertNotIn("--n-gpu-layers", command)
+            self.assertEqual(command[command.index("--fit") + 1], "on")
+            self.assertEqual(command[command.index("--fit-target") + 1], "4096")
+            self.assertEqual(command[command.index("--fit-ctx") + 1], "8192")
+            provider.unload()
+
     def test_startup_timeout_tears_down_started_child(self):
         with tempfile.TemporaryDirectory() as temporary:
             server, model, mmproj = self.files(Path(temporary))

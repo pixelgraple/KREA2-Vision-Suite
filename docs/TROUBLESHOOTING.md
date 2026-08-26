@@ -14,7 +14,7 @@ Run **Start KREA2 Vision Suite** or **Repair KREA2 Vision Suite**. Confirm `http
 
 ## Job waits for the GPU
 
-The local provider shares a FIFO with configured Forge/KREA work. Check the queue owner, free VRAM, selected model requirement, and any Ollama/Forge process occupying the GPU. Do not start an independent second Vision service to bypass the queue. A request that cannot acquire capacity within 30 seconds should now end visibly as **GPU not available** instead of remaining queued.
+The local provider shares a FIFO with configured Forge/KREA work. Local Vision remains queued until its turn or until you cancel it; a wait longer than 30 seconds is normal when Forge or KreaForge is ahead. At queue head, Vision pauses/unloads both configured Forge endpoints and resident Ollama models, runs the complete job under the lock, unloads, and yields. Check the displayed queue owner if progress stops changing, and do not start an independent second Vision service to bypass the queue. **GPU not available** is reserved for a real post-handoff capacity failure or bounded Online API worker-capacity failure.
 
 ## Model does not appear
 

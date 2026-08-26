@@ -730,8 +730,9 @@ HAND_GESTURE_RE = re.compile(
     re.IGNORECASE,
 )
 TORSO_SURFACE_SUPPORT_RE = re.compile(
-    r"\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,110}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?|lies? against|lying against)\b[^.!?]{0,70}\b(?:bed|mattress|floor|ground|surface|cushion|support|wall|furniture)\b|"
-    r"\b(?:bed|mattress|floor|ground|surface|cushion|support|wall|furniture)\b[^.!?]{0,90}\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,70}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?)\b",
+    r"\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,110}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?|lies? against|lying against)\b[^.!?]{0,70}\b(?:bed|mattress|floor|ground|surface|cushions?|pillows?|sofa|couch|seat|upholstery|support|wall|furniture)\b|"
+    r"\b(?:bed|mattress|floor|ground|surface|cushions?|pillows?|sofa|couch|seat|upholstery|support|wall|furniture)\b[^.!?]{0,90}\b(?:torso|chest|abdomen|stomach|upper body|back|side|shoulder)\b[^.!?]{0,70}\b(?:supported|rest(?:s|ing)?|contact(?:s|ing)?|press(?:ed|ing)?)\b|"
+    r"\b(?:reclin(?:e|es|ed|ing)|lies|lying)\b[^.!?]{0,30}\b(?:on|against|into|across)\b[^.!?]{0,45}\b(?:bed|mattress|floor|ground|surface|cushions?|pillows?|sofa|couch|seat|upholstery|wall|furniture)\b",
     re.IGNORECASE,
 )
 EXTERNAL_SUPPORT_CONTACT_RE = re.compile(
@@ -1750,10 +1751,14 @@ class DiscordVisionService:
             if is_cancelled is not None and is_cancelled():
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.")
 
+        queue_owned = False
+
         def pipeline_progress(message: str) -> None:
+            nonlocal queue_owned
             ahead = re.search(r"\b(\d+)\s+jobs?\s+ahead\b", str(message), re.IGNORECASE)
-            acquired = "acquired" in str(message).casefold()
-            report("running" if acquired else "queued", str(message), int(ahead.group(1)) if ahead else 0)
+            if "acquired" in str(message).casefold():
+                queue_owned = True
+            report("running" if queue_owned else "queued", str(message), int(ahead.group(1)) if ahead else 0)
 
         remote_provider = None
         try:
@@ -1775,7 +1780,12 @@ class DiscordVisionService:
                 provider_supplier=None if remote else lambda: self.warm.checkout(model_id),
                 retain_provider=None if remote else lambda provider, lease: self.warm.retain(provider, model_id, lease),
                 cancel_check=check_cancelled,
-                queue_timeout_seconds=None if remote else self.settings.gpu_availability_timeout_seconds,
+                # Local Discord work is a real member of the exact Forge/KreaForge
+                # FIFO.  Contention is not a GPU failure: keep the ticket alive
+                # until it reaches the head or the user explicitly cancels it.
+                # Remote providers have their own bounded request/worker timeout
+                # and never join this local file-lock queue.
+                queue_timeout_seconds=None,
                 remote_access=remote_access,
             ) as (provider,_,_,_):
                 if remote:
@@ -2302,27 +2312,23 @@ class DiscordVisionService:
             if is_cancelled is not None and is_cancelled():
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.")
 
+        queue_owned = False
+
         def queue_progress(message: str) -> None:
+            nonlocal queue_owned
             ahead = re.search(r"\b(\d+)\s+jobs?\s+ahead\b", str(message), re.IGNORECASE)
-            acquired = "acquired" in str(message).casefold()
-            report("running" if acquired else "queued", message, int(ahead.group(1)) if ahead else 0)
+            if "acquired" in str(message).casefold():
+                queue_owned = True
+            report("running" if queue_owned else "queued", message, int(ahead.group(1)) if ahead else 0)
 
         report("queued", "Waiting for the shared GPU queue", 0)
         loaded_models: list[str] = []
         slot_options = {"status": queue_progress}
         if is_cancelled is not None:
             slot_options["cancel_check"] = check_cancelled
-        try:
-            slot_parameters = inspect.signature(self.queue.slot).parameters.values()
-            accepts_timeout = any(
-                parameter.name == "timeout_seconds"
-                or parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in slot_parameters
-            )
-        except (TypeError, ValueError):
-            accepts_timeout = False
-        if accepts_timeout:
-            slot_options["timeout_seconds"] = self.settings.gpu_availability_timeout_seconds
+        # Legacy local Vision uses the same persistent FIFO policy as every
+        # llama.cpp Heretic model.  Never turn ordinary Forge contention into
+        # a false "GPU not available" error after an arbitrary deadline.
         with self.queue.slot(**slot_options) as lease:
             check_cancelled()
             report("running", "Releasing Forge VRAM for local Vision", 0)

@@ -66,7 +66,7 @@ The optional worker container starts a pinned model and projector on a 24 GB GPU
 
 Discord performs one image per acquired queue ticket. If more Discord work remains, it returns at the tail. A 15-second warm model window is opportunistic only. A waiting non-Discord ticket cancels the window and forces eviction before that ticket proceeds.
 
-Plugin-local submission waits, local shared-FIFO acquisition, and remote worker capacity each have a 30-second admission deadline. Capacity timeout becomes the exact terminal state `GPU not available`; the ticket is removed so later work can proceed. This deadline covers waiting for compute, not the inference time of a job that has already acquired a worker/GPU.
+Local plugin submissions and local shared-FIFO tickets have no arbitrary admission deadline. They remain visible and cancellable while waiting behind Discord, Forge, or KreaForge work. At FIFO head, Vision owns the shared lock for the full interrogation, performs the queue-authenticated Forge/Ollama handoff, unloads its model before release, and then yields. Remote Serverless capacity has its own bounded provider deadline; only that remote-capacity timeout becomes the terminal state `GPU not available`.
 
 ## Release maintenance
 

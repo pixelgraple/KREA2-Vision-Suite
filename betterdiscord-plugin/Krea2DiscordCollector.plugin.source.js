@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.23
+ * @version 0.13.24
  * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
@@ -22,7 +22,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.23";
+const PLUGIN_VERSION = "0.13.24";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -4593,6 +4593,11 @@ class Krea2DiscordCollector {
 
     armLocalVisionSubmissionTimeout(id, button, model) {
         this.clearLocalVisionSubmissionTimeout(id);
+        // Local requests may wait behind any number of earlier Discord,
+        // Forge, or KreaForge jobs.  Keep their cards and bytes in the normal
+        // cancellable submission chain instead of declaring the GPU broken.
+        // Online API capacity remains bounded independently.
+        if (String(model || "").trim() !== ONLINE_VISION_MODEL_ID) return;
         const timer = setTimeout(() => {
             this.localVisionSubmissionTimers.delete(id);
             const current = this.localVisionSubmissions.get(id);

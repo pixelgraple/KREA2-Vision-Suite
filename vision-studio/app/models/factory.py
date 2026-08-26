@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ROOT, Settings
@@ -8,6 +9,35 @@ from .openai_compatible_provider import OpenAICompatibleProvider
 from .remote_access import RemoteAccess
 from .remote_gateway_provider import RemoteGatewayProvider
 from .vast_serverless_provider import VastServerlessProvider
+
+
+@dataclass(frozen=True)
+class LlamaCppRuntimeProfile:
+    gpu_layers: int | str
+    adaptive_gpu_fit: bool
+    fit_target_mb: int | None
+    minimum_gpu_allocation_mb: int
+
+
+def llama_cpp_runtime_profile(settings: Settings, spec: ModelSpec) -> LlamaCppRuntimeProfile:
+    """Return the single runtime/admission contract for a local GGUF model."""
+
+    gemma4_12b = spec.provider_model.startswith("gemma4-12b-")
+    if gemma4_12b:
+        return LlamaCppRuntimeProfile(
+            # Leaving this argument unset lets llama.cpp's supported --fit
+            # path choose the safe number of CUDA-resident layers at launch.
+            gpu_layers="auto",
+            adaptive_gpu_fit=True,
+            fit_target_mb=max(1024, int(settings.llama_cpp_vram_headroom_mb)),
+            minimum_gpu_allocation_mb=4096,
+        )
+    return LlamaCppRuntimeProfile(
+        gpu_layers="all",
+        adaptive_gpu_fit=False,
+        fit_target_mb=None,
+        minimum_gpu_allocation_mb=max(0, int(spec.estimated_vram_mb)),
+    )
 
 
 def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_callback=None, remote_access: RemoteAccess | None = None):
@@ -39,7 +69,7 @@ def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_ca
         if not telemetry_path.is_absolute():
             telemetry_path = ROOT / telemetry_path
         gemma4_vision = selected.provider_model.startswith("gemma4-")
-        gemma4_12b = selected.provider_model.startswith("gemma4-12b-")
+        runtime_profile = llama_cpp_runtime_profile(settings, selected)
         return LlamaCppProvider(
             server_exe=selected.server_exe,
             model_path=selected.model_path,
@@ -59,11 +89,11 @@ def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_ca
             image_min_tokens=256 if gemma4_vision else None,
             image_max_tokens=256 if gemma4_vision else 4096,
             image_max_side=768 if gemma4_vision else None,
-            # Eight CPU-resident transformer layers keep Gemma 4 12B below
-            # the measured all-GPU footprint while preserving the 4 GiB
-            # shared-machine safety reserve. Other model families stay fully
-            # GPU-offloaded.
-            gpu_layers=40 if gemma4_12b else "all",
+            # Gemma 4 12B is allowed to adapt the CUDA/CPU layer split to the
+            # measured post-handoff capacity. Other model families retain
+            # their exact full-GPU profile.
+            gpu_layers=runtime_profile.gpu_layers,
+            fit_target_mb=runtime_profile.fit_target_mb,
         )
     if selected.backend == "vast_serverless":
         if settings.remote_gateway_url:
