@@ -983,6 +983,7 @@ const VISION_MODEL_OPTIONS = Object.freeze([
 ]);
 const ONLINE_VISION_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l";
 const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB remote GPU)";
+const REMOTE_GATEWAY_URL = "https://seedframe.xyz/api/krea2-vision";
 const VISION_EXECUTION_OPTIONS = Object.freeze([
     ["Local GPU — use an installed model on this computer", "local"],
     ["Online API — Gemma 4 26B-A4B on the private remote worker", "online"]
@@ -995,6 +996,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     visionToken: "",
     visionExecutionMode: "local",
     visionModel: "llamacpp::heretic-8b-q8_0",
+    remoteLicense: null,
     allowedGuildIds: "",
     saveFolder: DEFAULT_SAVE_FOLDER,
     shareDatasetContributions: false,
@@ -6768,8 +6770,39 @@ class Krea2DiscordCollector {
         return JSON.parse(await readBoundedResponseText(response, HISTORY_MAX_RESPONSE_BYTES));
     }
 
-    async issueVisionSession(visionConfig, idempotencyKey, model, signal) {
+    async ensureRemoteLicense(signal) {
+        this.userStore ||= this.api.Webpack.getStore("UserStore") || null;
+        const currentUser = this.userStore?.getCurrentUser?.();
+        const discordUserId = String(currentUser?.id || "").trim();
+        const discordUsername = String(currentUser?.username || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 80);
+        if (!/^\d{17,22}$/.test(discordUserId) || !discordUsername) throw new Error("A signed-in Discord account is required for the Online API.");
+        const saved = this.settings.remoteLicense;
+        if (saved && saved.discordUserId === discordUserId && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
+        let installationId = String(this.api.Data.load("remoteVisionInstallationId") || "");
+        if (!/^[A-Za-z0-9_-]{24,128}$/.test(installationId)) {
+            installationId = randomBytes(32).toString("base64url");
+            this.api.Data.save("remoteVisionInstallationId", installationId);
+        }
+        let response;
+        try {
+            response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/licenses/claim`, {method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({discord_user_id:discordUserId,discord_username:discordUsername,installation_id:installationId}),redirect:"manual",maxRedirects:0,timeout:15000,signal});
+        }
+        catch (error) { throw new Error("The Online API license service is unavailable. Retry shortly."); }
+        const responseText = await readBoundedResponseText(response, 64 * 1024);
+        if (!response.ok) throw new Error(`Online API license activation failed with HTTP ${response.status}${parseStudioErrorDetail(responseText) ? `: ${parseStudioErrorDetail(responseText)}` : "."}`);
+        let issued;
+        try { issued = JSON.parse(responseText); }
+        catch { throw new Error("The Online API license service returned invalid JSON."); }
+        const license = Object.freeze({licenseId:String(issued?.license_id || ""),licenseToken:String(issued?.license_token || ""),discordUserId,discordUsername});
+        if (!/^lic_[A-Za-z0-9_-]{12,64}$/.test(license.licenseId) || !/^[\x21-\x7e]{43,160}$/.test(license.licenseToken)) throw new Error("The Online API license service returned invalid credentials.");
+        this.settings.remoteLicense = license;
+        this.saveSettings();
+        return license;
+    }
+
+    async issueVisionSession(visionConfig, idempotencyKey, model, signal, sourceUrl = "") {
         const expectedUrl = `${visionConfig.origin}/api/discord-session`;
+        const remoteLicense = model === ONLINE_VISION_MODEL_ID ? await this.ensureRemoteLicense(signal) : null;
         const response = await this.api.Net.fetch(expectedUrl, {
             method: "POST",
             redirect: "manual",
@@ -6780,7 +6813,15 @@ class Krea2DiscordCollector {
                 "X-Krea2-Collector-Version": PLUGIN_VERSION,
                 "X-Krea2-Vision-Token": visionConfig.token
             },
-            body: JSON.stringify({idempotency_key: idempotencyKey, model}),
+            body: JSON.stringify({
+                idempotency_key: idempotencyKey,
+                model,
+                remote_license_id: remoteLicense?.licenseId || "",
+                remote_license_token: remoteLicense?.licenseToken || "",
+                remote_discord_user_id: remoteLicense?.discordUserId || "",
+                remote_discord_username: remoteLicense?.discordUsername || "",
+                source_url: String(sourceUrl || "").slice(0, 2048)
+            }),
             signal,
             timeout: 15000
         });
@@ -7739,7 +7780,16 @@ class Krea2DiscordCollector {
                     visionConfig,
                     controller.signal,
                     elapsed => this.setButtonState(button, "vision-requesting", "AI", `KREA2 hybrid Vision is analyzing (${elapsed})`),
-                    {model: selectedModel, preset, datasetGuidance, feedbackContext, jobId: requestJobId}
+                    {
+                        model: selectedModel,
+                        preset,
+                        datasetGuidance,
+                        feedbackContext,
+                        jobId: requestJobId,
+                        // This is retained only for the optional server-side
+                        // completion record.  It is never sent for local models.
+                        sourceUrl
+                    }
                 );
             });
             this.setButtonState(
@@ -7833,7 +7883,7 @@ class Krea2DiscordCollector {
         const elapsedTimer = setInterval(updateElapsed, 5000);
 
         try {
-            const sessionToken = await this.issueVisionSession(visionConfig, requestCacheKey, selectedModel, signal);
+            const sessionToken = await this.issueVisionSession(visionConfig, requestCacheKey, selectedModel, signal, options.sourceUrl || "");
             const response = await this.api.Net.fetch(visionConfig.endpoint, {
                 method: "POST",
                 redirect: "manual",

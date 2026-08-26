@@ -4,7 +4,7 @@ KREA2 Vision Suite is a free, open-source Windows application that adds detailed
 
 The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Seedframe prompt contribution, KREA2 guidance, and rich failure attachments are separately disclosed and controlled. Privacy-minimal operational error reporting is required so launch and GPU-capacity failures can be repaired across installations.
 
-The **Online API** is an optional alternative for users who do not want to run a large Vision model on their own GPU. BetterDiscord still connects only to the authenticated loopback service on `127.0.0.1:7870`. For each image, the plugin exchanges its private local token for a short-lived, request-bound, one-use session. The local service then sends the image over HTTPS to the configured private Vast Serverless worker, which currently runs Gemma 4 26B-A4B Heretic on a 24 GB GPU. BetterDiscord never receives or stores the remote endpoint address, Vast account key, or worker credential. Selecting Online API disables the local model picker for that request; the completed job records the exact remote model that actually ran.
+The **Online API** is an optional alternative for users who do not want to run a large Vision model on their own GPU. BetterDiscord still connects only to the authenticated loopback service on `127.0.0.1:7870`. On first use it claims a free remote license bound to the selected Discord account and local installation. For each image, the plugin exchanges that license through a short-lived, request-bound, one-use local session. The local service then sends the image over HTTPS to the private KREA2 gateway, which checks whether the license is active before it forwards the request to the configured Vast Serverless worker. The gateway currently pins Gemma 4 26B-A4B Heretic on a 24 GB GPU. BetterDiscord never receives the Vast account key, worker credential, or audit-webhook secret. Selecting Online API disables local execution for that request; the completed job records the exact remote model that actually ran.
 
 Online inference means the selected image and bounded request metadata must leave the user's PC. The included worker is designed to process that content in memory, return the three generated prompts, and avoid intentionally writing images or prompts to worker disk. It can recruit up to five workers when demand increases and stop active GPU compute after the configured eight-second idle window. Dataset contribution and rich failure attachments are separate settings with their own disclosures; enabling Online API does not automatically enable either one. Privacy-minimal technical error reporting remains active in every mode and never contains an image, image hash, prompt, Discord identity, URL, filename, or local path.
 
@@ -176,7 +176,7 @@ There is no advertising telemetry, behavioral analytics, contact list collection
 | Prompt History | Local | No | Paginated local SQLite job/prompt history plus 640 px previews, retained until **Clear history**; no full-resolution source-image cache |
 | Eight-example KREA2 guidance | Off | Yes, read-only | Eight approved prompt texts and opaque sample metadata are fetched from Seedframe |
 | KREA2 prompt contribution | User choice | Yes | Three generated prompt texts plus bounded model/pipeline provenance; no image or Discord identity |
-| Vast Online API | Off/operator-configured | Yes | Image and request metadata are sent to the configured worker for inference; the worker is designed for memory-only processing |
+| Vast Online API | Off/operator-configured | Yes | Image and request metadata are sent to the licensed KREA2 gateway and configured worker for inference; the worker is designed for memory-only processing |
 | Operational error reports | Required | Yes | Anonymous installation digest, model/pipeline, stage, error code/message, runtime, and software versions; no image, image hash, prompt, Discord identity, URL, filename, or path |
 | Rich failure attachments | Off/separate consent | Yes | A failed image, partial prompt, Discord username, model/stage/status, error details, and bounded identifiers may be sent to Seedframe for debugging |
 
@@ -259,6 +259,7 @@ Every published release must keep source, generated plugin, ZIP, checksum, and `
 - The supported local broker binds only to literal loopback.
 - A random long-lived token is used only to obtain short-lived, request-bound, one-use image sessions.
 - BetterDiscord never receives the operator's Vast account API key.
+- Remote license and Discord audit-webhook credentials live only in the HTTPS gateway, never in the plugin or release ZIP. A revoked remote license is denied before a worker receives its next request; local-only use remains under the user's control.
 - Model/runtime downloads are pinned and hash-verified.
 - Update installation accepts only the pinned repository location, expected byte count, and SHA-256.
 - `.env`, tokens, model files, runtime receipts, logs, images, prompts, databases, caches, and deployment snapshots are excluded from source control.

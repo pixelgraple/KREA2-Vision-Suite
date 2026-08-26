@@ -28,6 +28,7 @@ from ..services.shared_queue import SharedGpuUnavailableError
 from ..services.feedback_guidance import parse_feedback_context
 from ..services.discord_jobs import DiscordVisionJobStore
 from ..services.discord_sessions import DiscordVisionSessionStore
+from ..models.remote_access import RemoteAccess
 from ..services.model_catalog import available_model_specs, public_model_statuses
 from ..services.model_downloads import ModelDownloadBusy, ModelDownloadError, ModelDownloadManager
 from ..services.release_updates import ReleaseUpdateManager, SuiteUpdateBusy, SuiteUpdateError
@@ -150,13 +151,15 @@ def require_discord_vision_session(
     if len(configured.encode("utf-8")) < 32:
         raise HTTPException(503,"Discord vision is not configured.")
     require_loopback(request,"Discord vision accepts literal loopback clients only.")
-    if not discord_sessions.consume(
+    session=discord_sessions.consume_record(
         supplied or "",
         idempotency_key or "",
         collector_version or "",
         model,
-    ):
+    )
+    if session is None:
         raise HTTPException(401,"Invalid or expired one-use Discord vision session.")
+    return session
 
 def track_job(method, *args, **kwargs):
     try: return method(*args,**kwargs)
@@ -303,6 +306,11 @@ def discord_jobs_clear_terminal(
 class DiscordSessionRequest(BaseModel):
     idempotency_key:str
     model:str
+    remote_license_id:str=""
+    remote_license_token:str=""
+    remote_discord_user_id:str=""
+    remote_discord_username:str=""
+    source_url:str=""
 
 class DiscordOperationalErrorRequest(BaseModel):
     event_id:str
@@ -352,10 +360,21 @@ def issue_discord_session(
     if not suite_updates.accepting_new_jobs():
         raise HTTPException(503,"A verified KREA2 Vision Suite update is waiting for Vision to become idle.")
     try:
+        remote_access=None
+        if payload.model.strip().startswith("vast::"):
+            remote_access=RemoteAccess(
+                license_id=payload.remote_license_id.strip(),
+                license_token=payload.remote_license_token.strip(),
+                discord_user_id=payload.remote_discord_user_id.strip(),
+                discord_username=" ".join(payload.remote_discord_username.split()),
+                request_id=payload.idempotency_key.strip().lower(),
+                source_url=payload.source_url.strip(),
+            )
         session_token,expires_in=discord_sessions.issue(
             payload.idempotency_key,
             collector_version or "",
             payload.model,
+            remote_access,
         )
     except ValueError as exc:
         raise HTTPException(422,str(exc)) from exc
@@ -385,7 +404,7 @@ async def discord_describe(
     requested_model=model.strip() or settings.model
     if not suite_updates.accepting_new_jobs():
         raise HTTPException(503,"A verified KREA2 Vision Suite update is being installed. Retry shortly.")
-    require_discord_vision_session(
+    vision_session=require_discord_vision_session(
         request,
         session_token,
         settings.discord_vision_token,
@@ -453,14 +472,22 @@ async def discord_describe(
         progress.is_cancelled=lambda: bool(
             active_job_id and discord_jobs.is_cancel_requested(active_job_id)
         )
+        describe_kwargs={
+            "dataset_guidance":requested_dataset_guidance,
+            "feedback_context":requested_feedback_context,
+        }
+        # Keep the local-only invocation contract unchanged.  Besides avoiding
+        # needless data flow, this lets existing local integrations stay
+        # isolated from the remote-license mechanism.
+        if vision_session.remote_access is not None:
+            describe_kwargs["remote_access"]=vision_session.remote_access
         result=await run_in_threadpool(
             discord_vision.describe,
             path,
             progress,
             requested_model,
             requested_guidance,
-            dataset_guidance=requested_dataset_guidance,
-            feedback_context=requested_feedback_context,
+            **describe_kwargs,
         )
         if contribution_enabled:
             try:

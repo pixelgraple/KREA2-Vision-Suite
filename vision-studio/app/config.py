@@ -33,6 +33,7 @@ class Settings:
     llama_cpp_telemetry_path: str = val("LLAMA_CPP_TELEMETRY_PATH", DEFAULTS["llama_cpp"]["telemetry_path"])
     llama_cpp_context_cap: int = int(val("LLAMA_CPP_CONTEXT_CAP", DEFAULTS["llama_cpp"]["context_cap"]))
     vast_serverless_enabled: bool = flag("VAST_SERVERLESS_ENABLED", DEFAULTS["vast_serverless"]["enabled"])
+    remote_gateway_url: str = os.getenv("KREA2_REMOTE_GATEWAY_URL", "").strip()
     vast_serverless_endpoint: str = val("VAST_SERVERLESS_ENDPOINT", DEFAULTS["vast_serverless"]["endpoint"])
     vast_serverless_api_key: str = os.getenv("VAST_SERVERLESS_API_KEY", "")
     vast_serverless_python_exe: str = val("VAST_SERVERLESS_PYTHON_EXE", DEFAULTS["vast_serverless"]["python_exe"])

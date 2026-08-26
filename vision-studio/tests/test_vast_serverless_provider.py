@@ -13,6 +13,8 @@ from PIL import Image
 from app.config import settings
 from app.models import factory as factory_module
 from app.models.factory import provider_for
+from app.models.remote_access import RemoteAccess
+from app.models.remote_gateway_provider import RemoteGatewayProvider
 from app.models.vast_serverless_provider import (
     VastServerlessProvider,
     VastServerlessProviderError,
@@ -110,6 +112,7 @@ class VastServerlessProviderTests(unittest.TestCase):
                 vast_serverless_api_key="s" * 32,
                 vast_serverless_python_exe=str(python_exe),
                 vast_serverless_model_id="vast::gemma4-26b-a4b-heretic-q3_k_l",
+                remote_gateway_url="https://seedframe.xyz/api/krea2-vision",
             )
             with patch.object(catalog, "ROOT", root):
                 specs = catalog.available_vast_serverless_specs(configured)
@@ -122,7 +125,7 @@ class VastServerlessProviderTests(unittest.TestCase):
         self.assertEqual(specs[0].estimated_vram_mb, 18432)
         self.assertEqual(disabled, [])
 
-    def test_factory_selects_isolated_remote_provider(self):
+    def test_factory_selects_licensed_remote_gateway_provider(self):
         spec = catalog.ModelSpec(
             "vast::gemma4-26b-a4b-heretic-q3_k_l",
             "Remote Serverless",
@@ -135,18 +138,23 @@ class VastServerlessProviderTests(unittest.TestCase):
         )
         configured = replace(
             settings,
-            vast_serverless_endpoint="krea2-gemma26",
-            vast_serverless_api_key="s" * 32,
-            vast_serverless_python_exe="C:/isolated/python.exe",
+            remote_gateway_url="https://seedframe.xyz/api/krea2-vision",
             vast_serverless_request_timeout_seconds=1200,
         )
-        with patch.object(factory_module, "VastServerlessProvider", return_value="remote") as create:
-            self.assertEqual(provider_for(configured, spec), "remote")
+        access=RemoteAccess(
+            license_id="lic_" + "x" * 18,
+            license_token="t" * 48,
+            discord_user_id="123456789012345678",
+            discord_username="test-user",
+            request_id="a" * 64,
+        )
+        with patch.object(factory_module, "RemoteGatewayProvider", return_value="remote") as create:
+            self.assertEqual(provider_for(configured, spec, remote_access=access), "remote")
         kwargs = create.call_args.kwargs
         self.assertEqual(kwargs["model"], spec.provider_model)
-        self.assertEqual(kwargs["endpoint"], "krea2-gemma26")
+        self.assertEqual(kwargs["base_url"], "https://seedframe.xyz/api/krea2-vision")
         self.assertEqual(kwargs["max_tokens"], 2048)
-        self.assertNotIn("api_key", str(kwargs["bridge_script"]))
+        self.assertEqual(kwargs["access"], access)
 
 
 if __name__ == "__main__":

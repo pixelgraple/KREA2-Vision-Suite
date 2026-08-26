@@ -1,0 +1,5 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+# Vast 1.5.5 requires the current requests release line.
+requests==2.33.0
+vastai==1.5.5

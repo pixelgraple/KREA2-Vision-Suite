@@ -1,0 +1,22 @@
+[Unit]
+Description=KREA2 licensed remote Vision gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/opt/krea2-vision-gateway
+EnvironmentFile=/data/krea2-vision-gateway/gateway.env
+ExecStart=/opt/krea2-vision-gateway/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 3097 --workers 1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/krea2-vision-gateway
+
+[Install]
+WantedBy=multi-user.target

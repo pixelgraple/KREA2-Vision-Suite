@@ -1731,6 +1731,7 @@ class DiscordVisionService:
         is_cancelled: Callable[[], bool] | None = None,
         dataset_guidance: Krea2Guidance | None = None,
         feedback_context: PromptFeedbackContext | None = None,
+        remote_access=None,
     ) -> DiscordDescribeResponse:
         if is_cancelled is None:
             is_cancelled = getattr(on_progress, "is_cancelled", None)
@@ -1774,6 +1775,7 @@ class DiscordVisionService:
                 retain_provider=None if remote else lambda provider, lease: self.warm.retain(provider, model_id, lease),
                 cancel_check=check_cancelled,
                 queue_timeout_seconds=None if remote else self.settings.gpu_availability_timeout_seconds,
+                remote_access=remote_access,
             ) as (provider,_,_,_):
                 inspect = getattr(provider,"with_image_text",None)
                 if not callable(inspect):
@@ -2185,13 +2187,20 @@ class DiscordVisionService:
                     fallback_prompt=draft,
                 )
                 check_cancelled()
-                return DiscordDescribeResponse(
+                response=DiscordDescribeResponse(
                     prompt=repaired.prompt,
                     prompt_variants=repaired.prompt_variants,
                     model=f"{spec.label} — faithful recreation (5 passes, support/wardrobe locks, pose audit, 3 crops, image audit)",
                     prompt_words=repaired.prompt_words,
                     dataset_guidance=dataset_guidance_receipt(dataset_guidance, feedback_context),
                 )
+                audit_complete=getattr(provider,"complete_audit",None)
+                if remote and callable(audit_complete):
+                    try:
+                        audit_complete(response.prompt_variants)
+                    except Exception as exc:
+                        log.warning("remote Vision audit delivery failed (%s)",type(exc).__name__)
+                return response
         except DiscordVisionCancelled:
             self.warm.evict("job-cancelled")
             raise
@@ -2221,6 +2230,7 @@ class DiscordVisionService:
         *,
         dataset_guidance: bool = False,
         feedback_context: PromptFeedbackContext | None = None,
+        remote_access=None,
     ) -> DiscordDescribeResponse:
         if is_cancelled is None:
             is_cancelled = getattr(on_progress, "is_cancelled", None)
@@ -2260,6 +2270,7 @@ class DiscordVisionService:
                 is_cancelled,
                 sampled_guidance,
                 selected_feedback,
+                remote_access,
             )
 
         def report(status: str, stage: str, queue_ahead: int = 0) -> None:

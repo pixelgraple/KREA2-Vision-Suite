@@ -628,19 +628,12 @@ def available_llama_cpp_specs(config: Settings) -> list[ModelSpec]:
 
 
 def available_vast_serverless_specs(config: Settings) -> list[ModelSpec]:
-    """Expose the one pinned remote model only after complete opt-in setup."""
+    """Expose the one pinned remote model through the licensed HTTPS gateway."""
     definition = VAST_SERVERLESS_DEFINITION
-    python_exe = _configured_path(config.vast_serverless_python_exe, base=ROOT)
-    bridge = ROOT / "app" / "models" / "vast_serverless_client.py"
-    endpoint = config.vast_serverless_endpoint.strip()
     if (
         not config.vast_serverless_enabled
         or config.vast_serverless_model_id != definition.public_id
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", endpoint)
-        or len(config.vast_serverless_api_key) < 24
-        or python_exe is None
-        or not python_exe.is_file()
-        or not bridge.is_file()
+        or not re.fullmatch(r"https://[^/?#]+(?:/[^?#]*)?", config.remote_gateway_url)
         or not 30 <= config.vast_serverless_request_timeout_seconds <= 3600
     ):
         return []

@@ -148,6 +148,7 @@ class StudioPipeline:
         retain_provider: Callable[[object, object], bool] | None = None,
         cancel_check: Callable[[], None] | None = None,
         queue_timeout_seconds: float | None = None,
+        remote_access=None,
     ):
         if spec.backend == "llama_cpp" and not active_settings.queue_enabled:
             raise GpuCapacityError(
@@ -196,7 +197,7 @@ class StudioPipeline:
                     handoff_before={"skipped":"shared local-GPU queue or local GPU backend is disabled"}
                 if provider is None:
                     provider_settings=replace(active_settings,keep_alive="5m") if spec.backend=="ollama" else active_settings
-                    provider=provider_for(provider_settings,spec)
+                    provider=provider_for(provider_settings,spec,remote_access=remote_access)
                 yield provider,handoff,handoff_before,capacity
             except BaseException as exc:
                 body_error=exc

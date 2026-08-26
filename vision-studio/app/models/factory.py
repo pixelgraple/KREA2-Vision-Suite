@@ -5,10 +5,12 @@ from ..services.model_catalog import ModelSpec, resolve_model
 from .llama_cpp_provider import LlamaCppProvider
 from .ollama_provider import OllamaProvider
 from .openai_compatible_provider import OpenAICompatibleProvider
+from .remote_access import RemoteAccess
+from .remote_gateway_provider import RemoteGatewayProvider
 from .vast_serverless_provider import VastServerlessProvider
 
 
-def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_callback=None):
+def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_callback=None, remote_access: RemoteAccess | None = None):
     """Construct a provider from a server-resolved model specification."""
 
     backend = settings.backend.lower()
@@ -64,6 +66,16 @@ def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_ca
             gpu_layers=40 if gemma4_12b else "all",
         )
     if selected.backend == "vast_serverless":
+        if settings.remote_gateway_url:
+            if remote_access is None:
+                raise RuntimeError("A remote KREA2 license is required for Online API Vision.")
+            return RemoteGatewayProvider(
+                base_url=settings.remote_gateway_url,
+                model=selected.provider_model,
+                max_tokens=max_tokens,
+                timeout=settings.vast_serverless_request_timeout_seconds,
+                access=remote_access,
+            )
         python_exe = Path(settings.vast_serverless_python_exe).expanduser()
         if not python_exe.is_absolute():
             python_exe = ROOT / python_exe

@@ -7,6 +7,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from ..models.remote_access import RemoteAccess
+
 
 @dataclass(frozen=True)
 class DiscordVisionSession:
@@ -14,6 +16,7 @@ class DiscordVisionSession:
     idempotency_key: str
     collector_version: str
     model: str
+    remote_access: RemoteAccess | None = None
 
 
 class DiscordVisionSessionStore:
@@ -50,12 +53,18 @@ class DiscordVisionSessionStore:
             oldest = min(self._sessions, key=lambda item: self._sessions[item].expires_at)
             self._sessions.pop(oldest, None)
 
-    def issue(self, idempotency_key: str, collector_version: str, model: str) -> tuple[str, int]:
+    def issue(self, idempotency_key: str, collector_version: str, model: str, remote_access: RemoteAccess | None = None) -> tuple[str, int]:
         normalized_key, normalized_version, normalized_model = self._validate_binding(
             idempotency_key,
             collector_version,
             model,
         )
+        if normalized_model.startswith("vast::"):
+            if remote_access is None:
+                raise ValueError("Online API Vision requires a remote KREA2 license.")
+            remote_access.validate()
+        elif remote_access is not None:
+            raise ValueError("Remote KREA2 access may only be used with the Online API model.")
         token = secrets.token_urlsafe(48)
         now = time.monotonic()
         with self._lock:
@@ -65,10 +74,11 @@ class DiscordVisionSessionStore:
                 idempotency_key=normalized_key,
                 collector_version=normalized_version,
                 model=normalized_model,
+                remote_access=remote_access,
             )
         return token, self.ttl_seconds
 
-    def consume(self, token: str, idempotency_key: str, collector_version: str, model: str) -> bool:
+    def consume_record(self, token: str, idempotency_key: str, collector_version: str, model: str) -> DiscordVisionSession | None:
         try:
             normalized_key, normalized_version, normalized_model = self._validate_binding(
                 idempotency_key,
@@ -76,21 +86,26 @@ class DiscordVisionSessionStore:
                 model,
             )
         except ValueError:
-            return False
+            return None
         supplied = str(token or "").strip()
         if len(supplied) < 32 or len(supplied) > 512:
-            return False
+            return None
         now = time.monotonic()
         with self._lock:
             self._prune_locked(now)
             session = self._sessions.pop(self._digest(supplied), None)
         if not session or session.expires_at <= now:
-            return False
-        return (
+            return None
+        if not (
             hmac.compare_digest(session.idempotency_key, normalized_key)
             and hmac.compare_digest(session.collector_version, normalized_version)
             and hmac.compare_digest(session.model, normalized_model)
-        )
+        ):
+            return None
+        return session
+
+    def consume(self, token: str, idempotency_key: str, collector_version: str, model: str) -> bool:
+        return self.consume_record(token, idempotency_key, collector_version, model) is not None
 
     def clear(self) -> None:
         with self._lock:

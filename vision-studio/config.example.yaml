@@ -28,8 +28,8 @@ llama_cpp:
   telemetry_path: data/history/llama_cpp_runtime.json
   context_cap: 8192
 vast_serverless:
-  # Opt-in remote inference. The API key stays only in vision-studio/.env;
-  # BetterDiscord continues to call the authenticated loopback Studio API.
+  # Opt-in remote inference. The public client uses the HTTPS KREA2 gateway;
+  # it never receives the Vast API key or audit webhook credential.
   enabled: false
   endpoint: ""
   python_exe: '~/AppData/Local/Krea2Vision/vastsdk/Scripts/python.exe'

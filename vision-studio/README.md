@@ -31,14 +31,14 @@ Manual setup:
 * Existing Ollama models and their installed-only picker behavior are preserved; set `QWEN_API_BASE` to your Ollama server.
 * `QWEN_BACKEND=openai_compatible` supports a local OpenAI-compatible vision endpoint. Keep `QWEN_API_KEY` only in `.env`; it never reaches the browser.
 * Verified Heretic GGUF models use an isolated CUDA `llama-server.exe` provider. The server binds only to `127.0.0.1`, stays alive across all passes in one run, and is terminated before Forge can regain the shared slot.
-* Optional Vast Serverless support pins one remote worker to Gemma 4 26B-A4B Heretic Q3_K_L on a 24 GB GPU. BetterDiscord still calls only the authenticated loopback Studio; the Vast API key stays in `.env`. There is no silent model fallback.
+* Optional Vast Serverless support pins one remote worker to Gemma 4 26B-A4B Heretic Q3_K_L on a 24 GB GPU. BetterDiscord still calls only the authenticated loopback Studio. The Studio forwards licensed requests over HTTPS to the server-side KREA2 gateway; the Vast API key and Discord audit webhook stay only there. There is no silent model fallback.
 * Temperatures, context length, output cap, upload limits, privacy, and shared queue behavior are all configurable in `.env`. `config.example.yaml` documents the defaults.
 
 ### Optional 24 GB Vast Serverless Gemma worker
 
 Run `scripts\INSTALL VAST SERVERLESS CLIENT.bat`, then build/publish the worker in `..\vast-serverless-gemma26`. Configure each worker with exactly one 24 GB GPU (RTX 3090 or RTX 4090), at least 65 GB of disk, `max_workers=5`, `cold_workers=1`, `cold_mult=1`, `min_load=0`, `inactivity_timeout=8`, and `max_queue_time=30`. Five is a ceiling, not five always-running GPUs: extra workers start only under load. The one stopped cache worker preserves the verified 15 GB model/projector cache without keeping GPU compute active while idle. Vast still bills inactive-worker storage and bandwidth.
 
-Set the six `VAST_SERVERLESS_*` values in `.env` only after the endpoint and scoped API key exist. Restart Vision Studio and refresh the BetterDiscord model list. The new choice appears as `Remote Serverless — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)`. Remote jobs do not take the local Forge FIFO because they use a different physical GPU; Discord's own job worker still processes them one at a time.
+Deploy `remote-gateway/` to the operator's HTTPS host, set its scoped Vast API key and audit-webhook secret there, then set only `KREA2_REMOTE_GATEWAY_URL=https://your-host.example/api/krea2-vision` locally. The new choice appears as `Remote Serverless — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)`. Remote jobs do not take the local Forge FIFO because they use a different physical GPU; Discord's own job worker still processes them one at a time.
 
 ### Manual Heretic llama.cpp folders
 
