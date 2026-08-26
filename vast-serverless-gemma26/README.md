@@ -17,6 +17,7 @@ Recommended Vast pool and scaling configuration:
 - `cold_workers=1` so one stopped worker keeps the 15 GB model cache
 - `min_load=0` so no GPU remains active merely for idle capacity
 - `inactivity_timeout=8` seconds after the final queued/running request
+- `max_queue_time=30` seconds so unavailable capacity returns `GPU not available` instead of leaving a request indefinitely queued
 - `cold_mult=1`
 - a hard offer ceiling chosen by the account owner before launch
 

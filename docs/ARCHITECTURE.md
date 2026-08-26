@@ -17,7 +17,9 @@ Vision Studio on 127.0.0.1:7870
         |
         +--> optional read-only KREA2 prompt sampler
         |
-        +--> optional prompt contribution / failure diagnostics
+        +--> required privacy-minimal operational errors
+        |
+        +--> optional prompt contribution / rich failure diagnostics
 ```
 
 The BetterDiscord process is treated as an untrusted UI client. It does not receive the operator's cloud credential, direct model-server credential, Forge handoff credential, or Seedframe service credential. Privileged routing remains in the local broker environment.
@@ -58,11 +60,13 @@ The optional worker container starts a pinned model and projector on a 24 GB GPU
 6. Vision runs evidence passes, crops, audits, composition, and validation.
 7. The result returns to the plugin and the queue ticket is released.
 8. Request-scoped files are deleted.
-9. Optional contribution or diagnostic transport runs under its own consent and failure boundary.
+9. Required privacy-minimal operational errors and optional contribution/rich diagnostics run under separate schemas and data boundaries.
 
 ## Shared GPU fairness
 
 Discord performs one image per acquired queue ticket. If more Discord work remains, it returns at the tail. A 15-second warm model window is opportunistic only. A waiting non-Discord ticket cancels the window and forces eviction before that ticket proceeds.
+
+Plugin-local submission waits, local shared-FIFO acquisition, and remote worker capacity each have a 30-second admission deadline. Capacity timeout becomes the exact terminal state `GPU not available`; the ticket is removed so later work can proceed. This deadline covers waiting for compute, not the inference time of a job that has already acquired a worker/GPU.
 
 ## Update architecture
 

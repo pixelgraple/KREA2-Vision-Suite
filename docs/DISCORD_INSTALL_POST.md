@@ -33,7 +33,7 @@ The bootstrap downloads the complete stable release, verifies its exact byte len
 
 Manual alternative: download the complete ZIP below. Before extracting it, right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply**. Then extract it and double-click `START HERE - INSTALL.bat`.
 
-https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.13-win64.zip
+https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.15-win64.zip
 
 The installer will:
 
@@ -70,7 +70,7 @@ To use the plugin:
 
 Full-resolution source images are not uploaded as part of dataset contribution. If the user enables automatic contribution during setup, successful generated prompt text is submitted to the Krea2 dataset under the disclosure shown during setup. Discord usernames, Discord URLs, filenames, local paths, image hashes, and source image bytes are not included. If contribution is disabled, no generated prompt is submitted.
 
-Failure diagnostics are a different, default-off option with a separate disclosure. When explicitly enabled, failed requests only may send the source image, Discord username, model/pipeline, error stage, versions, and an available partial or audited prompt to an owner-only Seedframe console. Successful jobs are never sent through diagnostics, and diagnostic upload failures never block Vision.
+Privacy-minimal operational error reporting is required so GPU, model, launch, and transport failures can be repaired across installations. It sends only an anonymous installation digest, model/pipeline, sanitized error/stage, runtime, and versions; it never sends images, image hashes, prompts, Discord identity, URLs, filenames, or local paths. Rich failure diagnostics are a different, default-off option with a separate disclosure and may include a failed image, Discord username, and partial prompt only after explicit consent.
 
 If installation fails or a required service stops, run **Repair KREA2 Vision Suite** from the desktop.
 

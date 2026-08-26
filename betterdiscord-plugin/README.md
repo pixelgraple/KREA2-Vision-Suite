@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.13.14
+# Krea2 Discord Vision v0.13.15
 
 The plugin checks the authenticated loopback broker for stable suite updates shortly after startup and every six hours. The default is a one-click update notice; verified automatic installation is optional. Updates are full-suite packages so plugin and backend protocol versions stay matched.
 
@@ -9,6 +9,8 @@ This BetterDiscord plugin adds one focused tool to exact Discord image attachmen
 During first-run setup, the user can enable **Automatically contribute my three generated prompts to Krea2** and accept the current [Seedframe Terms](https://seedframe.xyz/policies/terms). When enabled, every successful Vision request submits its three generated prompt texts through the authenticated loopback Vision broker. When disabled, Vision remains available and no generated prompt is submitted. A fresh installation never needs a Seedframe endpoint or token. Contributions never send image bytes, image hashes, Discord IDs or URLs, filenames, or local paths. Entries are quarantined as `review_required` and never become training-ready automatically.
 
 **Share failed Vision diagnostics with Krea2** is a separate setting that defaults to **off** and has its own disclosure. If explicitly enabled, failed requests only may send the source image, Discord username, model/pipeline, error/stage, versions, anonymous installation digest, and an available partial or audited prompt to the owner-only Seedframe diagnostics console. Successful requests are never sent through this channel, and a diagnostic upload failure can never turn a Vision result into an error.
+
+Privacy-minimal operational error reporting is required and separate from that rich diagnostic option. It reports only an anonymous installation digest, event/model/pipeline, sanitized error and stage, runtime, and versions. It never sends an image or image hash, prompt, Discord identity, URL, filename, or local path. Delivery uses the authenticated loopback broker with a direct canonical Seedframe fallback; pending retries are bounded and memory-only.
 
 The model/VRAM installer, shared FIFO status, session job history, cancel, prompt copying, and model-used evidence remain. Legacy disk-backed thumbnails, sidecars, exports, and persistent prompt tools are disabled.
 
@@ -25,6 +27,8 @@ The right-side Discord rail now includes an **Interrogate** tab. It accepts a PN
 An optional **Identity or role notes** field lets the uploader provide known labels and pronouns for that one request, such as `Subject A is a trans woman, she/her; Subject B is a man, he/him.` The Vision model never infers transgender, cisgender, femboy, tgirl, man, or woman identity from appearance or anatomy. Without a supplied note it uses pixel-grounded presentation wording, such as `feminine-presenting adult with a directly visible penis`, while keeping anatomy, pose and participant roles separate. The note remains in session memory only and is cleared after enqueueing.
 
 Every press of Start creates one normal authenticated Vision job. Uploaded images join the same plugin submission chain and exact shared Forge/Krea FIFO as message magnifiers, so users may queue several images while each image still runs one at a time and yields correctly. The form clears immediately after enqueueing so another image can be selected. The completed job opens in the existing prompt-history result viewer with its session thumbnail and all three generated prompts.
+
+If an image cannot begin submission or acquire GPU capacity within 30 seconds, its card becomes a terminal **GPU not available** error and no longer blocks later images. Other failures show the sanitized error returned by the local or remote provider.
 
 Upload bytes remain in session memory. For reliable Prompt History previews across plugin reloads, the plugin stores one bounded local thumbnail per image under `<configured save folder>\.krea2-history-thumbnails`. It does not cache the full-resolution source image, prompt text, or sidecar.
 

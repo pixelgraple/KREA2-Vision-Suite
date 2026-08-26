@@ -41,7 +41,7 @@ config = WorkerConfig(
         HandlerConfig(
             route="/v1/chat/completions",
             allow_parallel_requests=False,
-            max_queue_time=300.0,
+            max_queue_time=30.0,
             workload_calculator=workload,
             benchmark_config=BenchmarkConfig(
                 generator=benchmark_payload,

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hmac, ipaddress, json, logging, tempfile, threading
+import hmac, ipaddress, json, logging, secrets, tempfile, threading
 from pathlib import Path
 from typing import Annotated
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Response, UploadFile
@@ -24,6 +24,7 @@ from ..services.discord_vision import (
     PIPELINE_ID,
 )
 from ..services.forge_vram_handoff import ForgeHandoffError
+from ..services.shared_queue import SharedGpuUnavailableError
 from ..services.feedback_guidance import parse_feedback_context
 from ..services.discord_jobs import DiscordVisionJobStore
 from ..services.discord_sessions import DiscordVisionSessionStore
@@ -39,6 +40,8 @@ from ..services.krea2_contributions import (
 from ..services.krea2_diagnostics import (
     DIAGNOSTIC_TERMS_VERSION,
     Krea2DiagnosticReporter,
+    Krea2OperationalErrorReporter,
+    sanitize_operational_error,
 )
 
 router=APIRouter(prefix="/api")
@@ -62,6 +65,11 @@ krea2_diagnostic_reporter=(
     if len(settings.discord_vision_token.encode("utf-8")) >= 32
     else None
 )
+krea2_operational_error_reporter=(
+    Krea2OperationalErrorReporter(settings.discord_vision_token)
+    if len(settings.discord_vision_token.encode("utf-8")) >= 32
+    else None
+)
 BACKEND_VERSION=(ROOT / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
 log=logging.getLogger("studio.api")
 
@@ -72,24 +80,27 @@ def readable_error(exc: Exception):
     raise HTTPException(422,message)
 
 def backend_public_failure(exc: Exception, requested_model: str) -> tuple[str,str,str]:
+    messages=[]
+    current: BaseException | None=exc
+    seen=set()
+    while current is not None and id(current) not in seen and len(messages)<5:
+        seen.add(id(current))
+        messages.append(str(current))
+        current=current.__cause__ or current.__context__
+    detail=" ".join(messages)
+    lowered=detail.casefold()
+    if "gpu not available" in lowered:
+        return "GPU not available","GPU not available","GPU not available"
     if requested_model.startswith("vast::"):
-        messages=[]
-        current: BaseException | None=exc
-        seen=set()
-        while current is not None and id(current) not in seen and len(messages)<5:
-            seen.add(id(current))
-            messages.append(str(current).casefold())
-            current=current.__cause__ or current.__context__
-        detail=" ".join(messages)
-        if "timed out" in detail and ("worker" in detail or "ready" in detail):
-            public="Remote Gemma worker could not become ready in time. This was not a local GPU or shared queue failure; retry after remote capacity is ready."
-            return "Remote Gemma Serverless worker did not become ready before timeout",public,public
-        public="Remote Gemma Serverless worker is unavailable. This was not a local GPU or shared queue failure."
-        return "Remote Gemma Serverless worker was unavailable",public,public
+        if ("timed out" in lowered or "timeout" in lowered) and ("worker" in lowered or "ready" in lowered or "queue" in lowered):
+            return "GPU not available","GPU not available","GPU not available"
+        public=f"Remote Vision error: {sanitize_operational_error(str(exc))}"
+        return "Remote Vision failed",public,public
+    public=f"Local Vision error: {sanitize_operational_error(str(exc))}"
     return (
-        "Local Vision or the shared GPU handoff was unavailable",
-        "Local Vision or the shared GPU handoff was unavailable.",
-        "Local vision pipeline is unavailable or could not safely acquire the GPU.",
+        "Local Vision failed",
+        public,
+        public,
     )
 
 async def prepared_upload(upload: UploadFile):
@@ -191,6 +202,35 @@ def schedule_failure_diagnostic(
         backend_version=BACKEND_VERSION,
     )
 
+def schedule_operational_error(
+    *,
+    event_id: str | None,
+    model_id: str,
+    plugin_version: str | None,
+    error_code: str,
+    error_message: str,
+    stage: str,
+) -> None:
+    """Always queue privacy-minimal technical telemetry; never user content."""
+
+    if krea2_operational_error_reporter is None:
+        return
+    normalized_event=str(event_id or "").strip().lower()
+    if len(normalized_event) != 32 or any(ch not in "0123456789abcdef" for ch in normalized_event):
+        normalized_event=secrets.token_hex(16)
+    start_background_task(
+        krea2_operational_error_reporter.submit_safely,
+        event_id=normalized_event,
+        model_id=model_id or "unknown",
+        pipeline_id=PIPELINE_ID,
+        error_code=error_code,
+        error_message=error_message,
+        stage=stage,
+        runtime="remote" if str(model_id).startswith("vast::") else "local",
+        plugin_version=str(plugin_version or "unknown"),
+        backend_version=BACKEND_VERSION,
+    )
+
 def start_background_task(function, **kwargs) -> None:
     threading.Thread(target=function,kwargs=kwargs,daemon=True,name="krea2-diagnostic-upload").start()
 
@@ -244,6 +284,42 @@ def discord_jobs_clear_terminal(
 class DiscordSessionRequest(BaseModel):
     idempotency_key:str
     model:str
+
+class DiscordOperationalErrorRequest(BaseModel):
+    event_id:str
+    model_id:str
+    error_code:str
+    error_message:str
+    stage:str
+
+@router.post("/discord-errors")
+def discord_operational_error(
+    payload:DiscordOperationalErrorRequest,
+    request:Request,
+    token:Annotated[str|None,Header(alias="X-Krea2-Vision-Token")]=None,
+    collector_version:Annotated[str|None,Header(alias="X-Krea2-Collector-Version")]=None,
+):
+    require_discord_vision_auth(request,token,settings.discord_vision_token)
+    if len(payload.event_id) != 32 or any(ch not in "0123456789abcdef" for ch in payload.event_id):
+        raise HTTPException(422,"Operational event ID is invalid.")
+    if not (1 <= len(payload.model_id) <= 200 and 1 <= len(payload.error_code) <= 80 and 1 <= len(payload.error_message) <= 2000 and 1 <= len(payload.stage) <= 200):
+        raise HTTPException(422,"Operational error fields are invalid.")
+    if krea2_operational_error_reporter is None:
+        raise HTTPException(503,"Operational error reporting is unavailable.")
+    accepted=krea2_operational_error_reporter.submit_safely(
+        event_id=payload.event_id,
+        model_id=payload.model_id,
+        pipeline_id=PIPELINE_ID,
+        error_code=payload.error_code,
+        error_message=payload.error_message,
+        stage=payload.stage,
+        runtime="remote" if payload.model_id.startswith("vast::") else "local",
+        plugin_version=str(collector_version or "unknown"),
+        backend_version=BACKEND_VERSION,
+    )
+    if not accepted:
+        raise HTTPException(503,"Operational error reporting is temporarily unavailable.")
+    return {"accepted":True,"privacy":"no image, prompt, Discord identity, URL, filename, or local path collected"}
 
 @router.post("/discord-session")
 def issue_discord_session(
@@ -411,6 +487,7 @@ async def discord_describe(
             track_job(discord_jobs.cancel,active_job_id)
         raise HTTPException(409,"Discord Vision job was cancelled.") from exc
     except DiscordVisionDatasetUnavailable as exc:
+        schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="dataset_guidance_unavailable",error_message=str(exc),stage="Selecting eight Krea2 writing-style examples")
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"dataset_guidance_unavailable","Krea2 dataset guidance is unavailable.","Selecting eight Krea2 writing-style examples",exc)
         log.warning("Krea2 dataset guidance was requested but unavailable (%s)",exc)
         if active_job_id:
@@ -426,6 +503,7 @@ async def discord_describe(
             "Krea2 dataset guidance is unavailable. Retry or turn it off.",
         ) from exc
     except DiscordVisionSafetyRejected as exc:
+        schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="adult_status_unconfirmed",error_message=str(exc),stage="Rechecking adult-only status")
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"adult_status_unconfirmed","Adult-only status could not be confirmed after an independent recheck.","Rechecking adult-only status",exc)
         log.info("discord vision stopped by repeated age-safety result (%s)",exc)
         if active_job_id:
@@ -438,6 +516,7 @@ async def discord_describe(
             )
         raise HTTPException(422,"Adult-only status could not be confirmed after rechecking the image.") from exc
     except DiscordVisionRejected as exc:
+        schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="output_validation_failed",error_message=str(exc),stage="Validating the audited final prompt set")
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"output_validation_failed","Heretic output remained unusable after automatic repair.","Validating the audited final prompt set",exc)
         log.warning(
             "heretic output remained unusable after repair job=%s model=%s image_sha256=%s reason=%s",
@@ -455,7 +534,8 @@ async def discord_describe(
                 public_error="Heretic returned unusable output twice; no prompt was saved.",
             )
         raise HTTPException(502,"Heretic returned unusable output twice; no prompt was saved.") from exc
-    except (DiscordVisionBackendError,ForgeHandoffError) as exc:
+    except (DiscordVisionBackendError,ForgeHandoffError,SharedGpuUnavailableError) as exc:
+        schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_backend_unavailable",error_message=str(exc) or type(exc).__name__,stage="Acquiring or running the selected Vision backend")
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_backend_unavailable",str(exc) or type(exc).__name__,"Acquiring or running the selected Vision backend",exc)
         cause=exc.__cause__
         failure_stage,public_error,http_detail=backend_public_failure(exc,requested_model)
@@ -476,6 +556,7 @@ async def discord_describe(
             )
         raise HTTPException(503,http_detail) from exc
     except Exception as exc:
+        schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_internal_error",error_message=f"{type(exc).__name__}: {exc}",stage="Running the local Vision pipeline")
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_internal_error",f"{type(exc).__name__}: {exc}","Running the local Vision pipeline",exc)
         log.error("discord vision failed (%s)",type(exc).__name__)
         if active_job_id:

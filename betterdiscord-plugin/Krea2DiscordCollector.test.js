@@ -7,6 +7,7 @@ const path = require("node:path");
 const Plugin = require("./Krea2DiscordCollector.plugin.js");
 const {
     applyPromptPreset,
+    buildOperationalErrorReport,
     buildVisionMultipartBody,
     chooseBestMediaUrl,
     decodeHtmlEntities,
@@ -67,6 +68,7 @@ const {
     saveVisionPromptSidecar,
     safeModelFilePart,
     sanitizeFilename,
+    sanitizeOperationalErrorText,
     sha256Hex,
     submissionKey,
     validateSaveFolder,
@@ -312,7 +314,12 @@ assert.doesNotMatch(builtPluginSource, /#\$\{HISTORY_MODAL_ID\} \* \{/);
 assert.match(builtPluginSource, /const HISTORY_DETAIL_POLL_MS = 1000/);
 assert.match(builtPluginSource, /krea2-history-average-queue/);
 assert.match(builtPluginSource, /Average queue time:/);
-assert.match(builtPluginSource, /const ONBOARDING_VERSION = 8/);
+assert.match(builtPluginSource, /const ONBOARDING_VERSION = 9/);
+assert.match(builtPluginSource, /Mandatory error telemetry never contains image bytes or hashes, prompts, Discord identity or IDs, URLs, filenames, or local paths/);
+assert.match(builtPluginSource, /GPU_AVAILABILITY_TIMEOUT_MS = 30 \* 1000/);
+assert.match(builtPluginSource, /\/api\/discord-errors/);
+assert.match(builtPluginSource, /https:\/\/seedframe\.xyz\/api\/diagnostics\/krea2-vision/);
+assert.match(builtPluginSource, /async submitOperationalErrorDirect\(item, visionToken\)/);
 assert.match(builtPluginSource, /Install model \+ projector together/);
 assert.match(builtPluginSource, /Verify installed model \+ projector/);
 assert.match(builtPluginSource, /async requestVisionModelInstall\(publicId, method\)/);
@@ -445,7 +452,7 @@ assert.match(builtPluginSource, /label: "Automatically contribute my three gener
 assert.doesNotMatch(builtPluginSource, /Authorization: `Bearer \$\{candidate\.token\}`/);
 assert.doesNotMatch(builtPluginSource, /currentUserOwnsMetadataPlus\(/);
 assert.match(builtPluginSource, /for \(const objectUrl of this\.historyThumbnailUrls\.values\(\)\) this\.revokeObjectUrl\(objectUrl\)/);
-assert.match(builtPluginSource, /const ONBOARDING_VERSION = 8/);
+assert.match(builtPluginSource, /const ONBOARDING_VERSION = 9/);
 assert.match(builtPluginSource, /\.krea2-history-thumbnails/);
 assert.match(builtPluginSource, /async persistHistoryThumbnail\(original\)/);
 assert.match(builtPluginSource, /async findCachedHistoryThumbnailPath\(hash\)/);
@@ -505,6 +512,19 @@ assert.deepEqual(historyAverageQueueWait([historyCompleted], 86541), {seconds: n
 assert.equal(formatAverageQueueTime(null), "Average queue time: —");
 assert.equal(formatAverageQueueTime(17.5), "Average queue time: 18 seconds");
 assert.equal(formatAverageQueueTime(1), "Average queue time: 1 second");
+const operationalReport = buildOperationalErrorReport({
+    event_id: "9".repeat(32),
+    model_id: "vast::gemma4-26b-a4b-heretic-q3_k_l",
+    error_code: "worker_error",
+    error_message: "Failed at https://private.example/path in C:\\Users\\person\\secret.png token=should-not-leak",
+    stage: "Submitting image"
+}, "v".repeat(32));
+assert.equal(operationalReport.schema, "seedframe.krea2-vision-operational-error.v1");
+assert.equal(operationalReport.runtime, "remote");
+assert.equal(operationalReport.event_id, "9".repeat(32));
+assert.match(operationalReport.report_sha256, /^[a-f0-9]{64}$/);
+assert.doesNotMatch(JSON.stringify(operationalReport), /private\.example|secret\.png|should-not-leak/i);
+assert.equal(sanitizeOperationalErrorText("GPU not available"), "GPU not available");
 assert.equal(isHistoryJobActive({status: "queued"}), true);
 assert.equal(isHistoryJobActive({status: "RUNNING"}), true);
 assert.equal(isHistoryJobActive({status: "completed"}), false);
@@ -783,7 +803,7 @@ async function testVisionRequestContract() {
     const captured = [];
     collector.settings = {...DEFAULT_SETTINGS, shareDatasetContributions: true};
     collector.api = {Data: {load: key => key === "onboardingState" ? {
-        version: 8,
+        version: 9,
         contributionTermsVersion: Plugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION
     } : key === "privacyReceipt" ? {version: PRIVACY_RECEIPT_VERSION, acceptedAt: Date.now()} : null}, Net: {fetch: async (url, options) => {
         captured.push({url, options});
@@ -1023,6 +1043,104 @@ function testLocalVisionQueueVisibility() {
 }
 
 testLocalVisionQueueVisibility();
+
+async function testLocalSubmissionTimesOutAfterThirtySecondsWithoutGpu() {
+    const collector = new Plugin();
+    collector.running = true;
+    collector.generation = 12;
+    collector.settings.visionExecutionMode = "online";
+    collector.validateLocalCollectionSettings = () => ({guildId: "123456", channelId: "654321"});
+    collector.attachmentBelongsToGuild = () => true;
+    collector.renderHistoryRail = () => {};
+    collector.toast = () => {};
+    collector.log = () => {};
+    const reports = [];
+    collector.queueOperationalError = report => reports.push(report);
+    let releaseEarlierFlow;
+    collector.visionFlowQueue = new Promise(resolve => { releaseEarlierFlow = resolve; });
+    const image = {
+        isConnected: true,
+        currentSrc: "https://cdn.discordapp.com/attachments/654321/777777/image.png?ex=a&is=b&hm=c",
+        dataset: {},
+        closest: () => null
+    };
+    const button = {dataset: {}, isConnected: true};
+    collector.setButtonState = (_button, state, _text, title) => { button.state = state; button.title = title; };
+    let timeoutCallback = null;
+    const realSetTimeout = global.setTimeout;
+    const realClearTimeout = global.clearTimeout;
+    global.setTimeout = (callback, milliseconds) => {
+        assert.equal(milliseconds, 30000);
+        timeoutCallback = callback;
+        return 1234;
+    };
+    global.clearTimeout = () => {};
+    try {
+        collector.queueVisionAnalysis(image, button);
+        assert.equal(button.state, "vision-queued");
+        assert.equal(typeof timeoutCallback, "function");
+        timeoutCallback();
+        const [job] = collector.getLocalVisionHistoryJobs();
+        assert.equal(job.status, "error");
+        assert.equal(job.public_error, "GPU not available");
+        assert.equal(button.state, "error");
+        assert.match(button.title, /GPU not available/);
+        assert.equal(button.dataset.busy, "false");
+        assert.equal(reports.length, 1);
+        assert.equal(reports[0].errorCode, "gpu_not_available");
+        releaseEarlierFlow();
+        await collector.visionFlowQueue;
+        assert.equal(collector.getLocalVisionHistoryJobs()[0].status, "error");
+    }
+    finally {
+        global.setTimeout = realSetTimeout;
+        global.clearTimeout = realClearTimeout;
+    }
+}
+
+await testLocalSubmissionTimesOutAfterThirtySecondsWithoutGpu();
+
+async function testOperationalErrorFallsBackDirectlyWhenBrokerCannotDeliver() {
+    const collector = new Plugin();
+    collector.running = true;
+    collector.getVisionConfig = () => ({origin: "http://127.0.0.1:7870", token: "v".repeat(32)});
+    collector.pendingOperationalErrors = [{
+        event_id: "8".repeat(32),
+        model_id: "vast::gemma4-26b-a4b-heretic-q3_k_l",
+        error_code: "gpu_not_available",
+        error_message: "GPU not available",
+        stage: "Waiting for capacity"
+    }];
+    const calls = [];
+    collector.api = {Net: {fetch: async (url, options) => {
+        calls.push({url, options});
+        if (url.startsWith("http://127.0.0.1")) {
+            return {ok: false, status: 503, redirected: false, url};
+        }
+        const payload = JSON.parse(options.body);
+        return {
+            ok: true,
+            status: 200,
+            redirected: false,
+            url,
+            headers: {get: () => null},
+            arrayBuffer: async () => Buffer.from(JSON.stringify({
+                accepted: true,
+                report_sha256: payload.report_sha256
+            }))
+        };
+    }}};
+    await collector.flushOperationalErrors();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, "https://seedframe.xyz/api/diagnostics/krea2-vision");
+    assert.equal(collector.pendingOperationalErrors.length, 0);
+    const directPayload = JSON.parse(calls[1].options.body);
+    for (const forbidden of ["image", "image_hash", "prompt", "discord_username", "filename", "local_path"]) {
+        assert.equal(Object.hasOwn(directPayload, forbidden), false);
+    }
+}
+
+await testOperationalErrorFallsBackDirectlyWhenBrokerCannotDeliver();
 
 async function runQueuedVisionDomMutation({nextUrl, nextMessageRoot}) {
     const collector = new Plugin();

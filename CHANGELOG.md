@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.15 - 2026-08-26
+
+- Ends plugin-local, shared-FIFO, and Vast capacity waits after 30 seconds with the exact visible error `GPU not available`; other failures retain their sanitized actionable message.
+- Removes timed-out tickets from the active queue so a stalled GPU cannot leave later Discord images indefinitely blocked.
+- Adds required privacy-minimal operational error reporting with bounded in-memory retry and direct canonical Seedframe fallback when the local broker cannot deliver.
+- Keeps images, image hashes, prompts, Discord identity, URLs, filenames, and local paths out of automatic error records; the existing rich image diagnostic remains separate, opt-in, and owner-only.
+- Adds the owner-only Seedframe operational-error view and verifies both backend and direct-plugin receiver contracts.
+
 ## 0.13.14 - 2026-08-26
 
 - Repairs the Vast Serverless readiness handshake so PyWorker observes the worker's private lifecycle event stream instead of `/dev/null`.

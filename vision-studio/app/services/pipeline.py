@@ -147,6 +147,7 @@ class StudioPipeline:
         provider_supplier: Callable[[], object | None] | None = None,
         retain_provider: Callable[[object, object], bool] | None = None,
         cancel_check: Callable[[], None] | None = None,
+        queue_timeout_seconds: float | None = None,
     ):
         if spec.backend == "llama_cpp" and not active_settings.queue_enabled:
             raise GpuCapacityError(
@@ -154,11 +155,12 @@ class StudioPipeline:
                 "it stopped safely because that queue is disabled."
             )
         queue_slot = self.queue(active_settings, spec)
-        slot_context = (
-            queue_slot.slot(progress, cancel_check=cancel_check)
-            if cancel_check is not None
-            else queue_slot.slot(progress)
-        )
+        slot_options = {}
+        if cancel_check is not None:
+            slot_options["cancel_check"] = cancel_check
+        if queue_timeout_seconds is not None:
+            slot_options["timeout_seconds"] = queue_timeout_seconds
+        slot_context = queue_slot.slot(progress, **slot_options)
         with slot_context as lease:
             handoff=ForgeVramHandoff(active_settings.forge_unload_urls,active_settings.queue_dir,active_settings.forge_unload_timeout_seconds,active_settings.forge_handoff_token_file)
             provider=None

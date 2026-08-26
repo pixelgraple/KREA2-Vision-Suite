@@ -54,6 +54,7 @@ class Settings:
     queue_dir: str = val("STUDIO_SHARED_QUEUE_DIR", DEFAULTS["queue"]["directory"])
     queue_poll_seconds: float = float(val("STUDIO_SHARED_QUEUE_POLL_SECONDS", DEFAULTS["queue"]["poll_seconds"]))
     queue_stale_seconds: float = float(val("STUDIO_SHARED_QUEUE_STALE_SECONDS", DEFAULTS["queue"]["stale_ticket_seconds"]))
+    gpu_availability_timeout_seconds: float = float(val("KREA2_GPU_AVAILABILITY_TIMEOUT_SECONDS", DEFAULTS["queue"]["gpu_availability_timeout_seconds"]))
     forge_unload_urls: str = val("STUDIO_FORGE_UNLOAD_URLS", DEFAULTS["queue"]["forge_unload_urls"])
     forge_unload_timeout_seconds: float = float(val("STUDIO_FORGE_UNLOAD_TIMEOUT_SECONDS", DEFAULTS["queue"]["forge_unload_timeout_seconds"]))
     forge_handoff_token_file: str = val("STUDIO_FORGE_HANDOFF_TOKEN_FILE", DEFAULTS["queue"]["forge_handoff_token_file"])

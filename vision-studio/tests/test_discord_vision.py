@@ -2177,7 +2177,7 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.assertNotIn("handoff_nonce", serialized)
         self.assertNotIn(TOKEN, serialized)
 
-    def test_remote_worker_timeout_is_not_mislabeled_as_local_gpu_failure(self):
+    def test_remote_worker_capacity_timeout_is_reported_as_gpu_not_available(self):
         cause = RuntimeError("Timed out after 1201.0s waiting for worker to become ready")
         error = DiscordVisionBackendError("The selected Heretic vision pipeline is unavailable.")
         error.__cause__ = cause
@@ -2187,12 +2187,11 @@ class DiscordVisionApiTests(unittest.TestCase):
             "vast::gemma4-26b-a4b-heretic-q3_k_l",
         )
 
-        self.assertIn("Remote Gemma Serverless worker", stage)
-        self.assertIn("not a local GPU or shared queue failure", public_error)
-        self.assertEqual(http_detail, public_error)
-        self.assertNotIn("1201", public_error)
+        self.assertEqual(stage, "GPU not available")
+        self.assertEqual(public_error, "GPU not available")
+        self.assertEqual(http_detail, "GPU not available")
 
-    def test_rejected_and_backend_failures_store_only_generic_public_outcomes(self):
+    def test_rejected_and_backend_failures_store_safe_actionable_public_outcomes(self):
         class FailingService(StubDiscordService):
             def __init__(self, error):
                 super().__init__()
@@ -2243,7 +2242,61 @@ class DiscordVisionApiTests(unittest.TestCase):
                 job = isolated.list()[0]
                 self.assertEqual(job["status"], stored_status)
                 self.assertEqual(job["model"], self.configured.model)
-                self.assertNotIn("private", json.dumps(job).lower())
+                if isinstance(error, DiscordVisionBackendError):
+                    self.assertIn("private backend detail", json.dumps(job).lower())
+                else:
+                    self.assertNotIn("private", json.dumps(job).lower())
+
+    def test_mandatory_operational_error_route_is_loopback_authenticated_and_content_free(self):
+        reporter = Mock()
+        reporter.submit_safely.return_value = True
+        with patch.object(api_module, "krea2_operational_error_reporter", reporter), patch.object(
+            api_module, "settings", self.configured
+        ):
+            local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
+            remote = TestClient(self.app, client=("192.0.2.10", 50000), base_url="http://127.0.0.1:7870")
+            payload = {
+                "event_id": "d" * 32,
+                "model_id": "vast::gemma4-26b-a4b-heretic-q3_k_l",
+                "error_code": "gpu_not_available",
+                "error_message": "GPU not available",
+                "stage": "Waiting to submit the Discord image",
+            }
+            denied = local.post("/api/discord-errors", json=payload)
+            blocked = remote.post("/api/discord-errors", headers={"X-Krea2-Vision-Token": TOKEN}, json=payload)
+            accepted = local.post(
+                "/api/discord-errors",
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.15"},
+                json=payload,
+            )
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["accepted"], True)
+        self.assertIn("no image", accepted.json()["privacy"].lower())
+        kwargs = reporter.submit_safely.call_args.kwargs
+        for forbidden in ("image_bytes", "prompt_text", "discord_username", "filename", "local_path"):
+            self.assertNotIn(forbidden, kwargs)
+
+    def test_mandatory_operational_error_route_retries_in_plugin_when_seedframe_is_unavailable(self):
+        reporter = Mock()
+        reporter.submit_safely.return_value = False
+        with patch.object(api_module, "krea2_operational_error_reporter", reporter), patch.object(
+            api_module, "settings", self.configured
+        ):
+            local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
+            response = local.post(
+                "/api/discord-errors",
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.15"},
+                json={
+                    "event_id": "e" * 32,
+                    "model_id": "llamacpp::heretic-4b-q8_0",
+                    "error_code": "backend_unavailable",
+                    "error_message": "Local backend is unavailable",
+                    "stage": "Submitting the Vision image",
+                },
+            )
+        self.assertEqual(response.status_code, 503)
 
 
 if __name__ == "__main__":

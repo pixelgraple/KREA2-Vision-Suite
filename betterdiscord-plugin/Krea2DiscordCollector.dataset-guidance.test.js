@@ -235,7 +235,7 @@ test("loopback requests propagate OFF and ON and bind the response receipt to th
     const captures = [];
     let responseEnabled = false;
     collector.api = {Data: {load: key => key === "onboardingState" ? {
-        version: 8,
+        version: 9,
         contributionTermsVersion: BuiltPlugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION
     } : null}, Net: {fetch: async (url, options) => {
         captures.push({url, options});

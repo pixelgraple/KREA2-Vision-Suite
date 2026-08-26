@@ -11,7 +11,7 @@ from app.services.history import HistoryStore, PresetStore
 from app.services.image_processor import ImageProcessor
 from app.services.json_guard import instance_dict, parse_or_repair
 from app.services.prompts import composer_user, merger_user
-from app.services.shared_queue import QueueLease, SharedGenerationQueue
+from app.services.shared_queue import QueueLease, SharedGenerationQueue, SharedGpuUnavailableError
 import app.services.shared_queue as shared_queue_module
 from app.services.forge_vram_handoff import (
     HANDOFF_HEADER,
@@ -137,6 +137,20 @@ class StudioTests(unittest.TestCase):
             one,two=SharedGenerationQueue("one",directory=directory,poll=.02),SharedGenerationQueue("two",directory=directory,poll=.02)
             entered,release,second=threading.Event(),threading.Event(),threading.Event()
             a=threading.Thread(target=lambda: self._hold(one,entered,release)); b=threading.Thread(target=lambda: self._enter(two,second)); a.start(); self.assertTrue(entered.wait(1)); b.start(); self.assertFalse(second.wait(.15)); release.set(); self.assertTrue(second.wait(1)); a.join(1);b.join(1);self.assertFalse(list(Path(directory).glob("*.ticket")))
+    def test_shared_queue_times_out_and_removes_its_ticket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            held=SharedGenerationQueue("held",directory=directory,poll=.01)
+            waiting=SharedGenerationQueue("waiting",directory=directory,poll=.01)
+            entered,release=threading.Event(),threading.Event()
+            owner=threading.Thread(target=lambda: self._hold(held,entered,release)); owner.start(); self.assertTrue(entered.wait(1))
+            statuses=[]
+            try:
+                with self.assertRaisesRegex(SharedGpuUnavailableError,"GPU not available"):
+                    with waiting.slot(statuses.append,timeout_seconds=.08): pass
+            finally:
+                release.set(); owner.join(1)
+            self.assertIn("GPU not available",statuses)
+            self.assertFalse(list(Path(directory).glob("*.ticket")))
     def test_shared_queue_lease_matches_nonce_written_into_ticket(self):
         with tempfile.TemporaryDirectory() as directory:
             queue=SharedGenerationQueue("babegen-prompt-assistant-test",directory=directory)

@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.14
+ * @version 0.13.15
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.14";
+const PLUGIN_VERSION = "0.13.15";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -704,6 +704,8 @@ const METADATA_PROBE_RETRY_MS = 60 * 1000;
 const MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_VISION_PROMPT_CHARS = 100000;
 const VISION_TIMEOUT_MS = 60 * 60 * 1000;
+const GPU_AVAILABILITY_TIMEOUT_MS = 30 * 1000;
+const MAX_PENDING_OPERATIONAL_ERRORS = 50;
 const HISTORY_POLL_MS = 5000;
 const HISTORY_DETAIL_POLL_MS = 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -735,7 +737,57 @@ const VISUAL_EMBEDDING_SIZE = 8;
 const VISION_PIPELINE_ID = "discord-faithful-v7-participant-role-lock";
 const KREA2_CONTRIBUTION_TERMS_VERSION = "seedframe-krea2-vision-2026-08-25";
 const KREA2_DIAGNOSTIC_TERMS_VERSION = "seedframe-krea2-vision-diagnostics-2026-08-25";
+const KREA2_OPERATIONAL_ERROR_SCHEMA = "seedframe.krea2-vision-operational-error.v1";
+const KREA2_OPERATIONAL_ERROR_NOTICE_VERSION = "seedframe-krea2-vision-operational-errors-2026-08-26";
+const KREA2_OPERATIONAL_ERROR_ENDPOINT = "https://seedframe.xyz/api/diagnostics/krea2-vision";
 const DIAGNOSTIC_RECEIPT_VERSION = 1;
+
+function sanitizeOperationalErrorText(value, maximum = 600) {
+    const normalized = String(value || "")
+        .normalize("NFKC")
+        .replace(/\b(?:token|secret|password|authorization|api[_ -]?key)\s*[:=]\s*\S+/gi, "[credential removed]")
+        .replace(/https?:\/\/[^\s]+/gi, "[URL removed]")
+        .replace(/\b[A-Za-z]:\\[^\r\n\t]+/g, "[path removed]")
+        .replace(/\b[0-9a-f]{24,}\b/gi, "[identifier removed]")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    return (normalized || "Unspecified operational error").slice(0, maximum);
+}
+
+function buildOperationalErrorReport(item, visionToken) {
+    const token = String(visionToken || "");
+    if (Buffer.byteLength(token, "utf8") < 32) throw new Error("A configured Vision token is required for error provenance.");
+    const sourceInstance = createHash("sha256")
+        .update(Buffer.concat([Buffer.from("Krea2VisionOperationalSource/v1\0", "utf8"), Buffer.from(token, "utf8")]))
+        .digest("hex");
+    const eventId = /^[a-f0-9]{32}$/.test(String(item?.event_id || "")) ? String(item.event_id) : randomBytes(16).toString("hex");
+    const modelId = String(item?.model_id || "unknown").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200) || "unknown";
+    const errorCode = String(item?.error_code || "operational_error").replace(/[^a-z0-9_.-]+/gi, "_").slice(0, 80) || "operational_error";
+    const errorMessage = sanitizeOperationalErrorText(item?.error_message, 600);
+    const stage = sanitizeOperationalErrorText(item?.stage, 200);
+    const runtime = modelId.startsWith("vast::") ? "remote" : "local";
+    const payload = {
+        schema: KREA2_OPERATIONAL_ERROR_SCHEMA,
+        notice_version: KREA2_OPERATIONAL_ERROR_NOTICE_VERSION,
+        source_instance_sha256: sourceInstance,
+        event_id: eventId,
+        model_id: modelId,
+        pipeline_id: VISION_PIPELINE_ID,
+        error_code: errorCode,
+        error_message: errorMessage,
+        stage,
+        runtime,
+        plugin_version: PLUGIN_VERSION,
+        backend_version: "unavailable"
+    };
+    payload.report_sha256 = createHash("sha256").update(JSON.stringify([
+        payload.schema, payload.notice_version, payload.source_instance_sha256, payload.event_id,
+        payload.model_id, payload.pipeline_id, payload.error_code, payload.error_message,
+        payload.stage, payload.runtime, payload.plugin_version, payload.backend_version
+    ]), "utf8").digest("hex");
+    return payload;
+}
 
 function isCurrentDiagnosticReceipt(receipt) {
     return Boolean(
@@ -752,7 +804,7 @@ const HISTORY_ROOT_ID = "krea2-discord-history-root";
 const HISTORY_MODAL_ID = "krea2-discord-history-modal";
 const PRODUCT_MODAL_ID = "krea2-discord-product-modal";
 const ONBOARDING_MODAL_ID = "krea2-discord-onboarding-modal";
-const ONBOARDING_VERSION = 8;
+const ONBOARDING_VERSION = 9;
 const DEFAULT_SAVE_FOLDER = path.join(String(process.env.USERPROFILE || process.env.HOME || "."), "Pictures", "Krea2Vision");
 const HERETIC_MODEL_SPECS = Object.freeze([
     Object.freeze({
@@ -3292,6 +3344,9 @@ class Krea2DiscordCollector {
         this.visionQueue = Promise.resolve();
         this.visionInflightByRequest = new Map();
         this.localVisionSubmissions = new Map();
+        this.localVisionSubmissionTimers = new Map();
+        this.pendingOperationalErrors = [];
+        this.operationalErrorFlush = null;
         this.imageLoadHandlers = new Map();
         this.observer = null;
         this.scanFrame = null;
@@ -3492,6 +3547,9 @@ class Krea2DiscordCollector {
         this.historyOriginalPaths.clear();
         this.historyThumbnailUrls.clear();
         this.historyThumbnailLoads.clear();
+        for (const timer of this.localVisionSubmissionTimers.values()) clearTimeout(timer);
+        this.localVisionSubmissionTimers.clear();
+        this.pendingOperationalErrors = [];
         this.localVisionSubmissions.clear();
         if (this.interrogatePreviewUrl) this.revokeObjectUrl(this.interrogatePreviewUrl);
         this.interrogatePreviewUrl = null;
@@ -3623,7 +3681,7 @@ class Krea2DiscordCollector {
         note.className = "krea2-onboarding-note";
         const noteStrong = document.createElement("strong");
         noteStrong.textContent = "Heretic models and project guardrails. ";
-        const noteText = document.createTextNode("These model variants are designed not to refuse an image-description or prompt request. KREA2 Vision still applies its own local input validation, output-format and quality checks, shared-GPU admission checks, and security limits. If the backend is unavailable, use the Repair KREA2 Vision Suite shortcut created on your desktop. Optional buttons below open the exact revision-pinned body and matching projector downloads; both files are required.");
+        const noteText = document.createTextNode("These model variants are designed not to refuse an image-description or prompt request. KREA2 Vision still applies its own local input validation, output-format and quality checks, shared-GPU admission checks, and security limits. If the backend is unavailable, use the Repair KREA2 Vision Suite shortcut created on your desktop. Optional buttons below open the exact revision-pinned body and matching projector downloads; both files are required. Technical failures are automatically sent to the owner-only Seedframe error console with an anonymous installation digest, model, pipeline, stage, error and software versions. Mandatory error telemetry never contains image bytes or hashes, prompts, Discord identity or IDs, URLs, filenames, or local paths. Optional rich failure diagnostics remain a separate opt-in setting.");
         note.append(noteStrong, noteText);
 
         const contributionChoice = document.createElement("label");
@@ -4498,6 +4556,7 @@ class Krea2DiscordCollector {
         const requestGuidance = identityNote ? `Uploader-supplied identity or role metadata (not inferred from pixels): ${identityNote}` : "";
         const queuedGeneration = this.generation;
         const localSubmissionId = this.addLocalVisionSubmission({config: {visionModel: selectedModel}});
+        this.armLocalVisionSubmissionTimeout(localSubmissionId, null, selectedModel);
         const requestImage = {filename: `${original.sha256}${original.format.extension}`};
         const retainedPreview = this.interrogatePreviewUrl;
         if (!this.historyThumbnailUrls.has(original.sha256) && retainedPreview) {
@@ -4521,6 +4580,16 @@ class Krea2DiscordCollector {
         this.toast("Image added to the KREA2 Vision queue.", "success");
 
         const flow = this.visionFlowQueue.then(async () => {
+            const localState = this.localVisionSubmissions.get(localSubmissionId);
+            if (localState?.timed_out || localState?.status === "error") {
+                this.interrogatePendingCount = Math.max(0, this.interrogatePendingCount - 1);
+                this.interrogateStatus = "GPU not available";
+                this.interrogateStatusState = "error";
+                this.renderInterrogatePanel();
+                return;
+            }
+            this.clearLocalVisionSubmissionTimeout(localSubmissionId);
+            this.updateLocalVisionSubmission(localSubmissionId, {submission_started: true});
             if (!this.running || queuedGeneration !== this.generation) {
                 this.removeLocalVisionSubmission(localSubmissionId);
                 return;
@@ -4579,13 +4648,14 @@ class Krea2DiscordCollector {
                 if (this.historyJobs.some(job => job.id === localSubmissionId)) void this.openHistoryDetail(localSubmissionId);
             }
             catch (error) {
-                this.removeLocalVisionSubmission(localSubmissionId);
                 if (!this.running || queuedGeneration !== this.generation || error?.name === "AbortError") return;
                 const message = error instanceof Error ? error.message : String(error);
+                this.updateLocalVisionSubmission(localSubmissionId, {status: "error", stage: message, public_error: message});
                 this.interrogateStatus = message;
                 this.interrogateStatusState = "error";
                 this.toast(message, "error");
                 this.log("error", message);
+                this.queueOperationalError({eventId: localSubmissionId, modelId: selectedModel, errorCode: "interrogate_failed", errorMessage: message, stage: "Interrogate image request"});
                 await this.refreshHistory(true);
             }
             finally {
@@ -4667,6 +4737,7 @@ class Krea2DiscordCollector {
             if (this.historyRequestController === controller) this.historyRequestController = null;
             this.historyLoading = false;
             this.renderHistoryRail();
+            void this.flushOperationalErrors();
         }
     }
 
@@ -5020,7 +5091,8 @@ class Krea2DiscordCollector {
             public_error: "",
             image_hash: "",
             local_submission: true,
-            cancel_requested: false
+            cancel_requested: false,
+            submission_started: false
         });
         this.renderHistoryRail();
         return id;
@@ -5034,7 +5106,44 @@ class Krea2DiscordCollector {
     }
 
     removeLocalVisionSubmission(id) {
+        const timer = this.localVisionSubmissionTimers.get(id);
+        if (timer !== undefined) clearTimeout(timer);
+        this.localVisionSubmissionTimers.delete(id);
         if (this.localVisionSubmissions.delete(id)) this.renderHistoryRail();
+    }
+
+    clearLocalVisionSubmissionTimeout(id) {
+        const timer = this.localVisionSubmissionTimers.get(id);
+        if (timer !== undefined) clearTimeout(timer);
+        this.localVisionSubmissionTimers.delete(id);
+    }
+
+    armLocalVisionSubmissionTimeout(id, button, model) {
+        this.clearLocalVisionSubmissionTimeout(id);
+        const timer = setTimeout(() => {
+            this.localVisionSubmissionTimers.delete(id);
+            const current = this.localVisionSubmissions.get(id);
+            if (!this.running || !current || current.status !== "queued" || current.submission_started) return;
+            this.updateLocalVisionSubmission(id, {
+                status: "error",
+                stage: "GPU not available",
+                public_error: "GPU not available",
+                queue_ahead: 0,
+                timed_out: true
+            });
+            if (button) button.dataset.busy = "false";
+            this.setButtonState(button, "error", "!", "GPU not available. Click to retry.");
+            this.toast("GPU not available", "error");
+            this.log("error", "GPU not available");
+            this.queueOperationalError({
+                eventId: id,
+                modelId: model,
+                errorCode: "gpu_not_available",
+                errorMessage: "GPU not available",
+                stage: "Waiting to submit the Discord image"
+            });
+        }, GPU_AVAILABILITY_TIMEOUT_MS);
+        this.localVisionSubmissionTimers.set(id, timer);
     }
 
     async cancelVisionJob(job) {
@@ -6750,6 +6859,90 @@ class Krea2DiscordCollector {
         return JSON.parse(await readBoundedResponseText(response, HISTORY_MAX_RESPONSE_BYTES));
     }
 
+    queueOperationalError({eventId = "", modelId = "", errorCode = "operational_error", errorMessage = "", stage = ""} = {}) {
+        const normalizedEvent = /^[a-f0-9]{32}$/.test(String(eventId || "")) ? String(eventId) : randomBytes(16).toString("hex");
+        const item = {
+            event_id: normalizedEvent,
+            model_id: String(modelId || effectiveVisionModel(this.settings)).replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200) || "unknown",
+            error_code: String(errorCode || "operational_error").replace(/[^a-z0-9_.-]+/gi, "_").slice(0, 80) || "operational_error",
+            error_message: String(errorMessage || "Unspecified operational error").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 2000),
+            stage: String(stage || "KREA2 Vision operation").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200)
+        };
+        const existing = this.pendingOperationalErrors.findIndex(entry => entry.event_id === item.event_id && entry.error_code === item.error_code);
+        if (existing >= 0) this.pendingOperationalErrors.splice(existing, 1);
+        this.pendingOperationalErrors.push(item);
+        if (this.pendingOperationalErrors.length > MAX_PENDING_OPERATIONAL_ERRORS) {
+            this.pendingOperationalErrors.splice(0, this.pendingOperationalErrors.length - MAX_PENDING_OPERATIONAL_ERRORS);
+        }
+        void this.flushOperationalErrors();
+    }
+
+    async submitOperationalErrorDirect(item, visionToken) {
+        const payload = buildOperationalErrorReport(item, visionToken);
+        const response = await this.api.Net.fetch(KREA2_OPERATIONAL_ERROR_ENDPOINT, {
+            method: "POST",
+            headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": `Krea2VisionPlugin/${PLUGIN_VERSION}`,
+                "X-Krea2-Diagnostic-Contract": KREA2_OPERATIONAL_ERROR_SCHEMA,
+                "X-Krea2-Diagnostic-Notice": KREA2_OPERATIONAL_ERROR_NOTICE_VERSION
+            },
+            body: JSON.stringify(payload),
+            redirect: "manual",
+            maxRedirects: 0,
+            timeout: 10000
+        });
+        if (response.redirected || (response.url && response.url !== KREA2_OPERATIONAL_ERROR_ENDPOINT) || !response.ok) return false;
+        const raw = await readBoundedResponseText(response, 64 * 1024);
+        let receipt;
+        try { receipt = JSON.parse(raw); }
+        catch { return false; }
+        return receipt?.accepted === true && receipt?.report_sha256 === payload.report_sha256;
+    }
+
+    async flushOperationalErrors() {
+        if (this.operationalErrorFlush || !this.running || !this.pendingOperationalErrors.length) return this.operationalErrorFlush;
+        let vision;
+        try { vision = this.getVisionConfig(); }
+        catch { return null; }
+        if (!vision) return null;
+        const run = (async () => {
+            while (this.running && this.pendingOperationalErrors.length) {
+                const item = this.pendingOperationalErrors[0];
+                const expectedUrl = `${vision.origin}/api/discord-errors`;
+                let accepted = false;
+                try {
+                    const response = await this.api.Net.fetch(expectedUrl, {
+                        method: "POST",
+                        headers: {
+                            Accept: "application/json",
+                            "Content-Type": "application/json",
+                            "X-Krea2-Collector-Version": PLUGIN_VERSION,
+                            "X-Krea2-Vision-Token": vision.token
+                        },
+                        body: JSON.stringify(item),
+                        redirect: "manual",
+                        maxRedirects: 0,
+                        timeout: 10000
+                    });
+                    accepted = !response.redirected && (!response.url || response.url === expectedUrl) && response.ok;
+                }
+                catch {}
+                if (!accepted) {
+                    try { accepted = await this.submitOperationalErrorDirect(item, vision.token); }
+                    catch { accepted = false; }
+                }
+                if (!accepted) return;
+                this.pendingOperationalErrors.shift();
+            }
+        })();
+        this.operationalErrorFlush = run;
+        try { await run; }
+        finally { if (this.operationalErrorFlush === run) this.operationalErrorFlush = null; }
+        return null;
+    }
+
     async renderHealthPanel(panel, modalDocument) {
         panel.textContent = "Checking Vision, model, GPU queue, and local storage health…";
         const diagnostics = {checked_at: new Date().toISOString(), plugin_version: PLUGIN_VERSION};
@@ -7258,7 +7451,12 @@ class Krea2DiscordCollector {
         if (!this.running || !image?.isConnected || !button?.isConnected || button.dataset?.busy === "true") return;
         let selection;
         try {
-            const config = this.validateLocalCollectionSettings();
+            const route = this.validateLocalCollectionSettings();
+            const config = {
+                ...route,
+                visionModel: effectiveVisionModel(this.settings),
+                visionExecutionMode: normalizeVisionExecutionMode(this.settings.visionExecutionMode)
+            };
             selection = this.captureVisionSelection(image, config);
         }
         catch (error) {
@@ -7269,9 +7467,14 @@ class Krea2DiscordCollector {
         }
         const queuedGeneration = this.generation;
         const localSubmissionId = this.addLocalVisionSubmission(selection);
+        this.armLocalVisionSubmissionTimeout(localSubmissionId, button, selection.config.visionModel);
         button.dataset.busy = "true";
         this.setButtonState(button, "vision-queued", "Q", "Queued locally; it will appear in Discord Jobs as soon as Vision Studio receives it");
         const flow = this.visionFlowQueue.then(async () => {
+            const localState = this.localVisionSubmissions.get(localSubmissionId);
+            if (localState?.timed_out || localState?.status === "error") return;
+            this.clearLocalVisionSubmissionTimeout(localSubmissionId);
+            this.updateLocalVisionSubmission(localSubmissionId, {submission_started: true});
             if (!this.running || queuedGeneration !== this.generation || !button?.isConnected) {
                 if (button) button.dataset.busy = "false";
                 this.removeLocalVisionSubmission(localSubmissionId);
@@ -7297,7 +7500,18 @@ class Krea2DiscordCollector {
                 this.toast(message, "error");
                 this.log("error", message);
                 if (button) button.dataset.busy = "false";
-                this.removeLocalVisionSubmission(localSubmissionId);
+                this.updateLocalVisionSubmission(localSubmissionId, {
+                    status: "error",
+                    stage: message,
+                    public_error: message
+                });
+                this.queueOperationalError({
+                    eventId: localSubmissionId,
+                    modelId: selection.config.visionModel,
+                    errorCode: "plugin_queue_failed",
+                    errorMessage: message,
+                    stage: "Submitting the queued Discord image"
+                });
             }
         });
         this.visionFlowQueue = flow.catch(() => {});
@@ -7380,7 +7594,7 @@ class Krea2DiscordCollector {
                 return;
             }
 
-            const selectedModel = effectiveVisionModel(this.settings);
+            const selectedModel = String(selection?.config?.visionModel || effectiveVisionModel(this.settings));
             const preset = normalizePromptPreset(this.settings.preferredPreset);
             const datasetGuidance = this.settings.useKrea2DatasetGuidance === true;
             const feedbackContext = datasetGuidance ? buildPromptFeedbackContext(this.promptFeedback) : null;
@@ -7437,6 +7651,13 @@ class Krea2DiscordCollector {
             this.setButtonState(button, "error", "!", `${message} Nothing was saved. Click to retry.`);
             this.toast(message, "error");
             this.log("error", message);
+            this.queueOperationalError({
+                eventId: jobId,
+                modelId: selection?.config?.visionModel || effectiveVisionModel(this.settings),
+                errorCode: "plugin_vision_request_failed",
+                errorMessage: message,
+                stage: "Downloading or submitting the Discord image"
+            });
         }
         finally {
             this.controllers.delete(controller);
@@ -7707,7 +7928,7 @@ class Krea2DiscordCollector {
         panel.style.cssText = "padding:16px;max-width:760px;color:var(--text-normal);line-height:1.45";
 
         const intro = document.createElement("p");
-        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint and returns three grounded prompt variations. If automatic Krea2 contribution is enabled, all three generated prompt texts are submitted with model/pipeline IDs and an anonymous installation digest. Contributions never include image bytes or Discord identifiers. The plugin stores at most 250 local history thumbnails (640 px and 2 MiB maximum each) under the configured save folder so completed prompts retain their preview. It does not cache full-resolution source images or prompt text; feedback lasts only for this Discord session.";
+        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint and returns three grounded prompt variations. If automatic Krea2 contribution is enabled, all three generated prompt texts are submitted with model/pipeline IDs and an anonymous installation digest. Contributions never include image bytes or Discord identifiers. Technical failures always submit privacy-minimal operational fields to the owner-only Seedframe error console: anonymous installation digest, model, pipeline, stage, error code/message, and software versions. Mandatory error telemetry never includes an image, image hash, prompt, Discord identity or IDs, URL, filename, or local path. The separate rich failure-diagnostic option remains opt-in. The plugin stores at most 250 local history thumbnails (640 px and 2 MiB maximum each) under the configured save folder so completed prompts retain their preview. It does not cache full-resolution source images or prompt text; feedback lasts only for this Discord session.";
         panel.append(intro);
 
         const addField = ({label, note, key, type = "text", placeholder = "", browseFolder = false}) => {
@@ -7916,7 +8137,7 @@ class Krea2DiscordCollector {
         });
         addCheckbox({
             label: "Share failed Vision diagnostics with Krea2",
-            note: "Off by default and separate from dataset contribution. After explicit consent, failed requests only may send the source image, your Discord username, model/pipeline, error/stage, versions, and an available partial or audited prompt to the owner-only Seedframe diagnostics console. Successful requests are never sent through this channel.",
+            note: "Optional and off by default. After explicit consent, failed requests may additionally attach the source image, your Discord username, and an available partial or audited prompt to the owner-only Seedframe diagnostics console. This is separate from mandatory privacy-minimal technical error logging, which never contains images, prompts, Discord identity, URLs, filenames, or paths.",
             key: "shareFailureDiagnostics"
         });
         addCheckbox({
@@ -8010,6 +8231,7 @@ class Krea2DiscordCollector {
 Krea2DiscordCollector.helpers = Object.freeze({
     applyPromptPreset,
     buildPromptFeedbackContext,
+    buildOperationalErrorReport,
     buildVisionCacheProfile,
     buildVisionMultipartBody,
     classifyPromptMetadata,
@@ -8085,6 +8307,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     saveVisionPromptSidecar,
     safeModelFilePart,
     sanitizePromptFeedbackRecord,
+    sanitizeOperationalErrorText,
     sanitizeFilename,
     sha256Hex,
     submissionKey,

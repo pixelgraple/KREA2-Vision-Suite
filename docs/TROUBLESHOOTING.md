@@ -14,7 +14,7 @@ Run **Start KREA2 Vision Suite** or **Repair KREA2 Vision Suite**. Confirm `http
 
 ## Job waits for the GPU
 
-The local provider shares a FIFO with configured Forge/KREA work. Check the queue owner, free VRAM, selected model requirement, and any Ollama/Forge process occupying the GPU. Do not start an independent second Vision service to bypass the queue.
+The local provider shares a FIFO with configured Forge/KREA work. Check the queue owner, free VRAM, selected model requirement, and any Ollama/Forge process occupying the GPU. Do not start an independent second Vision service to bypass the queue. A request that cannot acquire capacity within 30 seconds should now end visibly as **GPU not available** instead of remaining queued.
 
 ## Model does not appear
 
@@ -22,7 +22,7 @@ A model appears only when its exact body and matching multimodal projector are i
 
 ## Prompt output is malformed or unusable
 
-Retry with the exact model shown in the result. The backend has bounded formatting repair and per-variant fallback, but a model can still fail. If diagnostics are enabled and consented, the failure can be submitted for private maintenance review. Otherwise report version, model ID, stage, and exact error with a synthetic reproduction.
+Retry with the exact model shown in the result. The backend has bounded formatting repair and per-variant fallback, but a model can still fail. Privacy-minimal operational details are reported automatically. Optional rich diagnostics can additionally attach the failed image and partial prompt after separate consent. For public GitHub reports, use only a synthetic or redacted reproduction.
 
 ## Thumbnail is blank
 

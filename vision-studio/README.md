@@ -36,7 +36,7 @@ Manual setup:
 
 ### Optional 24 GB Vast Serverless Gemma worker
 
-Run `scripts\INSTALL VAST SERVERLESS CLIENT.bat`, then build/publish the worker in `..\vast-serverless-gemma26`. Configure each worker with exactly one 24 GB GPU (RTX 3090 or RTX 4090), at least 65 GB of disk, `max_workers=3`, `cold_workers=1`, `cold_mult=1`, `min_load=0`, and `inactivity_timeout=8`. Three is a ceiling, not three always-running GPUs: extra workers start only under load. The one stopped cache worker preserves the verified 15 GB model/projector cache without keeping GPU compute active while idle. Vast still bills inactive-worker storage and bandwidth.
+Run `scripts\INSTALL VAST SERVERLESS CLIENT.bat`, then build/publish the worker in `..\vast-serverless-gemma26`. Configure each worker with exactly one 24 GB GPU (RTX 3090 or RTX 4090), at least 65 GB of disk, `max_workers=5`, `cold_workers=1`, `cold_mult=1`, `min_load=0`, `inactivity_timeout=8`, and `max_queue_time=30`. Five is a ceiling, not five always-running GPUs: extra workers start only under load. The one stopped cache worker preserves the verified 15 GB model/projector cache without keeping GPU compute active while idle. Vast still bills inactive-worker storage and bandwidth.
 
 Set the six `VAST_SERVERLESS_*` values in `.env` only after the endpoint and scoped API key exist. Restart Vision Studio and refresh the BetterDiscord model list. The new choice appears as `Remote Serverless — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)`. Remote jobs do not take the local Forge FIFO because they use a different physical GPU; Discord's own job worker still processes them one at a time.
 
@@ -102,6 +102,8 @@ The default WD14 device is CPU, keeping it out of Forge's shared VRAM. The WD14 
 ## Queue behavior on this PC
 
 `STUDIO_USE_SHARED_GENERATION_QUEUE=true` uses `%TEMP%\forge_shared_generation_queue`, with Forge-compatible tickets and `generation.lock` ownership. The Studio waits behind an image generation; if Studio owns the slot, Forge waits. The same `local_gpu` rule covers Ollama and llama.cpp. This is an ordered FIFO queue, not a race-prone process check. Do not change the queue directory unless your Forge configuration has also changed.
+
+`KREA2_GPU_AVAILABILITY_TIMEOUT_SECONDS=30` bounds shared-GPU admission. A request that cannot acquire capacity in time exits with `GPU not available`, removes its ticket, and cannot strand later Discord jobs. The timeout does not cancel inference after the GPU has already been acquired.
 
 ## Troubleshooting
 

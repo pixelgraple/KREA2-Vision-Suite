@@ -51,6 +51,7 @@ queue:
   directory: ""
   poll_seconds: 0.25
   stale_ticket_seconds: 21600
+  gpu_availability_timeout_seconds: 30
   forge_unload_urls: http://127.0.0.1:7861,http://127.0.0.1:7862
   forge_unload_timeout_seconds: 45
   # Must point at the same machine-local credential used by both Forge APIs.

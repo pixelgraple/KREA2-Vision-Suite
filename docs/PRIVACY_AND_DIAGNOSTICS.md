@@ -9,6 +9,7 @@ KREA2 is designed around data minimization, explicit feature boundaries, and loc
 - No full-resolution image library.
 - No durable prompt-history text database in strict privacy mode.
 - Optional network features are separately named and disclosed.
+- Required operational error reporting is limited to technical fields and excludes user content.
 - Credentials, logs, runtime data, models, and user content are excluded from the public repository.
 
 ## Local inference
@@ -27,7 +28,22 @@ An operator exposing online mode to other users must add per-user authentication
 
 Guidance fetches approved prompt text and opaque metadata, not source images. Optional contribution sends generated prompt text and bounded model/pipeline provenance, not the source image or Discord identity/location fields. See [KREA2 guidance and data](KREA2_GUIDANCE_AND_DATA.md).
 
-## Failure diagnostics
+## Required operational error reports
+
+Every installation reports terminal Vision failures so launch, queue, GPU-capacity, model, and transport defects can be repaired. The automatic record contains only:
+
+- a one-way anonymous installation digest derived from the private local Vision token;
+- a random event identifier;
+- requested model and pipeline identifiers;
+- bounded error code, sanitized error message, and stage;
+- local or remote runtime classification;
+- plugin and backend versions.
+
+It never contains image bytes, an image hash, generated or partial prompts, Discord username or IDs, server/channel/message identifiers, Discord or attachment URLs, filenames, local paths, credentials, or opaque model output. Errors are sent to the canonical Seedframe receiver and are visible only in its owner console. The plugin first asks the authenticated loopback broker to submit the record. If the broker is unavailable, the plugin can submit the same digest-bound record directly. Undelivered records remain in a bounded in-memory retry queue only and disappear when Discord exits; nothing is written to disk.
+
+No software can guarantee delivery during a total Internet outage. Reporting is therefore mandatory and best-effort: it retries while the plugin is running, but it never blocks Discord indefinitely or stores a hidden offline telemetry file.
+
+## Optional rich failure diagnostics
 
 Failure diagnostics are off by default and require separate current consent. When enabled, a failed job may submit:
 
@@ -38,7 +54,7 @@ Failure diagnostics are off by default and require separate current consent. Whe
 - a partial or generated prompt when one exists;
 - an image SHA-256 and bounded job identifiers.
 
-This evidence is user data and can be sensitive. It is sent only to the canonical Seedframe diagnostic endpoint for owner-only maintenance review. Transport is bounded and rate-limited. A diagnostic upload failure never changes the Vision job result.
+This evidence is user data and can be sensitive. It is sent only to the canonical Seedframe diagnostic endpoint for owner-only maintenance review. Transport is bounded and rate-limited. A rich diagnostic upload failure never changes the Vision job result or disables the required privacy-minimal operational record.
 
 Do not enable diagnostics if you do not want failed images and related evidence submitted. Do not paste diagnostic payloads into a public GitHub issue. Use synthetic or redacted reproductions for public reports.
 
@@ -52,4 +68,4 @@ The release process must reject or exclude `.env` files, API keys, tokens, Bette
 
 ## Deletion and control
 
-Local thumbnails can be cleared through plugin/history controls or by removing the configured preview folder after closing Discord. Disabling contribution or diagnostics prevents future submissions but cannot automatically remove already accepted server-side records. Server-side deletion requests are governed by the current Seedframe policy and operator process.
+Local thumbnails can be cleared through plugin/history controls or by removing the configured preview folder after closing Discord. Disabling contribution or rich diagnostics prevents future submissions of those optional records, but required privacy-minimal operational errors remain enabled. Already accepted server-side records cannot be removed automatically; deletion requests are governed by the current Seedframe policy and operator process.

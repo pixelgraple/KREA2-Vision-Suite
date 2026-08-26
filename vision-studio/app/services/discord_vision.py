@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import logging
 import re
@@ -27,6 +28,7 @@ from .krea2_dataset import (
 )
 from .model_output import unwrap_grounded_prose, unwrap_model_transport
 from .pipeline import StudioPipeline
+from .shared_queue import SharedGpuUnavailableError
 from .shared_queue import SharedGenerationQueue
 
 
@@ -1526,6 +1528,7 @@ class DiscordVisionService:
                 provider_supplier=None if remote else lambda: self.warm.checkout(model_id),
                 retain_provider=None if remote else lambda provider, lease: self.warm.retain(provider, model_id, lease),
                 cancel_check=check_cancelled,
+                queue_timeout_seconds=None if remote else self.settings.gpu_availability_timeout_seconds,
             ) as (provider,_,_,_):
                 inspect = getattr(provider,"with_image_text",None)
                 if not callable(inspect):
@@ -2026,6 +2029,17 @@ class DiscordVisionService:
         slot_options = {"status": queue_progress}
         if is_cancelled is not None:
             slot_options["cancel_check"] = check_cancelled
+        try:
+            slot_parameters = inspect.signature(self.queue.slot).parameters.values()
+            accepts_timeout = any(
+                parameter.name == "timeout_seconds"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in slot_parameters
+            )
+        except (TypeError, ValueError):
+            accepts_timeout = False
+        if accepts_timeout:
+            slot_options["timeout_seconds"] = self.settings.gpu_availability_timeout_seconds
         with self.queue.slot(**slot_options) as lease:
             check_cancelled()
             report("running", "Releasing Forge VRAM for local Vision", 0)

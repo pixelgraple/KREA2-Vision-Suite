@@ -46,7 +46,7 @@ The contribution path excludes source image bytes, Discord identity, Discord URL
 - Guidance can be on while contribution is off.
 - Contribution can be on while guidance is off.
 - Turning both off leaves ordinary Vision inference fully functional.
-- Failure diagnostics have separate consent and are not prompt contribution.
+- Required privacy-minimal operational errors are not prompt contribution. Optional rich failure diagnostics have separate consent.
 
 ## Future training
 

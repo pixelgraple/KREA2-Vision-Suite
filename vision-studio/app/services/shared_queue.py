@@ -28,6 +28,10 @@ class QueueLease:
     ticket_name: str
     nonce: str
 
+
+class SharedGpuUnavailableError(TimeoutError):
+    """The shared GPU did not become available before the request deadline."""
+
 class SharedGenerationQueue:
     """Exact ticket/file-lock protocol used by the current two Forge instances."""
     def __init__(self, instance, enabled=True, directory="", poll=0.25, stale=21600):
@@ -35,9 +39,10 @@ class SharedGenerationQueue:
         self.dir=Path(directory) if directory else Path(tempfile.gettempdir()) / "forge_shared_generation_queue"
         self.lock=self.dir/"generation.lock"; self.poll=max(.05,poll); self.stale=max(60,stale)
     @contextmanager
-    def slot(self, status=None, cancel_check=None):
+    def slot(self, status=None, cancel_check=None, timeout_seconds=None):
         if cancel_check: cancel_check()
         if not self.enabled: yield None; return
+        timeout=(None if timeout_seconds is None else max(0.05,float(timeout_seconds)))
         self.dir.mkdir(parents=True,exist_ok=True); nonce=secrets.token_urlsafe(32); ticket=self._ticket(nonce); fd=None; started=time.monotonic(); last=0
         try:
             while True:
@@ -49,6 +54,9 @@ class SharedGenerationQueue:
                         if cancel_check: cancel_check()
                         if status: status("Shared Forge/Ollama GPU queue acquired")
                         yield QueueLease(ticket.name,nonce); return
+                if timeout is not None and time.monotonic()-started >= timeout:
+                    if status: status("GPU not available")
+                    raise SharedGpuUnavailableError("GPU not available")
                 if status and time.monotonic()-last >= 1:
                     ahead=max(position-1,0); status(f"Waiting for shared GPU queue — {ahead} job{'s' if ahead != 1 else ''} ahead, {int(time.monotonic()-started)}s") ; last=time.monotonic()
                 time.sleep(self.poll)

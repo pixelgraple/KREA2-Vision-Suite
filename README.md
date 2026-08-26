@@ -2,11 +2,11 @@
 
 KREA2 Vision Suite is a free, open-source Windows application that adds detailed image interrogation to Discord through BetterDiscord. Select an image, choose a supported local or remote Vision model, and receive three distinct, evidence-grounded image-generation prompts.
 
-The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Optional Seedframe features are separately disclosed and controlled.
+The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Seedframe prompt contribution, KREA2 guidance, and rich failure attachments are separately disclosed and controlled. Privacy-minimal operational error reporting is required so launch and GPU-capacity failures can be repaired across installations.
 
 The **Online API** is an optional alternative for users who do not want to run a large Vision model on their own GPU. BetterDiscord still connects only to the authenticated loopback service on `127.0.0.1:7870`. For each image, the plugin exchanges its private local token for a short-lived, request-bound, one-use session. The local service then sends the image over HTTPS to the configured private Vast Serverless worker, which currently runs Gemma 4 26B-A4B Heretic on a 24 GB GPU. BetterDiscord never receives or stores the remote endpoint address, Vast account key, or worker credential. Selecting Online API disables the local model picker for that request; the completed job records the exact remote model that actually ran.
 
-Online inference means the selected image and bounded request metadata must leave the user's PC. The included worker is designed to process that content in memory, return the three generated prompts, and avoid intentionally writing images or prompts to worker disk. It can recruit up to five workers when demand increases and stop active GPU compute after the configured eight-second idle window. Dataset contribution and failure diagnostics are separate settings with their own disclosures; enabling Online API does not automatically enable either one.
+Online inference means the selected image and bounded request metadata must leave the user's PC. The included worker is designed to process that content in memory, return the three generated prompts, and avoid intentionally writing images or prompts to worker disk. It can recruit up to five workers when demand increases and stop active GPU compute after the configured eight-second idle window. Dataset contribution and rich failure attachments are separate settings with their own disclosures; enabling Online API does not automatically enable either one. Privacy-minimal technical error reporting remains active in every mode and never contains an image, image hash, prompt, Discord identity, URL, filename, or local path.
 
 > BetterDiscord is an unofficial Discord client modification. Review [BetterDiscord's documentation](https://docs.betterdiscord.app/users/getting-started/installation) and Discord's current terms before using it. Consider using a separate Windows account, virtual machine, and nonessential Discord account if you want stronger isolation.
 
@@ -53,7 +53,7 @@ The bootstrap downloads the stable manifest and release, verifies the exact byte
 
 ### Manual package
 
-Download [Krea2VisionSuite-v0.13.14-win64.zip](releases/Krea2VisionSuite-v0.13.14-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.15-win64.zip](releases/Krea2VisionSuite-v0.13.15-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -177,11 +177,12 @@ There is no advertising telemetry, behavioral analytics, contact list collection
 | Eight-example KREA2 guidance | Off | Yes, read-only | Eight approved prompt texts and opaque sample metadata are fetched from Seedframe |
 | KREA2 prompt contribution | User choice | Yes | Three generated prompt texts plus bounded model/pipeline provenance; no image or Discord identity |
 | Vast Online API | Off/operator-configured | Yes | Image and request metadata are sent to the configured worker for inference; the worker is designed for memory-only processing |
-| Failure diagnostics | Off/separate consent | Yes | A failed image, partial prompt, Discord username, model/stage/status, error details, and bounded identifiers may be sent to Seedframe for debugging |
+| Operational error reports | Required | Yes | Anonymous installation digest, model/pipeline, stage, error code/message, runtime, and software versions; no image, image hash, prompt, Discord identity, URL, filename, or path |
+| Rich failure attachments | Off/separate consent | Yes | A failed image, partial prompt, Discord username, model/stage/status, error details, and bounded identifiers may be sent to Seedframe for debugging |
 
 Strict privacy mode does not persist uploaded full-resolution images, generated prompts, feedback, exports, or a prompt-history database. Request-scoped processing files are deleted before a request completes. The plugin may retain a bounded thumbnail preview cache in the user's configured local folder so completed cards do not become blank.
 
-Failure diagnostics are deliberately separate because diagnostic evidence can contain user data. They are disabled unless the user accepts the current diagnostic disclosure. Diagnostic transport is rate-limited, bounded, nonblocking, and cannot make a Vision job fail. Never attach real diagnostic payloads to public GitHub issues.
+Automatic operational errors are mandatory, bounded, and privacy-minimal. They first use the authenticated loopback broker; if that broker cannot deliver the report, the plugin can submit the same digest-bound technical record directly to the canonical Seedframe receiver. Failed delivery stays only in a bounded in-memory retry queue and is never written to disk. Rich failure attachments are deliberately separate because they can contain user data, and remain disabled unless the user accepts their additional disclosure. Never attach real rich diagnostic payloads to public GitHub issues.
 
 See [Privacy and diagnostics](docs/PRIVACY_AND_DIAGNOSTICS.md) for the complete data-flow explanation.
 
@@ -198,6 +199,8 @@ See [models and VRAM](docs/MODELS.md).
 ## Queue and GPU ownership
 
 Local Discord jobs use the same FIFO handoff as configured Forge/KREA work. Discord processes exactly one image per queue turn and releases the ticket immediately. It may keep a selected model warm for up to 15 seconds only while the shared GPU is idle. Any non-Discord ticket cancels the warm window and evicts the model before the waiting work runs.
+
+A Discord image that cannot begin GPU submission or acquire the shared GPU within 30 seconds becomes a visible terminal error reading **GPU not available**. It is removed from the active queue, does not block later submissions, and emits a privacy-minimal operational report. Other failures show their sanitized actionable error instead of remaining indefinitely queued.
 
 The optional Vast worker may scale from zero to five workers. `min_load=0` avoids paying for permanently idle GPU compute. The deployed eight-second idle timeout lets a worker finish its current request before active compute scales down; one cold worker may retain model storage for faster wake-up, so storage charges can remain while GPU compute is stopped.
 

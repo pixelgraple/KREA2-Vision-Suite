@@ -8,6 +8,9 @@ from app.services.krea2_diagnostics import (
     DIAGNOSTIC_SCHEMA,
     DIAGNOSTIC_TERMS_VERSION,
     Krea2DiagnosticReporter,
+    Krea2OperationalErrorReporter,
+    OPERATIONAL_ERROR_SCHEMA,
+    sanitize_operational_error,
 )
 
 
@@ -40,6 +43,44 @@ class RecordingHttp:
 
 
 class Krea2DiagnosticReporterTests(unittest.TestCase):
+    def test_mandatory_operational_report_contains_no_user_content(self):
+        class OperationalHttp:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return FakeResponse(200, {
+                    "accepted": True,
+                    "report_sha256": kwargs["json"]["report_sha256"],
+                })
+
+        http = OperationalHttp()
+        reporter = Krea2OperationalErrorReporter(TOKEN, http=http, attempts=1)
+        accepted = reporter.submit_safely(
+            event_id="c" * 32,
+            model_id="vast::gemma4-26b-a4b-heretic-q3_k_l",
+            pipeline_id="discord-faithful-v7-participant-role-lock",
+            error_code="gpu_not_available",
+            error_message="failed at C:\\Users\\person\\private.png token=secret-value https://private.example/image",
+            stage="Waiting for remote worker",
+            runtime="remote",
+            plugin_version="0.13.15",
+            backend_version="0.13.15",
+        )
+        self.assertTrue(accepted)
+        payload = http.calls[0][1]["json"]
+        self.assertEqual(http.calls[0][1]["headers"]["X-Krea2-Diagnostic-Contract"], OPERATIONAL_ERROR_SCHEMA)
+        self.assertEqual(payload["error_code"], "gpu_not_available")
+        self.assertNotIn("private.png", payload["error_message"])
+        self.assertNotIn("secret-value", payload["error_message"])
+        self.assertNotIn("private.example", payload["error_message"])
+        for forbidden in ("image", "image_sha256", "prompt", "prompt_text", "discord_username", "guild_id", "channel_id", "message_id", "filename", "local_path"):
+            self.assertNotIn(forbidden, payload)
+
+    def test_operational_sanitizer_keeps_useful_public_error(self):
+        self.assertEqual(sanitize_operational_error("GPU not available"), "GPU not available")
+
     def test_submits_explicit_failure_contract_from_memory_only(self):
         http = RecordingHttp()
         reporter = Krea2DiagnosticReporter(TOKEN, http=http, attempts=1)

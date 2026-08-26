@@ -8,7 +8,7 @@
    $p="$env:TEMP\Install-KREA2VisionSuite.ps1"; Invoke-WebRequest "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/Install-KREA2VisionSuite.ps1" -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
    ```
 
-   Do not download only `Krea2DiscordCollector.plugin.js`. For a manual install, download the [v0.13.13 Windows ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.13-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
+   Do not download only `Krea2DiscordCollector.plugin.js`. For a manual install, download the [v0.13.15 Windows ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.15-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
 
 ## Updates
 
@@ -84,6 +84,8 @@ Do not paste a shared provider key into copies sent to friends. A public multi-u
 ## Shared Forge/KREA queue
 
 The Vision backend uses `%TEMP%\forge_shared_generation_queue`. Discord takes exactly one image per turn, releases the FIFO immediately, and rejoins at the tail when more Discord work is waiting. Its selected model may remain warm for up to 15 seconds only while the shared GPU is idle. A Forge/KREA/other ticket immediately cancels that warm window and evicts the Vision model before the competing ticket runs.
+
+If a Discord image cannot begin submission or acquire GPU capacity within 30 seconds, it ends with **GPU not available**, leaves the active queue, and allows later jobs to continue. Other terminal failures show their sanitized provider error. Required privacy-minimal error reporting contains only anonymous technical fields; rich image diagnostics remain a separate opt-in setting.
 
 At the head of a llama.cpp Vision turn, queue-owned handoff asks reachable queue-aware Forge instances to unload and unloads resident Ollama runners before the authoritative VRAM check. Model files and Ollama's installed model list are never deleted.
 
