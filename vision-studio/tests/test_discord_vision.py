@@ -913,6 +913,92 @@ class DiscordVisionTests(unittest.TestCase):
         with self.assertRaisesRegex(DiscordVisionRejected, "both hands"):
             _validate_required_grounding(faithful.replace("Both hands rest on the fronts of her knees", "Her arms remain visible"), required)
 
+    def test_pillar_lean_and_distinctive_wardrobe_require_two_source_locks(self):
+        initial_pose = (
+            "The primary subject's posture is visually uncertain because the crop ends above the knees and feet. "
+            "Her anatomical-right shoulder and upper back press into a white marble pillar. Her torso leans "
+            "laterally toward her right while her hips shift left away from the pillar. " + prose(80)
+        )
+        verified_pose = (
+            "The primary subject's posture is visually uncertain because the lower-body support state is outside "
+            "the visible crop. Her right shoulder and upper back visibly brace against the white marble pillar. "
+            "Her torso leans toward her right, and her pelvis shifts left away from the pillar as a counterbalance. "
+            + prose(80)
+        )
+        details = [
+            (
+                "Her right hand lifts the front of a sheer pale blue lace top, exposing her bare midriff. "
+                "The top has long lace sleeves. A low-rise sheer skirt sits low on her hips. " + prose(70)
+            ),
+            (
+                "The fingers of her right hand hold and pull pale blue lace fabric at the front of a semi-transparent "
+                "lace blouse, revealing the visible abdomen. Its long sheer sleeves reach the wrists, and a translucent "
+                "skirt is low-rise and positioned low on the hips. " + prose(70)
+            ),
+        ]
+        required = _derive_grounding_requirements(
+            verified_pose,
+            details,
+            pose_confirmation=initial_pose,
+        )
+        for fact in (
+            "external_support_contact",
+            "lateral_torso_lean",
+            "pelvis_countershift",
+            "garment_held_or_lifted",
+            "sheer_lace_top",
+            "long_lace_sleeves",
+            "exposed_midriff",
+            "low_rise_sheer_skirt",
+            "pale_blue_wardrobe",
+        ):
+            self.assertIn(fact, required)
+
+        faithful = (
+            "Her anatomical-right shoulder and upper back visibly brace against a white marble pillar, causing her "
+            "torso to lean laterally toward her right while her pelvis shifts left away from the pillar. The cropped "
+            "view does not establish her lower-body support state. Her right hand lifts and pulls the front of a "
+            "sheer pale blue lace top, exposing her bare midriff; long lace sleeves reach her wrists, while a low-rise "
+            "sheer skirt sits low on her hips. " + prose(400)
+        )
+        _validate_required_grounding(faithful, required)
+
+        near_only = faithful.replace(
+            "Her anatomical-right shoulder and upper back visibly brace against a white marble pillar, causing her ",
+            "She is positioned close to a white marble pillar, and ",
+        )
+        with self.assertRaisesRegex(DiscordVisionRejected, "shoulder|external support"):
+            _validate_required_grounding(near_only, required)
+
+        late_contact = (
+            "The cropped view does not establish her lower-body support state. "
+            + prose(170)
+            + " Her anatomical-right shoulder and upper back visibly brace against a white marble pillar, causing "
+            "her torso to lean laterally toward her right while her pelvis shifts left away from the pillar. Her "
+            "right hand lifts and pulls the front of a sheer pale blue lace top, exposing her bare midriff; long lace "
+            "sleeves reach her wrists, while a low-rise sheer skirt sits low on her hips. "
+            + prose(250)
+        )
+        with self.assertRaisesRegex(DiscordVisionRejected, "first 140 words"):
+            _validate_required_grounding(late_contact, required)
+
+    def test_external_support_lock_requires_pose_pass_and_independent_audit_agreement(self):
+        verified_pose = (
+            "The primary subject's posture is visually uncertain. Her right shoulder braces against a white pillar, "
+            "and her torso leans laterally toward her right. " + prose(80)
+        )
+        unconfirmed_pose = (
+            "The primary subject's posture is visually uncertain. The pillar is nearby, but visible contact is not "
+            "established. " + prose(80)
+        )
+        required = _derive_grounding_requirements(
+            verified_pose,
+            [],
+            pose_confirmation=unconfirmed_pose,
+        )
+        self.assertNotIn("external_support_contact", required)
+        self.assertNotIn("lateral_torso_lean", required)
+
     def test_facing_camera_does_not_become_an_over_shoulder_turn(self):
         ordinary = (
             "The primary subject is crouching with both feet planted in snow. Her head is turned toward the camera "
@@ -2389,7 +2475,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             blocked = remote.post("/api/discord-errors", headers={"X-Krea2-Vision-Token": TOKEN}, json=payload)
             accepted = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.17"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.18"},
                 json=payload,
             )
         self.assertEqual(denied.status_code, 401)
@@ -2410,7 +2496,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
             response = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.17"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.18"},
                 json={
                     "event_id": "e" * 32,
                     "model_id": "llamacpp::heretic-4b-q8_0",

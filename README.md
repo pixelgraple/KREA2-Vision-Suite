@@ -53,7 +53,7 @@ The bootstrap downloads the stable manifest and release, verifies the exact byte
 
 ### Manual package
 
-Download [Krea2VisionSuite-v0.13.17-win64.zip](releases/Krea2VisionSuite-v0.13.17-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.18-win64.zip](releases/Krea2VisionSuite-v0.13.18-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat

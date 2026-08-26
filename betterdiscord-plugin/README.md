@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.13.17
+# Krea2 Discord Vision v0.13.18
 
 The plugin checks the authenticated loopback broker for stable suite updates shortly after startup and every six hours. The default is a one-click update notice; verified automatic installation is optional. Updates are full-suite packages so plugin and backend protocol versions stay matched.
 
@@ -98,7 +98,7 @@ Heretic/uncensored variants reduce model-level refusals. The local project still
   "prompt_variants": ["...Prompt 1...", "...Prompt 2...", "...Prompt 3..."],
   "model": "...",
   "prompt_words": 384,
-  "pipeline_id": "discord-faithful-v8-skin-pose-surface-lock",
+  "pipeline_id": "discord-faithful-v9-external-support-wardrobe-lock",
   "dataset_guidance": {
     "enabled": true,
     "status": "applied",

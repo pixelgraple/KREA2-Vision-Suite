@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.17
+ * @version 0.13.18
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.17";
+const PLUGIN_VERSION = "0.13.18";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -734,7 +734,7 @@ function isCurrentPrivacyReceipt(receipt) {
     );
 }
 const VISUAL_EMBEDDING_SIZE = 8;
-const VISION_PIPELINE_ID = "discord-faithful-v8-skin-pose-surface-lock";
+const VISION_PIPELINE_ID = "discord-faithful-v9-external-support-wardrobe-lock";
 const KREA2_CONTRIBUTION_TERMS_VERSION = "seedframe-krea2-vision-2026-08-25";
 const KREA2_DIAGNOSTIC_TERMS_VERSION = "seedframe-krea2-vision-diagnostics-2026-08-25";
 const KREA2_OPERATIONAL_ERROR_SCHEMA = "seedframe.krea2-vision-operational-error.v1";

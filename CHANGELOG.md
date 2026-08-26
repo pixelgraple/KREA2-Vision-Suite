@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.18 - 2026-08-26
+
+- Separates being near a wall, pillar or column from actually touching, resting on, bracing against or transferring weight into it.
+- Requires the independent pose pass and pose audit to agree before external support, lateral torso lean or pelvis counter-shift becomes a machine-locked fact.
+- Preserves the exact verified body region, anatomical side and support surface, and requires that contact geometry within the first 140 words of every final variation.
+- Adds two-source wardrobe topology locks for a hand-held or lifted garment, sheer lace tops, long lace sleeves, exposed midriffs, low-rise sheer skirts and pale-blue garment color.
+- Expands the torso/clothing crop and final image audit to retain separate garment layers, sleeve length, transparency, lace, ties, hem/rise and exact hand-to-garment actions.
+- Advances the cache/reproducibility contract to `discord-faithful-v9-external-support-wardrobe-lock` so older prompt telemetry cannot be reused.
+
 ## 0.13.17 - 2026-08-26
 
 - Replaces restart-volatile Discord Prompt History with a durable local SQLite database at `vision-studio/data/history/discord_vision_jobs.sqlite3`.

@@ -60,13 +60,13 @@ class Krea2DiagnosticReporterTests(unittest.TestCase):
         accepted = reporter.submit_safely(
             event_id="c" * 32,
             model_id="vast::gemma4-26b-a4b-heretic-q3_k_l",
-            pipeline_id="discord-faithful-v8-skin-pose-surface-lock",
+            pipeline_id="discord-faithful-v9-external-support-wardrobe-lock",
             error_code="gpu_not_available",
             error_message="failed at C:\\Users\\person\\private.png token=secret-value https://private.example/image",
             stage="Waiting for remote worker",
             runtime="remote",
-            plugin_version="0.13.17",
-            backend_version="0.13.17",
+            plugin_version="0.13.18",
+            backend_version="0.13.18",
         )
         self.assertTrue(accepted)
         payload = http.calls[0][1]["json"]
@@ -89,7 +89,7 @@ class Krea2DiagnosticReporterTests(unittest.TestCase):
             job_id="a" * 32,
             discord_username="garlicjr2",
             model_id="llamacpp::heretic-4b-q8_0",
-            pipeline_id="discord-faithful-v8-skin-pose-surface-lock",
+            pipeline_id="discord-faithful-v9-external-support-wardrobe-lock",
             error_code="output_validation_failed",
             error_message="Prompt formatting could not be repaired.",
             stage="Writing final prompt variations",
