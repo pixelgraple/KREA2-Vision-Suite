@@ -43,6 +43,10 @@ linux/amd64 image and publishes immutable commit and model tags to GHCR. Model
 weights are never copied into the image; the worker downloads the two pinned,
 hash-verified artifacts into its Vast cache on first startup.
 
+The clean public repository publishes the worker as
+`ghcr.io/pixelgraple/krea2-vision-suite-vast-gemma26`; this distinct package
+name avoids inheriting permissions from the retired pre-release repository.
+
 The production Vast template does not depend on private GHCR access. It uses
 the same pinned public llama.cpp CUDA base image and runs
 `bootstrap-worker.sh` from the immutable `krea2-worker-v0.13.9` source tag.

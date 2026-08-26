@@ -30,7 +30,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/${{ github.repository_owner }}/krea2-vision-suite-gemma26-worker
+          images: ghcr.io/${{ github.repository_owner }}/krea2-vision-suite-vast-gemma26
           tags: |
             type=sha
             type=raw,value=gemma4-26b-a4b-q3-kl
