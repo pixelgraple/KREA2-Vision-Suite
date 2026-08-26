@@ -308,8 +308,6 @@ class DiscordSessionRequest(BaseModel):
     model:str
     remote_license_id:str=""
     remote_license_token:str=""
-    remote_discord_user_id:str=""
-    remote_discord_username:str=""
     source_url:str=""
 
 class DiscordOperationalErrorRequest(BaseModel):
@@ -365,8 +363,6 @@ def issue_discord_session(
             remote_access=RemoteAccess(
                 license_id=payload.remote_license_id.strip(),
                 license_token=payload.remote_license_token.strip(),
-                discord_user_id=payload.remote_discord_user_id.strip(),
-                discord_username=" ".join(payload.remote_discord_username.split()),
                 request_id=payload.idempotency_key.strip().lower(),
                 source_url=payload.source_url.strip(),
             )

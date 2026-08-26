@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -14,9 +15,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 try:
     from vastai import CoroutineServerless
@@ -29,6 +32,10 @@ DISCORD_ID_RE = re.compile(r"^[1-9][0-9]{16,21}$")
 LICENSE_ID_RE = re.compile(r"^lic_[A-Za-z0-9_-]{12,64}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 SOURCE_URL_RE = re.compile(r"^https://(?:cdn\.discordapp\.com|media\.discordapp\.net)/attachments/[^\s?#]+(?:\?[^\s]*)?$", re.I)
+ENROLLMENT_ID_RE = re.compile(r"^enr_[A-Za-z0-9_-]{24,96}$")
+ENROLLMENT_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
+OAUTH_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
+OAUTH_ENROLLMENT_TTL_SECONDS = 10 * 60
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,10 @@ class Config:
     request_timeout_seconds: float
     max_request_bytes: int
     retention_days: int
+    discord_client_id: str
+    discord_client_secret: str
+    discord_redirect_uri: str
+    license_signing_key: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -53,13 +64,17 @@ class Config:
             request_timeout_seconds=max(30.0, min(float(os.getenv("KREA2_GATEWAY_TIMEOUT_SECONDS", "1200")), 3600.0)),
             max_request_bytes=max(1_000_000, min(int(os.getenv("KREA2_GATEWAY_MAX_REQUEST_BYTES", str(12 * 1024 * 1024))), 24 * 1024 * 1024)),
             retention_days=max(1, min(int(os.getenv("KREA2_GATEWAY_AUDIT_RETENTION_DAYS", "30")), 365)),
+            discord_client_id=os.getenv("KREA2_GATEWAY_DISCORD_CLIENT_ID", "").strip(),
+            discord_client_secret=os.getenv("KREA2_GATEWAY_DISCORD_CLIENT_SECRET", ""),
+            discord_redirect_uri=os.getenv("KREA2_GATEWAY_DISCORD_REDIRECT_URI", "").strip(),
+            license_signing_key=os.getenv("KREA2_GATEWAY_LICENSE_SIGNING_KEY", ""),
         )
 
 
-class ClaimRequest(BaseModel):
-    discord_user_id: str = Field(min_length=17, max_length=22)
-    discord_username: str = Field(min_length=1, max_length=80)
+class OAuthStartRequest(BaseModel):
     installation_id: str = Field(min_length=24, max_length=128)
+    enrollment_id: str = Field(min_length=28, max_length=100)
+    enrollment_secret: str = Field(min_length=43, max_length=160)
 
 
 class ChatRequest(BaseModel):
@@ -87,6 +102,16 @@ def clean_text(value: object, maximum: int) -> str:
 
 def token_hash(salt: str, token: str) -> str:
     return hashlib.sha256((salt + "\0" + token).encode("utf-8")).hexdigest()
+
+
+def deterministic_license_token(signing_key: str, license_id: str, enrollment_id: str) -> str:
+    """Return an opaque bearer token without persisting it in the gateway database."""
+    digest = hmac.new(
+        signing_key.encode("utf-8"),
+        f"krea2-remote-license/v1\0{license_id}\0{enrollment_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def parse_bearer(value: str | None) -> tuple[str, str]:
@@ -127,11 +152,21 @@ class Gateway:
                     license_id TEXT PRIMARY KEY, discord_user_id TEXT NOT NULL,
                     discord_username TEXT NOT NULL, installation_digest TEXT NOT NULL,
                     token_salt TEXT NOT NULL, token_digest TEXT NOT NULL,
+                    auth_method TEXT NOT NULL DEFAULT 'legacy_claim',
                     status TEXT NOT NULL CHECK(status IN ('active','suspended','revoked')),
                     created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
                     revoked_at INTEGER, revoked_reason TEXT
                 );
                 CREATE INDEX IF NOT EXISTS licenses_user_idx ON licenses(discord_user_id);
+                CREATE TABLE IF NOT EXISTS oauth_enrollments (
+                    enrollment_id TEXT PRIMARY KEY, enrollment_salt TEXT NOT NULL,
+                    enrollment_digest TEXT NOT NULL, installation_digest TEXT NOT NULL,
+                    state TEXT NOT NULL UNIQUE, status TEXT NOT NULL CHECK(status IN ('pending','complete','denied','expired')),
+                    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+                    completed_at INTEGER, delivered_at INTEGER, discord_user_id TEXT,
+                    discord_username TEXT, license_id TEXT
+                );
+                CREATE INDEX IF NOT EXISTS oauth_enrollments_expiry_idx ON oauth_enrollments(expires_at);
                 CREATE TABLE IF NOT EXISTS remote_jobs (
                     request_id TEXT PRIMARY KEY, license_id TEXT NOT NULL, model_id TEXT NOT NULL,
                     discord_user_id TEXT NOT NULL, discord_username TEXT NOT NULL,
@@ -141,31 +176,125 @@ class Gateway:
                 CREATE INDEX IF NOT EXISTS remote_jobs_retention_idx ON remote_jobs(completed_at);
             """)
 
-    def claim(self, request: ClaimRequest) -> dict[str, str]:
-        user_id = request.discord_user_id.strip()
-        username = clean_text(request.discord_username, 80)
-        install = request.installation_id.strip()
-        if not DISCORD_ID_RE.fullmatch(user_id) or not username or not re.fullmatch(r"[A-Za-z0-9_-]{24,128}", install):
-            raise HTTPException(422, "The Discord account claim is invalid.")
-        now, salt, token = int(time.time()), secrets.token_hex(16), secrets.token_urlsafe(48)
-        license_id = "lic_" + secrets.token_urlsafe(18).replace("-", "_")
-        install_digest = hashlib.sha256(install.encode("utf-8")).hexdigest()
-        with self.connection() as db:
-            if db.execute("SELECT 1 FROM licenses WHERE discord_user_id=? AND status IN ('suspended','revoked') LIMIT 1", (user_id,)).fetchone():
-                raise HTTPException(403, "Remote KREA2 API access is unavailable for this Discord account.")
-            db.execute("UPDATE licenses SET status='suspended', revoked_at=?, revoked_reason='replaced after local reinstall' WHERE discord_user_id=? AND installation_digest=? AND status='active'", (now, user_id, install_digest))
-            db.execute("INSERT INTO licenses VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL)", (license_id, user_id, username, install_digest, salt, token_hash(salt, token), "active", now, now))
-        return {"license_id": license_id, "license_token": token, "status": "active"}
+            columns = {row[1] for row in db.execute("PRAGMA table_info(licenses)")}
+            if "auth_method" not in columns:
+                db.execute("ALTER TABLE licenses ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'legacy_claim'")
 
-    def authenticate(self, authorization: str | None, claimed_user_id: str, request_id: str) -> sqlite3.Row:
+    def oauth_configured(self) -> bool:
+        return bool(
+            re.fullmatch(r"[0-9]{17,22}", self.config.discord_client_id)
+            and len(self.config.discord_client_secret) >= 24
+            and self.config.discord_redirect_uri.startswith("https://")
+            and len(self.config.license_signing_key) >= 32
+        )
+
+    def start_oauth(self, request: OAuthStartRequest) -> dict[str, str | int]:
+        if not self.oauth_configured():
+            raise HTTPException(503, "The Online API Discord sign-in is not configured yet.")
+        enrollment_id, enrollment_secret = request.enrollment_id.strip(), request.enrollment_secret.strip()
+        installation_id = request.installation_id.strip()
+        if not (
+            ENROLLMENT_ID_RE.fullmatch(enrollment_id)
+            and ENROLLMENT_SECRET_RE.fullmatch(enrollment_secret)
+            and re.fullmatch(r"[A-Za-z0-9_-]{24,128}", installation_id)
+        ):
+            raise HTTPException(422, "The Online API enrollment request is invalid.")
+        state = secrets.token_urlsafe(32)
+        now = int(time.time())
+        salt = secrets.token_hex(16)
+        install_digest = hashlib.sha256(installation_id.encode("utf-8")).hexdigest()
+        with self.connection() as db:
+            db.execute("DELETE FROM oauth_enrollments WHERE expires_at < ?", (now,))
+            db.execute(
+                "INSERT INTO oauth_enrollments(enrollment_id,enrollment_salt,enrollment_digest,installation_digest,state,status,created_at,expires_at) VALUES(?,?,?,?,?,'pending',?,?) ON CONFLICT(enrollment_id) DO UPDATE SET enrollment_salt=excluded.enrollment_salt,enrollment_digest=excluded.enrollment_digest,installation_digest=excluded.installation_digest,state=excluded.state,status='pending',created_at=excluded.created_at,expires_at=excluded.expires_at,completed_at=NULL,delivered_at=NULL,discord_user_id=NULL,discord_username=NULL,license_id=NULL",
+                (enrollment_id, salt, token_hash(salt, enrollment_secret), install_digest, state, now, now + OAUTH_ENROLLMENT_TTL_SECONDS),
+            )
+        params = {
+            "response_type": "code", "client_id": self.config.discord_client_id,
+            "scope": "identify", "redirect_uri": self.config.discord_redirect_uri,
+            "state": state, "prompt": "consent",
+        }
+        query = urlencode(params)
+        return {"enrollment_id": enrollment_id, "authorize_url": f"https://discord.com/oauth2/authorize?{query}", "expires_in_seconds": OAUTH_ENROLLMENT_TTL_SECONDS}
+
+    def _enrollment(self, enrollment_id: str, enrollment_secret: str) -> sqlite3.Row:
+        if not ENROLLMENT_ID_RE.fullmatch(enrollment_id) or not ENROLLMENT_SECRET_RE.fullmatch(enrollment_secret):
+            raise HTTPException(401, "Online API enrollment is invalid.")
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM oauth_enrollments WHERE enrollment_id=?", (enrollment_id,)).fetchone()
+            if not row or not hmac.compare_digest(row["enrollment_digest"], token_hash(row["enrollment_salt"], enrollment_secret)):
+                raise HTTPException(401, "Online API enrollment is invalid.")
+            if row["expires_at"] < int(time.time()):
+                db.execute("UPDATE oauth_enrollments SET status='expired' WHERE enrollment_id=?", (enrollment_id,))
+                raise HTTPException(410, "Online API sign-in expired. Start again.")
+            return row
+
+    def oauth_status(self, enrollment_id: str, enrollment_secret: str) -> dict[str, str]:
+        row = self._enrollment(enrollment_id, enrollment_secret)
+        status = str(row["status"])
+        if status != "complete":
+            return {"status": status}
+        if row["delivered_at"] is not None or not row["license_id"]:
+            return {"status": "delivered"}
+        license_id = str(row["license_id"])
+        token = deterministic_license_token(self.config.license_signing_key, license_id, enrollment_id)
+        with self.connection() as db:
+            db.execute("UPDATE oauth_enrollments SET delivered_at=? WHERE enrollment_id=? AND delivered_at IS NULL", (int(time.time()), enrollment_id))
+        return {"status": "complete", "license_id": license_id, "license_token": token, "discord_username": clean_text(row["discord_username"], 80)}
+
+    def oauth_callback(self, state: str, code: str = "", error: str = "") -> tuple[int, str]:
+        if not OAUTH_STATE_RE.fullmatch(state):
+            return 400, "The Discord sign-in state is invalid. Return to Discord and try again."
+        with self.connection() as db:
+            enrollment = db.execute("SELECT * FROM oauth_enrollments WHERE state=?", (state,)).fetchone()
+        if not enrollment or enrollment["expires_at"] < int(time.time()):
+            return 400, "This Discord sign-in has expired. Return to Discord and start again."
+        if enrollment["status"] != "pending":
+            return 400, "This Discord sign-in was already completed. Return to KREA2 Vision Suite."
+        if error or not code:
+            with self.connection() as db:
+                db.execute("UPDATE oauth_enrollments SET status='denied', completed_at=? WHERE enrollment_id=?", (int(time.time()), enrollment["enrollment_id"]))
+            return 400, "Discord sign-in was cancelled or denied. Return to Discord and try again."
+        try:
+            token_response = self.http.post(
+                "https://discord.com/api/oauth2/token",
+                data={"grant_type":"authorization_code", "code":code, "redirect_uri":self.config.discord_redirect_uri},
+                auth=(self.config.discord_client_id, self.config.discord_client_secret),
+                timeout=12,
+            )
+            token_body = token_response.json()
+            access_token = str(token_body.get("access_token") or "")
+            identity_response = self.http.get("https://discord.com/api/v10/users/@me", headers={"Authorization":f"Bearer {access_token}"}, timeout=12)
+            identity = identity_response.json()
+            user_id = str(identity.get("id") or "")
+            username = clean_text(identity.get("global_name") or identity.get("username"), 80)
+            if getattr(token_response, "status_code", 500) >= 400 or getattr(identity_response, "status_code", 500) >= 400 or not DISCORD_ID_RE.fullmatch(user_id) or not username:
+                raise ValueError("Discord identity verification failed")
+        except Exception:
+            return 502, "Discord identity verification failed. Return to Discord and try again."
+        now = int(time.time())
+        license_id = "lic_" + secrets.token_urlsafe(18).replace("-", "_")
+        token_salt = secrets.token_hex(16)
+        token = deterministic_license_token(self.config.license_signing_key, license_id, str(enrollment["enrollment_id"]))
+        with self.connection() as db:
+            banned = db.execute("SELECT 1 FROM licenses WHERE discord_user_id=? AND status IN ('suspended','revoked') LIMIT 1", (user_id,)).fetchone()
+            if banned:
+                db.execute("UPDATE oauth_enrollments SET status='denied', completed_at=? WHERE enrollment_id=?", (now, enrollment["enrollment_id"]))
+                return 403, "Online API access is unavailable for this Discord account."
+            db.execute("UPDATE licenses SET status='suspended', revoked_at=?, revoked_reason='replaced after Discord OAuth enrollment' WHERE discord_user_id=? AND installation_digest=? AND status='active'", (now, user_id, enrollment["installation_digest"]))
+            db.execute("INSERT INTO licenses(license_id,discord_user_id,discord_username,installation_digest,token_salt,token_digest,auth_method,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (license_id, user_id, username, enrollment["installation_digest"], token_salt, token_hash(token_salt, token), "discord_oauth", "active", now, now))
+            db.execute("UPDATE oauth_enrollments SET status='complete', completed_at=?, discord_user_id=?, discord_username=?, license_id=? WHERE enrollment_id=?", (now, user_id, username, license_id, enrollment["enrollment_id"]))
+        return 200, "Discord account verified. You can close this page and return to KREA2 Vision Suite."
+
+    def authenticate(self, authorization: str | None, request_id: str) -> sqlite3.Row:
         license_id, token = parse_bearer(authorization)
-        if not DISCORD_ID_RE.fullmatch(str(claimed_user_id or "")) or not REQUEST_ID_RE.fullmatch(request_id):
+        if not REQUEST_ID_RE.fullmatch(request_id):
             raise HTTPException(422, "Remote request provenance is invalid.")
         with self.connection() as db:
             row = db.execute("SELECT * FROM licenses WHERE license_id=?", (license_id,)).fetchone()
             if not row or not hmac.compare_digest(row["token_digest"], token_hash(row["token_salt"], token)):
                 raise HTTPException(401, "The remote KREA2 license is invalid.")
-            if row["status"] != "active" or not hmac.compare_digest(row["discord_user_id"], claimed_user_id):
+            if row["status"] != "active" or row["auth_method"] != "discord_oauth":
                 raise HTTPException(403, "Remote KREA2 API access is unavailable for this Discord account.")
             db.execute("UPDATE licenses SET last_seen_at=? WHERE license_id=?", (int(time.time()), license_id))
             return row
@@ -241,19 +370,34 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "model": PUBLIC_MODEL_ID, "configured": bool(gateway.config.vast_endpoint and len(gateway.config.vast_api_key) >= 24)}
+        return {
+            "ok": True, "model": PUBLIC_MODEL_ID,
+            "configured": bool(gateway.config.vast_endpoint and len(gateway.config.vast_api_key) >= 24),
+            "discord_oauth_configured": gateway.oauth_configured(),
+        }
 
-    @app.post("/v1/licenses/claim")
-    def claim(payload: ClaimRequest) -> dict[str, str]: return gateway.claim(payload)
+    @app.post("/v1/oauth/start")
+    def oauth_start(payload: OAuthStartRequest) -> dict[str, str | int]:
+        return gateway.start_oauth(payload)
+
+    @app.get("/v1/oauth/status/{enrollment_id}")
+    def oauth_status(enrollment_id: str, enrollment_secret: str | None = Header(default=None, alias="X-Krea2-Enrollment-Secret")) -> dict[str, str]:
+        return gateway.oauth_status(enrollment_id, str(enrollment_secret or ""))
+
+    @app.get("/v1/oauth/callback", response_class=HTMLResponse)
+    def oauth_callback(state: str = Query(default=""), code: str = Query(default=""), error: str = Query(default="")) -> HTMLResponse:
+        status, message = gateway.oauth_callback(state, code, error)
+        safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return HTMLResponse(f"<!doctype html><meta charset=utf-8><title>KREA2 Vision Suite</title><main><h1>KREA2 Vision Suite</h1><p>{safe}</p></main>", status_code=status, headers={"Cache-Control":"no-store"})
 
     @app.post("/v1/chat/completions")
-    async def chat(payload: ChatRequest, authorization: str | None = Header(default=None), discord_user_id: str | None = Header(default=None, alias="X-Krea2-Discord-User"), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, Any]:
-        license_row = gateway.authenticate(authorization, discord_user_id or "", request_id or "")
+    async def chat(payload: ChatRequest, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, Any]:
+        license_row = gateway.authenticate(authorization, request_id or "")
         return await gateway.infer(payload, license_row, request_id or "")
 
     @app.post("/v1/audit/complete")
-    def complete(payload: AuditCompletion, authorization: str | None = Header(default=None), discord_user_id: str | None = Header(default=None, alias="X-Krea2-Discord-User"), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
-        license_row = gateway.authenticate(authorization, discord_user_id or "", request_id or "")
+    def complete(payload: AuditCompletion, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
+        license_row = gateway.authenticate(authorization, request_id or "")
         gateway.complete_audit(payload, license_row, request_id or "")
         return {"accepted": True}
 

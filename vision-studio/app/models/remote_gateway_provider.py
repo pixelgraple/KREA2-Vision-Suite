@@ -49,7 +49,7 @@ class RemoteGatewayProvider(VisionProvider):
         payload = {"model":self.model,"messages":messages,"temperature":float(temperature),"max_tokens":limit,"stream":False}
         if json_mode:
             payload["response_format"] = {"type":"json_object"}
-        headers = {"Authorization":self.access.authorization,"X-Krea2-Discord-User":self.access.discord_user_id,"X-Krea2-Request-Id":self.access.request_id}
+        headers = {"Authorization":self.access.authorization,"X-Krea2-Request-Id":self.access.request_id}
         try:
             response = self.http.post(f"{self.base_url}/v1/chat/completions", json=payload, headers=headers, timeout=self.timeout + 15)
             body = response.json()
@@ -77,7 +77,7 @@ class RemoteGatewayProvider(VisionProvider):
         return self._chat([{"role":"system","content":system},{"role":"user","content":user}], temperature, max_tokens=max_tokens)
 
     def complete_audit(self, prompt_variants: list[str]) -> None:
-        headers = {"Authorization":self.access.authorization,"X-Krea2-Discord-User":self.access.discord_user_id,"X-Krea2-Request-Id":self.access.request_id}
+        headers = {"Authorization":self.access.authorization,"X-Krea2-Request-Id":self.access.request_id}
         payload = {"model_id":"vast::gemma4-26b-a4b-heretic-q3_k_l","prompt_variants":prompt_variants,"source_url":self.access.source_url}
         try:
             response = self.http.post(f"{self.base_url}/v1/audit/complete", json=payload, headers=headers, timeout=12)

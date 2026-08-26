@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.18
+ * @version 0.13.19
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.18";
+const PLUGIN_VERSION = "0.13.19";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -986,7 +986,7 @@ const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L
 const REMOTE_GATEWAY_URL = "https://seedframe.xyz/api/krea2-vision";
 const VISION_EXECUTION_OPTIONS = Object.freeze([
     ["Local GPU — use an installed model on this computer", "local"],
-    ["Online API — Gemma 4 26B-A4B on the private remote worker", "online"]
+    ["Online API — Gemma 4 26B-A4B on the private remote worker (Discord sign-in required)", "online"]
 ]);
 const LOCAL_VISION_MODEL_IDS = new Set(VISION_MODEL_OPTIONS.map(([, id]) => id));
 const VISION_MODEL_IDS = new Set([...LOCAL_VISION_MODEL_IDS, ONLINE_VISION_MODEL_ID]);
@@ -6771,33 +6771,78 @@ class Krea2DiscordCollector {
     }
 
     async ensureRemoteLicense(signal) {
-        this.userStore ||= this.api.Webpack.getStore("UserStore") || null;
-        const currentUser = this.userStore?.getCurrentUser?.();
-        const discordUserId = String(currentUser?.id || "").trim();
-        const discordUsername = String(currentUser?.username || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 80);
-        if (!/^\d{17,22}$/.test(discordUserId) || !discordUsername) throw new Error("A signed-in Discord account is required for the Online API.");
         const saved = this.settings.remoteLicense;
-        if (saved && saved.discordUserId === discordUserId && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
+        if (saved && Number(saved.authVersion) === 2 && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
         let installationId = String(this.api.Data.load("remoteVisionInstallationId") || "");
         if (!/^[A-Za-z0-9_-]{24,128}$/.test(installationId)) {
             installationId = randomBytes(32).toString("base64url");
             this.api.Data.save("remoteVisionInstallationId", installationId);
         }
+        const enrollmentId = `enr_${randomBytes(32).toString("base64url")}`;
+        const enrollmentSecret = randomBytes(48).toString("base64url");
         let response;
         try {
-            response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/licenses/claim`, {method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({discord_user_id:discordUserId,discord_username:discordUsername,installation_id:installationId}),redirect:"manual",maxRedirects:0,timeout:15000,signal});
+            response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/oauth/start`, {method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:JSON.stringify({installation_id:installationId,enrollment_id:enrollmentId,enrollment_secret:enrollmentSecret}),redirect:"manual",maxRedirects:0,timeout:15000,signal});
         }
-        catch (error) { throw new Error("The Online API license service is unavailable. Retry shortly."); }
+        catch (error) { throw new Error("The Online API Discord sign-in service is unavailable. Retry shortly."); }
         const responseText = await readBoundedResponseText(response, 64 * 1024);
-        if (!response.ok) throw new Error(`Online API license activation failed with HTTP ${response.status}${parseStudioErrorDetail(responseText) ? `: ${parseStudioErrorDetail(responseText)}` : "."}`);
+        if (!response.ok) throw new Error(`Online API Discord sign-in failed with HTTP ${response.status}${parseStudioErrorDetail(responseText) ? `: ${parseStudioErrorDetail(responseText)}` : "."}`);
         let issued;
         try { issued = JSON.parse(responseText); }
-        catch { throw new Error("The Online API license service returned invalid JSON."); }
-        const license = Object.freeze({licenseId:String(issued?.license_id || ""),licenseToken:String(issued?.license_token || ""),discordUserId,discordUsername});
-        if (!/^lic_[A-Za-z0-9_-]{12,64}$/.test(license.licenseId) || !/^[\x21-\x7e]{43,160}$/.test(license.licenseToken)) throw new Error("The Online API license service returned invalid credentials.");
-        this.settings.remoteLicense = license;
-        this.saveSettings();
-        return license;
+        catch { throw new Error("The Online API Discord sign-in service returned invalid JSON."); }
+        const authorizeUrl = String(issued?.authorize_url || "");
+        if (!/^https:\/\/discord\.com\/oauth2\/authorize\?/.test(authorizeUrl) || String(issued?.enrollment_id || "") !== enrollmentId) throw new Error("The Online API Discord sign-in service returned an invalid authorization link.");
+        const accepted = await this.confirmRemoteOAuth();
+        if (!accepted) throw new Error("Discord sign-in was cancelled. Local GPU mode remains available without an account.");
+        try {
+            const external = this.api.Webpack.getModule?.(module => typeof module?.openExternal === "function", {searchExports:true});
+            if (external?.openExternal) external.openExternal(authorizeUrl);
+            else window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+        }
+        catch { throw new Error("Could not open Discord sign-in. Allow Discord to open links, then retry."); }
+        const deadline = Date.now() + Math.max(60, Math.min(Number(issued?.expires_in_seconds || 600), 600)) * 1000;
+        while (Date.now() < deadline) {
+            if (signal?.aborted) throw new Error("Discord sign-in was cancelled.");
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            let statusResponse;
+            try {
+                statusResponse = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/oauth/status/${encodeURIComponent(enrollmentId)}`, {method:"GET",headers:{Accept:"application/json","X-Krea2-Enrollment-Secret":enrollmentSecret},redirect:"manual",maxRedirects:0,timeout:15000,signal});
+            }
+            catch { continue; }
+            const statusText = await readBoundedResponseText(statusResponse, 64 * 1024);
+            let status;
+            try { status = JSON.parse(statusText); }
+            catch { throw new Error("The Online API Discord sign-in service returned invalid JSON."); }
+            if (!statusResponse.ok) throw new Error(String(status?.detail || `Discord sign-in failed with HTTP ${statusResponse.status}.`));
+            if (status?.status === "pending") continue;
+            if (status?.status !== "complete") throw new Error(status?.status === "denied" ? "Discord sign-in was denied. Local GPU mode remains available without an account." : "Discord sign-in expired. Start Online API again.");
+            const license = Object.freeze({authVersion:2,licenseId:String(status?.license_id || ""),licenseToken:String(status?.license_token || ""),discordUsername:String(status?.discord_username || "").slice(0,80)});
+            if (!/^lic_[A-Za-z0-9_-]{12,64}$/.test(license.licenseId) || !/^[\x21-\x7e]{43,160}$/.test(license.licenseToken)) throw new Error("The Online API Discord sign-in service returned invalid credentials.");
+            this.settings.remoteLicense = license;
+            this.saveSettings();
+            return license;
+        }
+        throw new Error("Discord sign-in timed out. Start Online API again.");
+    }
+
+    confirmRemoteOAuth() {
+        return new Promise(resolve => {
+            const content = document.createElement("div");
+            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
+            const lead = document.createElement("p");
+            lead.textContent = "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a free, revocable account license and enforce its terms and rate limits.";
+            const list = document.createElement("ul");
+            for (const text of [
+                "Discord handles the sign-in. KREA2 never receives your Discord password.",
+                "Only Discord's basic identify permission is requested to verify the account.",
+                "Local GPU mode remains private and never requires a Discord sign-in."
+            ]) { const item = document.createElement("li"); item.textContent = text; list.append(item); }
+            content.append(lead, list);
+            this.api.UI.showConfirmationModal("Connect Discord for Online API", content, {
+                confirmText: "Connect Discord", cancelText: "Use Local GPU", danger: false,
+                onConfirm: () => resolve(true), onCancel: () => resolve(false)
+            });
+        });
     }
 
     async issueVisionSession(visionConfig, idempotencyKey, model, signal, sourceUrl = "") {
@@ -6818,8 +6863,6 @@ class Krea2DiscordCollector {
                 model,
                 remote_license_id: remoteLicense?.licenseId || "",
                 remote_license_token: remoteLicense?.licenseToken || "",
-                remote_discord_user_id: remoteLicense?.discordUserId || "",
-                remote_discord_username: remoteLicense?.discordUsername || "",
                 source_url: String(sourceUrl || "").slice(0, 2048)
             }),
             signal,

@@ -18,8 +18,6 @@ class DiscordVisionSessionStoreTests(unittest.TestCase):
         return RemoteAccess(
             license_id="lic_" + "x" * 18,
             license_token="t" * 48,
-            discord_user_id="123456789012345678",
-            discord_username="test-user",
             request_id=self.key,
         )
 

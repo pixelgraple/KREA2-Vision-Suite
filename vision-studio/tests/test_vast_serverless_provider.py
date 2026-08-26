@@ -144,8 +144,6 @@ class VastServerlessProviderTests(unittest.TestCase):
         access=RemoteAccess(
             license_id="lic_" + "x" * 18,
             license_token="t" * 48,
-            discord_user_id="123456789012345678",
-            discord_username="test-user",
             request_id="a" * 64,
         )
         with patch.object(factory_module, "RemoteGatewayProvider", return_value="remote") as create:

@@ -34,8 +34,6 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         self.access = RemoteAccess(
             license_id="lic_" + "x" * 18,
             license_token="t" * 48,
-            discord_user_id="123456789012345678",
-            discord_username="test-user",
             request_id="a" * 64,
             source_url="https://cdn.discordapp.com/attachments/123/456/source.png",
         )
@@ -58,7 +56,7 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         url, request = self.http.calls[0]
         self.assertEqual(url, "https://seedframe.xyz/api/krea2-vision/v1/chat/completions")
         self.assertEqual(request["headers"]["Authorization"], self.access.authorization)
-        self.assertEqual(request["headers"]["X-Krea2-Discord-User"], self.access.discord_user_id)
+        self.assertNotIn("X-Krea2-Discord-User", request["headers"])
         self.assertEqual(request["headers"]["X-Krea2-Request-Id"], self.access.request_id)
         self.assertNotIn("vast", str(request["headers"]).lower())
         self.assertTrue(request["json"]["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
