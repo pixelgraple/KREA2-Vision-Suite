@@ -45,7 +45,6 @@ const {
     metadataProbeCacheKey,
     mergeHereticModelTelemetry,
     normalizeMediaUrl,
-    normalizeUpdateMode,
     normalizeVisionExecutionMode,
     normalizeStoredSubmissionKey,
     normalizeVisionPrompt,
@@ -182,6 +181,7 @@ assert.match(pluginSource, /document\.body\.append\(root\)/, "Prompt History mus
 assert.match(pluginSource, /root\.dataset\.floating = "true"/, "Prompt History must use the fixed overlay rail");
 assert.doesNotMatch(pluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/, "Prompt History must never mutate Discord's member-list layout");
 assert.doesNotMatch(pluginSource, /this\.ensureHistoryRail\(\);\s*\n\s*if \(!this\.getVerifiedRoute/, "Image scans must not rebuild the rail");
+assert.doesNotMatch(pluginSource, /\/api\/suite-update|checkForSuiteUpdate|startSuiteUpdate|pollSuiteUpdate/, "The published BetterDiscord plugin must not contain an updater");
 assert.match(pluginSource, /Optional identity or role notes/);
 assert.match(pluginSource, /Identity is never inferred from pixels or anatomy/);
 assert.match(pluginSource, /Uploader-supplied identity or role metadata \(not inferred from pixels\)/);
@@ -196,10 +196,6 @@ assert.equal(DEFAULT_SETTINGS.preferredPreset, "dataset-detailed");
 assert.equal(DEFAULT_SETTINGS.useKrea2DatasetGuidance, false);
 assert.equal(DEFAULT_SETTINGS.shareFailureDiagnostics, false);
 assert.equal(DEFAULT_SETTINGS.completionToasts, true);
-assert.equal(DEFAULT_SETTINGS.updateMode, "prompt");
-assert.equal(normalizeUpdateMode("automatic"), "automatic");
-assert.equal(normalizeUpdateMode("prompt"), "prompt");
-assert.equal(normalizeUpdateMode("anything-else"), "prompt");
 assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "endpoint"), false);
 assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "token"), false);
 assert.equal(DEFAULT_SETTINGS.saveFolder.endsWith(path.join("Pictures", "Krea2Vision")), true);

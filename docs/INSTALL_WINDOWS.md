@@ -12,9 +12,7 @@
 
 ## Updates
 
-KREA2 checks its authenticated loopback broker for an official stable GitHub release shortly after startup and every six hours. The default behavior is **Notify me; install with one click**. **Install verified updates automatically** is optional in BetterDiscord plugin settings.
-
-The updater never executes a plugin file fetched directly into Discord. It downloads the complete suite from the code-pinned GitHub release path, rejects redirects and unexpected hosts, verifies the manifest's exact byte length and SHA-256, validates every ZIP path, waits for active Vision jobs to finish, and then invokes the bundled noninteractive updater. Models and existing settings are preserved.
+The BetterDiscord plugin does not check for, download, or install updates. When a new release is announced, download the complete Windows ZIP from the official GitHub Releases page, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing models and settings are preserved.
 2. The bootstrap starts setup automatically. Manual ZIP users should double-click **`START HERE - INSTALL.bat`** after unblocking and extracting the ZIP.
 3. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.
 4. When Discord reopens, enable `Krea2DiscordCollector` if BetterDiscord asks, open a server channel, and use the first-run window to allow that server.

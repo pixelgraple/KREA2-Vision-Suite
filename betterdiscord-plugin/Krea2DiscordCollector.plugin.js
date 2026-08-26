@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.20
+ * @version 0.13.21
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.20";
+const PLUGIN_VERSION = "0.13.21";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -707,9 +707,6 @@ const GPU_AVAILABILITY_TIMEOUT_MS = 30 * 1000;
 const MAX_PENDING_OPERATIONAL_ERRORS = 50;
 const HISTORY_POLL_MS = 5000;
 const HISTORY_DETAIL_POLL_MS = 1000;
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATE_INITIAL_DELAY_MS = 15 * 1000;
-const UPDATE_STATUS_POLL_MS = 2000;
 const HISTORY_LIMIT = 100;
 const HISTORY_PAGE_SIZE = 20;
 const HISTORY_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -1007,13 +1004,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     completionSound: false,
     preferredPreset: "dataset-detailed",
     useKrea2DatasetGuidance: false,
-    historyReviewFilter: "all",
-    updateMode: "prompt"
+    historyReviewFilter: "all"
 });
-
-function normalizeUpdateMode(value) {
-    return String(value || "").trim().toLowerCase() === "automatic" ? "automatic" : "prompt";
-}
 
 function normalizeVisionExecutionMode(value) {
     return String(value || "").trim().toLowerCase() === "online" ? "online" : "local";
@@ -3387,10 +3379,6 @@ class Krea2DiscordCollector {
         this.onboardingTimer = null;
         this.shortcutHandler = null;
         this.historyPollTimer = null;
-        this.updateCheckTimer = null;
-        this.updateInitialTimer = null;
-        this.updateStatusTimer = null;
-        this.updatePromptVersion = "";
         this.historyRequestController = null;
         this.historySearchTimer = null;
         this.historyRoot = null;
@@ -3458,7 +3446,6 @@ class Krea2DiscordCollector {
         this.settings.shareFailureDiagnostics = this.settings.shareFailureDiagnostics === true;
         this.settings.historyCollapsed = this.settings.historyCollapsed === true;
         this.settings.useKrea2DatasetGuidance = this.settings.useKrea2DatasetGuidance === true;
-        this.settings.updateMode = normalizeUpdateMode(this.settings.updateMode);
         this.settings.historyWidth = Math.min(440, Math.max(268, Math.trunc(Number(this.settings.historyWidth) || 330)));
         if (
             Object.prototype.hasOwnProperty.call(storedSettings, "endpoint")
@@ -3519,12 +3506,6 @@ class Krea2DiscordCollector {
         this.historyPollTimer = setInterval(() => {
             if (this.historyRoot?.isConnected && this.settings.historyCollapsed !== true) void this.refreshHistory();
         }, HISTORY_POLL_MS);
-        this.updateInitialTimer = setTimeout(() => {
-            this.updateInitialTimer = null;
-            if (this.running) void this.checkForSuiteUpdate();
-        }, UPDATE_INITIAL_DELAY_MS);
-        this.updateCheckTimer = setInterval(() => void this.checkForSuiteUpdate(), UPDATE_CHECK_INTERVAL_MS);
-
         this.observer = new MutationObserver(mutations => {
             const hasPotentialMessageImage = mutations.some(mutation => {
                 if (mutation.type === "attributes") return mutation.target instanceof HTMLImageElement;
@@ -3577,12 +3558,6 @@ class Krea2DiscordCollector {
         this.historyPollTimer = null;
         if (this.historySearchTimer !== null) clearTimeout(this.historySearchTimer);
         this.historySearchTimer = null;
-        if (this.updateCheckTimer !== null) clearInterval(this.updateCheckTimer);
-        this.updateCheckTimer = null;
-        if (this.updateInitialTimer !== null) clearTimeout(this.updateInitialTimer);
-        this.updateInitialTimer = null;
-        if (this.updateStatusTimer !== null) clearInterval(this.updateStatusTimer);
-        this.updateStatusTimer = null;
         this.historyRequestController?.abort();
         this.historyRequestController = null;
         this.historyResizeCleanup?.();
@@ -6586,7 +6561,7 @@ class Krea2DiscordCollector {
         copy.addEventListener("click", () => void this.copyProductText(JSON.stringify(report, null, 2), modalDocument));
         const folder = modalDocument.createElement("div");
         folder.className = "krea2-workshop-note";
-        folder.textContent = `Installer/updater files are distributed with the open-source suite. Plugin folder: ${__dirname}`;
+        folder.textContent = `Installer and repair files are distributed with the open-source suite. Plugin folder: ${__dirname}`;
         panel.append(card, copy, folder);
     }
 
@@ -6965,127 +6940,6 @@ class Krea2DiscordCollector {
             throw new Error("The local Vision session broker returned an invalid one-use session.");
         }
         return sessionToken;
-    }
-
-    async requestSuiteUpdate(relativePath, method = "GET") {
-        if (!["/api/suite-update", "/api/suite-update/status", "/api/suite-update/install"].includes(relativePath)) {
-            throw new Error("Unsupported KREA2 update route.");
-        }
-        if (!(["GET", "POST"].includes(method))) throw new Error("Unsupported KREA2 update method.");
-        const vision = this.getVisionConfig();
-        if (!vision) throw new Error("Configure the local Vision endpoint and token first.");
-        const expectedUrl = `${vision.origin}${relativePath}`;
-        const response = await this.api.Net.fetch(expectedUrl, {
-            method,
-            headers: {Accept: "application/json", "X-Krea2-Vision-Token": vision.token},
-            redirect: "manual",
-            maxRedirects: 0,
-            timeout: 30000
-        });
-        const text = await readBoundedResponseText(response, 128 * 1024);
-        let payload = {};
-        try { payload = text ? JSON.parse(text) : {}; }
-        catch { throw new Error("The local KREA2 updater returned malformed JSON."); }
-        if (response.redirected || (response.url && response.url !== expectedUrl)) {
-            throw new Error("The local KREA2 updater attempted a redirect.");
-        }
-        if (!response.ok) throw new Error(String(payload.detail || `KREA2 update request returned HTTP ${response.status}.`));
-        return payload;
-    }
-
-    showSuiteUpdatePrompt(update) {
-        const version = String(update?.latest_version || "").trim();
-        if (!version || (this.updatePromptVersion === version && this.settings.updateMode !== "automatic")) return;
-        this.updatePromptVersion = version;
-        const content = document.createElement("div");
-        content.style.cssText = "line-height:1.5;color:var(--text-normal)";
-        const summary = document.createElement("p");
-        const size = Number(update?.bytes_total || 0);
-        summary.textContent = `KREA2 Vision Suite ${version} is available${size > 0 ? ` (${(size / 1024 / 1024).toFixed(1)} MiB)` : ""}. The complete plugin and matching Vision backend will be downloaded from the official project repository, then installed only after the package's exact size and SHA-256 are verified.`;
-        const behavior = document.createElement("p");
-        behavior.textContent = "Active Discord Vision jobs are allowed to finish. The updater then briefly restarts only the KREA2 Vision backend; Discord normally reloads the updated plugin file automatically.";
-        content.append(summary, behavior);
-        if (/^https:\/\/github\.com\/pixelgraple\/KREA2-Vision-Suite/.test(String(update?.notes_url || ""))) {
-            const notes = document.createElement("a");
-            notes.href = String(update.notes_url);
-            notes.target = "_blank";
-            notes.rel = "noopener noreferrer";
-            notes.textContent = "View release notes";
-            content.append(notes);
-        }
-        this.api.UI.showConfirmationModal(`KREA2 Vision Suite ${version}`, content, {
-            confirmText: "Install update",
-            cancelText: "Later",
-            danger: false,
-            onConfirm: () => void this.startSuiteUpdate(version)
-        });
-    }
-
-    async checkForSuiteUpdate({manual = false} = {}) {
-        if (!this.running) return;
-        try {
-            const update = await this.requestSuiteUpdate("/api/suite-update", "GET");
-            if (!update?.update_available) {
-                if (manual) this.toast(`KREA2 Vision Suite ${PLUGIN_VERSION} is current.`, "success");
-                return;
-            }
-            if (normalizeUpdateMode(this.settings.updateMode) === "automatic") {
-                await this.startSuiteUpdate(String(update.latest_version || ""));
-                return;
-            }
-            this.showSuiteUpdatePrompt(update);
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (manual) this.toast(message, "error");
-            else this.log("warning", `Six-hour update check failed safely: ${message}`);
-        }
-    }
-
-    async startSuiteUpdate(version = "") {
-        if (!this.running) return;
-        try {
-            const update = await this.requestSuiteUpdate("/api/suite-update/install", "POST");
-            if (!update?.update_available && update?.state === "current") {
-                this.toast("KREA2 Vision Suite is already current.", "success");
-                return;
-            }
-            const label = String(version || update?.latest_version || "the latest version");
-            this.toast(`KREA2 ${label} is downloading. It will install automatically after Vision becomes idle.`, "success");
-            this.pollSuiteUpdateStatus();
-        }
-        catch (error) {
-            this.toast(error instanceof Error ? error.message : String(error), "error");
-        }
-    }
-
-    pollSuiteUpdateStatus() {
-        if (this.updateStatusTimer !== null) clearInterval(this.updateStatusTimer);
-        let failures = 0;
-        this.updateStatusTimer = setInterval(async () => {
-            if (!this.running) return;
-            try {
-                const update = await this.requestSuiteUpdate("/api/suite-update/status", "GET");
-                failures = 0;
-                if (update?.state === "error") {
-                    clearInterval(this.updateStatusTimer);
-                    this.updateStatusTimer = null;
-                    this.toast(String(update.error || "The KREA2 update failed safely."), "error");
-                }
-                else if (update?.state === "installing") {
-                    clearInterval(this.updateStatusTimer);
-                    this.updateStatusTimer = null;
-                    this.toast("Verified update installing now. Vision will reconnect shortly.", "success");
-                }
-            }
-            catch {
-                failures += 1;
-                if (failures >= 20 && this.updateStatusTimer !== null) {
-                    clearInterval(this.updateStatusTimer);
-                    this.updateStatusTimer = null;
-                }
-            }
-        }, UPDATE_STATUS_POLL_MS);
     }
 
     async requestVisionModelInstall(publicId, method) {
@@ -8436,25 +8290,6 @@ class Krea2DiscordCollector {
             note: "Off by default. When enabled, Vision Studio randomly selects exactly eight Krea2 prompts plus up to four session-liked prompts and three session-disliked prompts with your reasons. The three results target 60% structural/style likeness and 40% fresh wording while every image fact stays grounded in what the model can see.",
             key: "useKrea2DatasetGuidance"
         });
-        addSelect({
-            label: "KREA2 Vision Suite updates",
-            note: "Checks the official GitHub release manifest at startup and every six hours. The recommended default shows a one-click install prompt. Automatic mode installs only packages whose exact size and SHA-256 match the manifest, and waits for active Vision jobs to finish.",
-            key: "updateMode",
-            options: [
-                ["Notify me; install with one click (recommended)", "prompt"],
-                ["Install verified updates automatically", "automatic"]
-            ]
-        });
-        const checkUpdateButton = document.createElement("button");
-        checkUpdateButton.type = "button";
-        checkUpdateButton.textContent = "Check for updates now";
-        checkUpdateButton.style.cssText = "padding:8px 12px;border:1px solid var(--input-border);border-radius:7px;background:var(--background-modifier-accent);color:var(--text-normal);cursor:pointer;font-weight:700";
-        checkUpdateButton.addEventListener("click", async () => {
-            checkUpdateButton.disabled = true;
-            try { await this.checkForSuiteUpdate({manual: true}); }
-            finally { checkUpdateButton.disabled = false; }
-        });
-        panel.append(checkUpdateButton);
         addCheckbox({
             label: "Show completion notifications",
             note: "Displays a BetterDiscord toast and a clickable result banner when a queued image finishes.",
@@ -8573,7 +8408,6 @@ Krea2DiscordCollector.helpers = Object.freeze({
     normalizePromptPreset,
     normalizeStoredSubmissionKey,
     normalizeVisionCacheProfile,
-    normalizeUpdateMode,
     normalizeVisionExecutionMode,
     normalizeVisionPrompt,
     ONLINE_VISION_MODEL_ID,

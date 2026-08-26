@@ -72,7 +72,7 @@ Download [Krea2VisionSuite-v0.13.18-win64.zip](releases/Krea2VisionSuite-v0.13.1
 START HERE - INSTALL.bat
 ```
 
-Do not install only `Krea2DiscordCollector.plugin.js`. The complete package contains the BetterDiscord plugin, private loopback broker, Vision backend, model runtime installer, startup tasks, updater, and repair tools.
+Do not install only `Krea2DiscordCollector.plugin.js`. The complete package contains the BetterDiscord plugin, private loopback broker, Vision backend, model runtime installer, startup tasks, and repair tools. Updates are installed manually from a verified GitHub Release.
 
 The installer can:
 

@@ -28,6 +28,6 @@ Retry with the exact model shown in the result. The backend has bounded formatti
 
 The plugin stores only a bounded local preview, not the full-resolution source. Check that the configured preview folder exists and is writable. A result created before thumbnail caching cannot reconstruct a deleted source image.
 
-## Update does not install
+## Updating the suite
 
-Verify internet access to GitHub, run Repair, and check that no Vision job is active. The updater refuses a ZIP whose repository origin, version, size, or SHA-256 differs from the stable manifest.
+The plugin intentionally has no automatic updater. Download a complete release ZIP from GitHub Releases, verify the published checksum when available, extract it, and run **`START HERE - INSTALL.bat`**. Use Repair only for a damaged local installation.

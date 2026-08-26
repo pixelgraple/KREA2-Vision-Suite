@@ -18,12 +18,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Build-Release.ps1
 
 The builder must exclude user/runtime data and audit the ZIP. A release is not publishable until backend tests, plugin tests, syntax checks, checksum verification, and an archive privacy scan pass.
 
-## Update checks
+## Manual updates
 
-Installed plugins check after startup and every six hours. Users may choose notification-only one-click installation or verified automatic updates. The broker downloads only from the pinned repository URL and rejects an artifact whose byte length or SHA-256 differs from the manifest.
-
-The updater waits for active Vision work to finish before replacing the matched plugin/backend set. Discord may update independently; Repair detects whether BetterDiscord is injected into the current Discord `app-*` directory and reinstalls the official BetterDiscord build when necessary.
+The published BetterDiscord plugin contains no update checker, downloader, or installer. Publish a complete, versioned GitHub Release with its checksum and direct users to download the ZIP manually. The installer preserves their existing models and settings; Repair detects whether BetterDiscord is injected into the current Discord `app-*` directory and reinstalls the official BetterDiscord build when necessary.
 
 ## Rollback
 
-Before local deployment, create a versioned snapshot of the plugin, backend version metadata, and updater files. Git tags and GitHub Releases should identify every public version. Never restore `.env`, model, database, or user-content files from a public archive.
+Before local deployment, create a versioned snapshot of the plugin and backend version metadata. Git tags and GitHub Releases should identify every public version. Never restore `.env`, model, database, or user-content files from a public archive.
