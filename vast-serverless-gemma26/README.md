@@ -13,7 +13,7 @@ Recommended Vast pool and scaling configuration:
 
 - exactly one 24 GB GPU per worker (RTX 3090 or RTX 4090 preferred; RTX A5000 or L4 also supported)
 - at least 32 GB system RAM and **65 GB container disk**
-- `max_workers=3` so bursts can use up to three paid GPUs
+- `max_workers=5` so bursts can use up to five paid GPUs
 - `cold_workers=1` so one stopped worker keeps the 15 GB model cache
 - `min_load=0` so no GPU remains active merely for idle capacity
 - `inactivity_timeout=8` seconds after the final queued/running request

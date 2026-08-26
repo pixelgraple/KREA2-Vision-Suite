@@ -71,6 +71,27 @@ def readable_error(exc: Exception):
     if "out of memory" in lowered or "cuda" in lowered and "memory" in lowered: message="GPU memory is exhausted. Let Forge finish, use a smaller Qwen3-VL model, or lower QWEN_CONTEXT_LENGTH."
     raise HTTPException(422,message)
 
+def backend_public_failure(exc: Exception, requested_model: str) -> tuple[str,str,str]:
+    if requested_model.startswith("vast::"):
+        messages=[]
+        current: BaseException | None=exc
+        seen=set()
+        while current is not None and id(current) not in seen and len(messages)<5:
+            seen.add(id(current))
+            messages.append(str(current).casefold())
+            current=current.__cause__ or current.__context__
+        detail=" ".join(messages)
+        if "timed out" in detail and ("worker" in detail or "ready" in detail):
+            public="Remote Gemma worker could not become ready in time. This was not a local GPU or shared queue failure; retry after remote capacity is ready."
+            return "Remote Gemma Serverless worker did not become ready before timeout",public,public
+        public="Remote Gemma Serverless worker is unavailable. This was not a local GPU or shared queue failure."
+        return "Remote Gemma Serverless worker was unavailable",public,public
+    return (
+        "Local Vision or the shared GPU handoff was unavailable",
+        "Local Vision or the shared GPU handoff was unavailable.",
+        "Local vision pipeline is unavailable or could not safely acquire the GPU.",
+    )
+
 async def prepared_upload(upload: UploadFile):
     suffix=Path(upload.filename or "image.jpg").suffix.lower()
     maximum=settings.max_upload_mb*1024*1024
@@ -437,6 +458,7 @@ async def discord_describe(
     except (DiscordVisionBackendError,ForgeHandoffError) as exc:
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_backend_unavailable",str(exc) or type(exc).__name__,"Acquiring or running the selected Vision backend",exc)
         cause=exc.__cause__
+        failure_stage,public_error,http_detail=backend_public_failure(exc,requested_model)
         log.error(
             "discord vision unavailable (%s: %s; cause=%s: %s)",
             type(exc).__name__,
@@ -449,10 +471,10 @@ async def discord_describe(
                 discord_jobs.update,
                 active_job_id,
                 status="error",
-                stage="Local Vision or the shared GPU handoff was unavailable",
-                public_error="Local Vision or the shared GPU handoff was unavailable.",
+                stage=failure_stage,
+                public_error=public_error,
             )
-        raise HTTPException(503,"Local vision pipeline is unavailable or could not safely acquire the GPU.") from exc
+        raise HTTPException(503,http_detail) from exc
     except Exception as exc:
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_internal_error",f"{type(exc).__name__}: {exc}","Running the local Vision pipeline",exc)
         log.error("discord vision failed (%s)",type(exc).__name__)

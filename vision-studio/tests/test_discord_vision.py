@@ -2177,6 +2177,21 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.assertNotIn("handoff_nonce", serialized)
         self.assertNotIn(TOKEN, serialized)
 
+    def test_remote_worker_timeout_is_not_mislabeled_as_local_gpu_failure(self):
+        cause = RuntimeError("Timed out after 1201.0s waiting for worker to become ready")
+        error = DiscordVisionBackendError("The selected Heretic vision pipeline is unavailable.")
+        error.__cause__ = cause
+
+        stage, public_error, http_detail = api_module.backend_public_failure(
+            error,
+            "vast::gemma4-26b-a4b-heretic-q3_k_l",
+        )
+
+        self.assertIn("Remote Gemma Serverless worker", stage)
+        self.assertIn("not a local GPU or shared queue failure", public_error)
+        self.assertEqual(http_detail, public_error)
+        self.assertNotIn("1201", public_error)
+
     def test_rejected_and_backend_failures_store_only_generic_public_outcomes(self):
         class FailingService(StubDiscordService):
             def __init__(self, error):

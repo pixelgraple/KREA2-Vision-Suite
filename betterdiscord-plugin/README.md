@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.13.13
+# Krea2 Discord Vision v0.13.14
 
 The plugin checks the authenticated loopback broker for stable suite updates shortly after startup and every six hours. The default is a one-click update notice; verified automatic installation is optional. Updates are full-suite packages so plugin and backend protocol versions stay matched.
 
