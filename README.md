@@ -4,6 +4,10 @@ KREA2 Vision Suite is a free, open-source Windows application that adds detailed
 
 The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Optional Seedframe features are separately disclosed and controlled.
 
+The **Online API** is an optional alternative for users who do not want to run a large Vision model on their own GPU. BetterDiscord still connects only to the authenticated loopback service on `127.0.0.1:7870`. For each image, the plugin exchanges its private local token for a short-lived, request-bound, one-use session. The local service then sends the image over HTTPS to the configured private Vast Serverless worker, which currently runs Gemma 4 26B-A4B Heretic on a 24 GB GPU. BetterDiscord never receives or stores the remote endpoint address, Vast account key, or worker credential. Selecting Online API disables the local model picker for that request; the completed job records the exact remote model that actually ran.
+
+Online inference means the selected image and bounded request metadata must leave the user's PC. The included worker is designed to process that content in memory, return the three generated prompts, and avoid intentionally writing images or prompts to worker disk. It can recruit up to five workers when demand increases and stop active GPU compute after the configured eight-second idle window. Dataset contribution and failure diagnostics are separate settings with their own disclosures; enabling Online API does not automatically enable either one.
+
 > BetterDiscord is an unofficial Discord client modification. Review [BetterDiscord's documentation](https://docs.betterdiscord.app/users/getting-started/installation) and Discord's current terms before using it. Consider using a separate Windows account, virtual machine, and nonessential Discord account if you want stronger isolation.
 
 ## Contents
@@ -195,7 +199,7 @@ See [models and VRAM](docs/MODELS.md).
 
 Local Discord jobs use the same FIFO handoff as configured Forge/KREA work. Discord processes exactly one image per queue turn and releases the ticket immediately. It may keep a selected model warm for up to 15 seconds only while the shared GPU is idle. Any non-Discord ticket cancels the warm window and evicts the model before the waiting work runs.
 
-The optional Vast worker may scale from zero to three workers. `min_load=0` avoids paying for permanently idle capacity. An operator-configured short idle timeout lets a worker finish queued jobs before scaling down; scale-to-zero behavior depends on the Vast template and platform scheduler.
+The optional Vast worker may scale from zero to five workers. `min_load=0` avoids paying for permanently idle GPU compute. The deployed eight-second idle timeout lets a worker finish its current request before active compute scales down; one cold worker may retain model storage for faster wake-up, so storage charges can remain while GPU compute is stopped.
 
 ## Repository map
 
