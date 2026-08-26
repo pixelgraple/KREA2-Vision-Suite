@@ -2,7 +2,7 @@
 
 ## Normal installation: one guided setup
 
-1. Download the complete [v0.13.24 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.24-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
+1. Download the complete [v0.13.25 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.25-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
 2. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
 3. Double-click **`START HERE - INSTALL.bat`** in the extracted folder.
 4. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.
@@ -70,9 +70,9 @@ Runtime logs and the non-secret installation receipt are under `%LOCALAPPDATA%\K
 
 ## Optional Online API mode
 
-Local GPU mode is the supported friend-share default. Online API appears ready only when that computer's loopback Vision broker has a privately configured Vast endpoint and API key. Setup never bundles the project owner's key, and the plugin cannot save Online mode while the broker reports it unavailable.
+Online API is the no-local-model option. Select it during setup, approve Discord's minimal `identify` OAuth sign-in in the browser, and return to Discord; the plugin receives a revocable installation-bound license from the central HTTPS gateway and grants 120 introductory credits. Each completed interrogation costs three credits and terminal failures or cancellations are refunded.
 
-Do not paste a shared provider key into copies sent to friends. A public multi-user Online API requires a central HTTPS gateway with independently issued user credentials, quotas, revocation, rate limits, and abuse controls.
+The release never bundles the project owner's Vast, Discord, BTCPay, or gateway keys. Do not paste a provider key into a friend's copy. The loopback broker exchanges the user's license for a short-lived, request-bound, one-use session and sends the selected image to the central gateway only when Online API is selected. Bitcoin top-ups remain unavailable until the operator enables and verifies BTCPay.
 
 ## Shared Forge/KREA queue
 

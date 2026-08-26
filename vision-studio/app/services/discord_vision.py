@@ -17,6 +17,7 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..config import Settings
+from ..models.remote_access import RemoteAccess
 from .forge_vram_handoff import ForgeVramHandoff
 from .feedback_guidance import PromptFeedbackContext, parse_feedback_context
 from .image_processor import ImageProcessor
@@ -1732,7 +1733,7 @@ class DiscordVisionService:
         is_cancelled: Callable[[], bool] | None = None,
         dataset_guidance: Krea2Guidance | None = None,
         feedback_context: PromptFeedbackContext | None = None,
-        remote_access=None,
+        remote_access: RemoteAccess | None = None,
     ) -> DiscordDescribeResponse:
         if is_cancelled is None:
             is_cancelled = getattr(on_progress, "is_cancelled", None)
@@ -2207,12 +2208,13 @@ class DiscordVisionService:
                     prompt_words=repaired.prompt_words,
                     dataset_guidance=dataset_guidance_receipt(dataset_guidance, feedback_context),
                 )
-                audit_complete=getattr(provider,"complete_audit",None)
-                if remote and callable(audit_complete):
-                    try:
-                        audit_complete(response.prompt_variants)
-                    except Exception as exc:
-                        log.warning("remote Vision audit delivery failed (%s)",type(exc).__name__)
+                if remote:
+                    complete_audit=getattr(provider,"complete_audit",None)
+                    if callable(complete_audit):
+                        try:
+                            complete_audit(response.prompt_variants)
+                        except Exception as exc:
+                            log.warning("remote KREA2 completion audit deferred (%s)",type(exc).__name__)
                 return response
         except DiscordVisionCancelled:
             if remote_provider is not None:
@@ -2255,7 +2257,7 @@ class DiscordVisionService:
         *,
         dataset_guidance: bool = False,
         feedback_context: PromptFeedbackContext | None = None,
-        remote_access=None,
+        remote_access: RemoteAccess | None = None,
     ) -> DiscordDescribeResponse:
         if is_cancelled is None:
             is_cancelled = getattr(on_progress, "is_cancelled", None)

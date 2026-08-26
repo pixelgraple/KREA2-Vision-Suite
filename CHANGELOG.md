@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.25 - 2026-08-26
+
+- Completes the Discord OAuth-to-Vision identity contract by returning the verified Discord account ID with the one-time remote license.
+- Stores that verified ID only in the local plugin license receipt and sends it, with the verified username, to the loopback session broker for remote jobs.
+- Prevents Online API jobs from failing locally with `Discord account ID is invalid for remote Vision` after an otherwise successful Discord sign-in.
+- Restores the terminal-failure audit call so an Online API job that fails after reserving credits immediately refunds its three-credit hold.
+- Adds gateway and plugin regression coverage for the verified account fields while continuing to keep the Discord OAuth client secret on the private gateway only.
+- Corrects the Vast template runtime so the bootstrap runs as an SSH on-start script instead of being passed to Docker as a nonexistent executable.
+- Makes fresh worker dependency installation tolerate the Debian-provided `cryptography` package and avoids discarding healthy Hugging Face download segments solely for falling below 1 MiB/s.
+
 ## 0.13.24 - 2026-08-26
 
 - Fixes false local Gemma 4 12B capacity failures caused by a fixed GPU-layer count competing with the measured full-GPU admission estimate.

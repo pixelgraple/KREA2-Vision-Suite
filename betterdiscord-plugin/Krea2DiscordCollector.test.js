@@ -186,6 +186,9 @@ async function testStaleContributionConsentRepromptsOrFallsBackToOptOut() {
 await testStaleContributionConsentRepromptsOrFallsBackToOptOut();
 
 const pluginSource = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
+assert.match(pluginSource, /discordUserId:\s*String\(status\?\.discord_user_id/);
+assert.match(pluginSource, /remote_discord_user_id:\s*remoteLicense\?\.discordUserId/);
+assert.match(pluginSource, /remote_discord_username:\s*remoteLicense\?\.discordUsername/);
 assert.match(pluginSource, /document\.body\.append\(root\)/, "Prompt History must be a detached overlay, not a Discord layout child");
 assert.match(pluginSource, /root\.dataset\.floating = "true"/, "Prompt History must use the fixed overlay rail");
 assert.doesNotMatch(pluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/, "Prompt History must never mutate Discord's member-list layout");

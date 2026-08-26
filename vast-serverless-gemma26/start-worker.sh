@@ -94,13 +94,17 @@ download_verified() {
     emit_event "KREA2_MODEL_ERROR invalid download timeout"
     exit 1
   fi
+  # Judge a connection as stalled only when it is genuinely unusable.  The
+  # old 1 MiB/s per-segment floor discarded healthy Hugging Face Xet streams
+  # even while aggregate throughput exceeded 80 MiB/s, shrinking all 16
+  # connections during an otherwise fast download.
   if ! timeout --signal=TERM "$download_timeout_seconds" aria2c \
     --allow-overwrite=true \
     --auto-file-renaming=false \
     --continue=true \
     --connect-timeout=30 \
     --file-allocation=none \
-    --lowest-speed-limit=1M \
+    --lowest-speed-limit=64K \
     --max-connection-per-server=16 \
     --max-tries=20 \
     --min-split-size=16M \

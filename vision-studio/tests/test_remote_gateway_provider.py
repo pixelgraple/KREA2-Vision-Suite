@@ -84,6 +84,14 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         self.assertEqual(request["json"]["source_url"], self.access.source_url)
         self.assertNotIn("data:image", str(request["json"]))
 
+    def test_terminal_pipeline_failure_releases_credit_reservation(self):
+        self.provider.fail_audit()
+        url, request = self.http.calls[0]
+        self.assertEqual(url, "https://seedframe.xyz/api/krea2-vision/v1/audit/fail")
+        self.assertEqual(request["headers"]["Authorization"], self.access.authorization)
+        self.assertEqual(request["headers"]["X-Krea2-Request-Id"], self.access.request_id)
+        self.assertNotIn("json", request)
+
     def test_retries_one_transient_gateway_disconnect_with_same_request_proof(self):
         self.provider.http = _TransientHttp()
         reply = self.provider.text("system", "describe", 0.1, 64)

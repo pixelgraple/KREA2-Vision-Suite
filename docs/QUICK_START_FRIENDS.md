@@ -5,7 +5,7 @@ KREA2 Vision Suite adds a private Vision magnifier, an Interrogate upload tab, a
 ## Install
 
 1. Use Windows 10 or 11 with a current NVIDIA driver and at least 25 GB of free disk space for the recommended 8B installation.
-2. Download the complete [v0.13.24 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.24-win64.zip). Do not download only the `.plugin.js` file.
+2. Download the complete [v0.13.25 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.25-win64.zip). Do not download only the `.plugin.js` file.
 3. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, then extract it. If it was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
 4. Double-click **`START HERE - INSTALL.bat`** and accept the clearly listed program and model downloads.
 5. Let setup install or repair Discord Stable, BetterDiscord, Python, Ollama, the local Vision backend, and the recommended Qwen3-VL 8B Heretic model pair.
@@ -29,7 +29,7 @@ To update later, download the next complete Windows ZIP from the project GitHub 
 
 ## Online API
 
-Online API is an operator feature, not a shared key embedded in the release. It is selectable only when the local Vision broker reports a privately configured remote worker. Friends should use Local GPU unless they operate their own endpoint or the project later provides a central account-based gateway.
+Online API is available without downloading a local model. Choose **Online API**, approve Discord's minimal `identify` sign-in in the browser, and return to Discord; the plugin finishes setup automatically and grants the new account 120 introductory credits. Each completed image costs three credits, while failed or cancelled jobs are refunded. No shared Vast, Discord, or gateway secret is embedded in the plugin. Bitcoin top-ups remain hidden until the project's BTCPay checkout is enabled and verified.
 
 ## Important BetterDiscord notice
 

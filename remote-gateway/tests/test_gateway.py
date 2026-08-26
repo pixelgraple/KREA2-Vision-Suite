@@ -60,6 +60,8 @@ class GatewayTests(unittest.TestCase):
         license = self.enroll()
         self.assertTrue(license["license_id"].startswith("lic_"))
         self.assertGreaterEqual(len(license["license_token"]), 43)
+        self.assertEqual(license["discord_user_id"], "123456789012345678")
+        self.assertEqual(license["discord_username"], "verified-tester")
         revoke = self.client.post(f"/v1/admin/licenses/{license['license_id']}/revoke", headers={"X-Krea2-Admin-Key":"a" * 32}, json={"reason":"test"})
         self.assertEqual(revoke.status_code, 200)
         response = self.client.post("/v1/chat/completions", headers=self.headers(license, "a" * 64), json={"model":"gemma4-26b-a4b-heretic-q3-k-l","messages":[{"role":"user","content":"x"}],"temperature":0,"max_tokens":32})

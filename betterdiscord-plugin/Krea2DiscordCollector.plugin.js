@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.24
+ * @version 0.13.25
  * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.24";
+const PLUGIN_VERSION = "0.13.25";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -6804,7 +6804,14 @@ class Krea2DiscordCollector {
 
     async ensureRemoteLicense(signal) {
         const saved = this.settings.remoteLicense;
-        if (saved && Number(saved.authVersion) === 2 && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
+        if (
+            saved
+            && Number(saved.authVersion) === 2
+            && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || ""))
+            && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))
+            && /^[1-9][0-9]{16,21}$/.test(String(saved.discordUserId || ""))
+            && String(saved.discordUsername || "").trim().length > 0
+        ) return saved;
         let installationId = String(this.api.Data.load("remoteVisionInstallationId") || "");
         if (!/^[A-Za-z0-9_-]{24,128}$/.test(installationId)) {
             installationId = base64Url(randomBytes(32));
@@ -6847,8 +6854,19 @@ class Krea2DiscordCollector {
             if (!statusResponse.ok) throw new Error(String(status?.detail || `Discord sign-in failed with HTTP ${statusResponse.status}.`));
             if (status?.status === "pending") continue;
             if (status?.status !== "complete") throw new Error(status?.status === "denied" ? "Discord sign-in was denied. Local GPU mode remains available without an account." : "Discord sign-in expired. Start Online API again.");
-            const license = Object.freeze({authVersion:2,licenseId:String(status?.license_id || ""),licenseToken:String(status?.license_token || ""),discordUsername:String(status?.discord_username || "").slice(0,80)});
-            if (!/^lic_[A-Za-z0-9_-]{12,64}$/.test(license.licenseId) || !/^[\x21-\x7e]{43,160}$/.test(license.licenseToken)) throw new Error("The Online API Discord sign-in service returned invalid credentials.");
+            const license = Object.freeze({
+                authVersion: 2,
+                licenseId: String(status?.license_id || ""),
+                licenseToken: String(status?.license_token || ""),
+                discordUserId: String(status?.discord_user_id || ""),
+                discordUsername: String(status?.discord_username || "").trim().slice(0,80)
+            });
+            if (
+                !/^lic_[A-Za-z0-9_-]{12,64}$/.test(license.licenseId)
+                || !/^[\x21-\x7e]{43,160}$/.test(license.licenseToken)
+                || !/^[1-9][0-9]{16,21}$/.test(license.discordUserId)
+                || !license.discordUsername
+            ) throw new Error("The Online API Discord sign-in service returned invalid credentials.");
             this.settings.remoteLicense = license;
             this.saveSettings();
             return license;
@@ -6969,6 +6987,8 @@ class Krea2DiscordCollector {
                 model,
                 remote_license_id: remoteLicense?.licenseId || "",
                 remote_license_token: remoteLicense?.licenseToken || "",
+                remote_discord_user_id: remoteLicense?.discordUserId || "",
+                remote_discord_username: remoteLicense?.discordUsername || "",
                 source_url: String(sourceUrl || "").slice(0, 2048)
             }),
             signal,

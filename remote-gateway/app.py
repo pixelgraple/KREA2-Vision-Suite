@@ -306,7 +306,13 @@ class Gateway:
         token = deterministic_license_token(self.config.license_signing_key, license_id, enrollment_id)
         with self.connection() as db:
             db.execute("UPDATE oauth_enrollments SET delivered_at=? WHERE enrollment_id=? AND delivered_at IS NULL", (int(time.time()), enrollment_id))
-        return {"status": "complete", "license_id": license_id, "license_token": token, "discord_username": clean_text(row["discord_username"], 80)}
+        return {
+            "status": "complete",
+            "license_id": license_id,
+            "license_token": token,
+            "discord_user_id": str(row["discord_user_id"]),
+            "discord_username": clean_text(row["discord_username"], 80),
+        }
 
     def oauth_callback(self, state: str, code: str = "", error: str = "") -> tuple[int, str]:
         if not OAUTH_STATE_RE.fullmatch(state):
