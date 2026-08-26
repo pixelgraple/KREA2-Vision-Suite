@@ -4,7 +4,7 @@ set -euo pipefail
 # Vast can pull the public pinned llama.cpp CUDA image anonymously.  Keep the
 # KREA2 orchestration scripts equally reproducible without requiring a private
 # container-registry credential on ephemeral Serverless hosts.
-WORKER_REF="v0.13.25"
+WORKER_REF="v0.13.26"
 WORKER_BASE="https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/${WORKER_REF}/vast-serverless-gemma26"
 
 export DEBIAN_FRONTEND=noninteractive

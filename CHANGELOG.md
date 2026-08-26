@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.26 - 2026-08-26
+
+- Fixes Online API Discord sign-in launch on current Discord Stable builds by removing the missing private `openExternal` Webpack lookup.
+- Opens only the already-validated `https://discord.com/oauth2/authorize` URL through the normal renderer browser-window path, with `noopener,noreferrer` protections.
+
 ## 0.13.25 - 2026-08-26
 
 - Completes the Discord OAuth-to-Vision identity contract by returning the verified Discord account ID with the one-time remote license.

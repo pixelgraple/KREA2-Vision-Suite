@@ -5,7 +5,7 @@ KREA2 Vision Suite adds a private Vision magnifier, an Interrogate upload tab, a
 ## Install
 
 1. Use Windows 10 or 11 with a current NVIDIA driver and at least 25 GB of free disk space for the recommended 8B installation.
-2. Download the complete [v0.13.25 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.25-win64.zip). Do not download only the `.plugin.js` file.
+2. Download the complete [v0.13.26 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.26-win64.zip). Do not download only the `.plugin.js` file.
 3. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, then extract it. If it was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
 4. Double-click **`START HERE - INSTALL.bat`** and accept the clearly listed program and model downloads.
 5. Let setup install or repair Discord Stable, BetterDiscord, Python, Ollama, the local Vision backend, and the recommended Qwen3-VL 8B Heretic model pair.

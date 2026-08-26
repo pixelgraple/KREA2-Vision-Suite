@@ -57,7 +57,7 @@ name avoids inheriting permissions from the retired pre-release repository.
 
 The production Vast template does not depend on private GHCR access. It uses
 the same pinned public llama.cpp CUDA base image and runs
-`bootstrap-worker.sh` from the immutable `v0.13.25` release tag.
+`bootstrap-worker.sh` from the immutable `v0.13.26` release tag.
 The bootstrap installs only the pinned Vast SDK plus download utilities, then
 starts the same `worker.py` and hash-verifying model launcher contained in the
 container image.

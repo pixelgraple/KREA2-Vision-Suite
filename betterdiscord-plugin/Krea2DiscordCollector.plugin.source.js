@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.25
+ * @version 0.13.26
  * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
@@ -22,7 +22,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.25";
+const PLUGIN_VERSION = "0.13.26";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -6132,11 +6132,15 @@ class Krea2DiscordCollector {
     openVerifiedExternal(rawUrl, purpose) {
         const checked = filterExternalUrl(rawUrl, purpose);
         if (!checked.ok) throw new Error(checked.error);
-        const external = this.api.Webpack.getByKeys?.("openExternal");
-        if (!external || typeof external.openExternal !== "function") {
-            throw new Error("Discord's supported external-link handler is unavailable.");
+        // Do not depend on Discord's private, frequently renamed Webpack
+        // modules for a basic browser launch.  The allowlist above is the
+        // security boundary; the standard browser API is stable in Discord's
+        // renderer and lets Discord/Electron apply its normal external-link
+        // handling.
+        if (typeof window?.open !== "function") {
+            throw new Error("Discord cannot open a browser window in this client.");
         }
-        external.openExternal(checked.url);
+        window.open(checked.url, "_blank", "noopener,noreferrer");
     }
 
     async ensureRemoteLicense(signal) {

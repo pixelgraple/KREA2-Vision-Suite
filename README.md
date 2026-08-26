@@ -54,7 +54,7 @@ The supported product is intentionally focused on Discord image interrogation. T
 
 ### Complete Windows package
 
-Download [Krea2VisionSuite-v0.13.25-win64.zip](releases/Krea2VisionSuite-v0.13.25-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.26-win64.zip](releases/Krea2VisionSuite-v0.13.26-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
