@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Install','Repair','Update','PluginOnly')]
+    [ValidateSet('Install','Repair','PluginOnly')]
     [string] $Mode = 'Install',
     [ValidateSet('Ask','2B','4B','8B','9B-GLM-Abliterated','12B-Opus','12B-Heretic','26B-A4B-Heretic','30B-A3B-Abliterated','31B','32B','None')]
     [string] $Model = '8B',
@@ -445,7 +445,7 @@ function Verify-Installation {
     return [ordered]@{vision_health='ok';ollama_health='ok';selected_model=$SelectedPublicId;plugin_sha256=$installedHash;startup_registered=-not $NoStartup}
 }
 
-Write-Host 'KREA2 Vision Suite one-click installer / updater / repair' -ForegroundColor Cyan
+Write-Host 'KREA2 Vision Suite installer and repair center' -ForegroundColor Cyan
 Write-Host 'This installs missing user-scoped prerequisites, the local Vision backend, verified models, BetterDiscord, launchers, and automatic startup.'
 Write-Host 'BetterDiscord is an unofficial Discord modification. Review Discord and BetterDiscord terms before continuing.' -ForegroundColor Yellow
 Write-Host ('Mode: {0}' -f $Mode);Write-ModelTable;Write-Inventory

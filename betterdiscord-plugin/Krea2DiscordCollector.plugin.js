@@ -2,7 +2,7 @@
  * @name Krea2DiscordCollector
  * @author uroligh
  * @version 0.13.21
- * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
+ * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
 "use strict";

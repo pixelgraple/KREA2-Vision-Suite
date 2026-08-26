@@ -11,11 +11,9 @@ During first-run setup, choose one of two Vision modes:
 
 The plugin setup itself is designed to take about a minute. A local model download can take longer, depending on the model size and your internet connection. Once setup is complete, every image in a Discord server that you explicitly allow gets a magnifier action. You can queue several images, watch their progress in Prompt History, see the exact model used for each result, or open **Interrogate** to upload an image manually.
 
-KREA2 Vision Suite is in beta. It is already useful, but bugs and occasional errors can still happen while the project is being improved. Join the new community server for updates, help, and bug reports: [discord.gg/gdxCYCWd8g](https://discord.gg/gdxCYCWd8g).
+KREA2 Vision Suite is a free, open-source Windows application in beta. It is already useful, but bugs and occasional errors can still happen while the project is being improved. Join the community server for updates, help, and bug reports: [discord.gg/gdxCYCWd8g](https://discord.gg/gdxCYCWd8g).
 
-KREA2 Vision Suite is a free, open-source Windows application that adds detailed image interrogation to Discord through BetterDiscord. Select an image, choose a supported local or remote Vision model, and receive three distinct, evidence-grounded image-generation prompts.
-
-The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Seedframe prompt contribution, KREA2 guidance, and rich failure attachments are separately disclosed and controlled. Privacy-minimal operational error reporting is required so launch and GPU-capacity failures can be repaired across installations.
+The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. KREA2 guidance, dataset contribution, and rich failure attachments are separately disclosed and controlled. Privacy-minimal operational error reporting is required so launch and GPU-capacity failures can be repaired across installations.
 
 The **Online API** is an optional alternative for users who do not want to run a large Vision model on their own GPU. Local GPU mode remains account-free. On first Online API use, the plugin opens Discord's OAuth sign-in with only the `identify` scope. The KREA2 gateway verifies the account with Discord, issues a revocable remote license bound to that account and local installation, and grants 120 introductory credits. Online Vision reserves three credits once per image, regardless of its internal evidence passes; it charges those credits only after the completed image audit and automatically refunds them when the image fails or is cancelled. Additional credits are sold as 1,200 credits for $20 USD paid in Bitcoin (400 successful images); BTCPay quotes the Bitcoin amount at checkout. The plugin never receives a Discord password, BTCPay API key, gateway Discord client secret, or worker credential. For each image, the plugin exchanges its license through a short-lived, request-bound, one-use local session. The local service then sends the image over HTTPS to the private KREA2 gateway, which checks both license and available credits before it forwards the request to the configured Vast Serverless worker. The gateway currently pins Gemma 4 26B-A4B Heretic on a 24 GB GPU. Selecting Online API disables local execution for that request; the completed job records the exact remote model that actually ran.
 
@@ -48,31 +46,21 @@ Online inference means the selected image and bounded request metadata must leav
 - Audits subject count, pose, visible anatomy, clothing, expression, camera placement, lighting, and scene layout before returning prompts.
 - Supports local llama.cpp multimodal models and an optional operator-configured Vast Serverless worker.
 - Provides optional KREA2 writing-style guidance, local likes/dislikes, and optional prompt contribution.
-- Checks for signed, hash-verified suite updates and repairs BetterDiscord after Discord client updates.
+- Includes Repair for a Discord update that removes BetterDiscord, damaged local prerequisites, or an interrupted verified model download.
 
 The supported product is intentionally focused on Discord image interrogation. The older Prompt Assistant and photo-editing experiments are not part of the installed release.
 
 ## Download and install
 
-### Recommended PowerShell installer
+### Complete Windows package
 
-Open **Windows PowerShell**, paste this command, and press Enter:
-
-```powershell
-$p="$env:TEMP\Install-KREA2VisionSuite.ps1"; Invoke-WebRequest "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/Install-KREA2VisionSuite.ps1" -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
-```
-
-The bootstrap downloads the stable manifest and release, verifies the exact byte count and SHA-256, and starts the guided installer without copying browser Mark-of-the-Web metadata into every extracted script.
-
-### Manual package
-
-Download [Krea2VisionSuite-v0.13.18-win64.zip](releases/Krea2VisionSuite-v0.13.18-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.21-win64.zip](releases/Krea2VisionSuite-v0.13.21-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
 ```
 
-Do not install only `Krea2DiscordCollector.plugin.js`. The complete package contains the BetterDiscord plugin, private loopback broker, Vision backend, model runtime installer, startup tasks, and repair tools. Updates are installed manually from a verified GitHub Release.
+Do not install only `Krea2DiscordCollector.plugin.js`. The complete package contains the BetterDiscord plugin, private loopback broker, Vision backend, model runtime installer, startup tasks, and repair tools. Updates are manual: download the next complete ZIP from this repository, verify its published SHA-256 when available, extract it, and run the same installer. Existing models and settings are preserved.
 
 The installer can:
 
@@ -221,7 +209,7 @@ The optional Vast worker may scale from zero to five workers. `min_load=0` avoid
 
 ```text
 betterdiscord-plugin/     BetterDiscord source, generated plugin, parser, and tests
-installer/                Windows install, update, repair, startup, and health checks
+installer/                Windows install, repair, startup, and health checks
 vision-studio/            FastAPI loopback broker and Vision pipeline
 vast-serverless-gemma26/  Optional 24 GB GPU worker container
 docs/                     Product, privacy, architecture, model, and setup documentation
@@ -274,7 +262,7 @@ Every published release must keep source, generated plugin, ZIP, checksum, and `
 - BetterDiscord never receives the operator's Vast account API key.
 - Remote license and Discord audit-webhook credentials live only in the HTTPS gateway, never in the plugin or release ZIP. A revoked remote license is denied before a worker receives its next request; local-only use remains under the user's control.
 - Model/runtime downloads are pinned and hash-verified.
-- Update installation accepts only the pinned repository location, expected byte count, and SHA-256.
+- Published release ZIPs include a SHA-256 checksum for manual verification before installation.
 - `.env`, tokens, model files, runtime receipts, logs, images, prompts, databases, caches, and deployment snapshots are excluded from source control.
 
 Do not expose port `7870` directly to a LAN or the internet. Report security issues privately as described in [SECURITY.md](SECURITY.md).

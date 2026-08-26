@@ -33,14 +33,14 @@ The plugin owns Discord rendering and user interaction:
 - discovers supported attachment actions;
 - enforces configured server allowlists;
 - submits magnifier and Interrogate jobs;
-- shows model selection, VRAM guidance, queue state, prompt history, votes, and updates;
+- shows model selection, VRAM guidance, queue state, prompt history, and votes;
 - obtains a short-lived one-use local session before each image POST.
 
 It does not execute model inference or hold the remote worker's private API key.
 
 ### Vision Studio
 
-Vision Studio is a FastAPI service bound to `127.0.0.1:7870`. It owns image validation, request-scoped preprocessing, model catalog/admission, provider routing, GPU coordination, evidence collection, prompt validation, optional KREA2 traffic, and suite update verification.
+Vision Studio is a FastAPI service bound to `127.0.0.1:7870`. It owns image validation, request-scoped preprocessing, model catalog/admission, provider routing, GPU coordination, evidence collection, prompt validation, and optional KREA2 traffic.
 
 ### Local models
 
@@ -68,6 +68,6 @@ Discord performs one image per acquired queue ticket. If more Discord work remai
 
 Plugin-local submission waits, local shared-FIFO acquisition, and remote worker capacity each have a 30-second admission deadline. Capacity timeout becomes the exact terminal state `GPU not available`; the ticket is removed so later work can proceed. This deadline covers waiting for compute, not the inference time of a job that has already acquired a worker/GPU.
 
-## Update architecture
+## Release maintenance
 
-The plugin checks the stable manifest after startup and every six hours. The local broker verifies repository origin, version, expected byte count, and SHA-256 before coordinating a matched backend/plugin update. Active Vision work must finish before replacement. Discord updates are handled separately: Repair checks injection in the current `app-*` directory and reinjects BetterDiscord when required.
+The public plugin has no update checker or installer. Releases are manual full-package installs so the plugin and backend remain matched. If a Discord client update removes BetterDiscord, Repair checks the current `app-*` directory and reinjects BetterDiscord without changing the user's plugin settings.

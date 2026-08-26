@@ -2,7 +2,7 @@
 
 ## Version contract
 
-The root `VERSION`, `vision-studio/VERSION`, plugin metadata, backend update metadata, release ZIP filename, and `releases/latest.json` version must match.
+The root `VERSION`, `vision-studio/VERSION`, plugin metadata, release ZIP filename, and `releases/latest.json` version must match.
 
 ## Required release artifacts
 

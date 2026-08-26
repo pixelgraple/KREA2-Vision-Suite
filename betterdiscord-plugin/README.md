@@ -1,6 +1,6 @@
-# Krea2 Discord Vision v0.13.18
+# Krea2 Discord Vision v0.13.21
 
-The plugin checks the authenticated loopback broker for stable suite updates shortly after startup and every six hours. The default is a one-click update notice; verified automatic installation is optional. Updates are full-suite packages so plugin and backend protocol versions stay matched.
+The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
 This BetterDiscord plugin adds one focused tool to exact Discord image attachments inside explicitly allowlisted servers:
 
@@ -16,7 +16,7 @@ The model/VRAM installer, shared FIFO status, durable local job history, paginat
 
 ## Discord-integrated prompt history
 
-Prompt History is mounted as a real right-most Discord rail after Discord's member list. It provides live shared-GPU and warm-window status, the average queue wait across successful jobs completed in the last 24 hours, recent/completed/queued/error filters, prompt search, a model filter, exact model-used evidence, cancel controls, and full three-prompt results for the current Vision Studio process only.
+Prompt History is mounted as a detached right-side rail that does not change Discord's channel, forum, ticket, or thread layout. It provides live shared-GPU and warm-window status, the average queue wait across successful jobs completed in the last 24 hours, recent/completed/queued/error filters, prompt search, a model filter, exact model-used evidence, cancel controls, and full three-prompt results from the private local history database.
 
 An open queued or running job refreshes every second without overlapping requests and automatically becomes the finished result. Closing the detail stops polling immediately.
 
@@ -76,7 +76,7 @@ Heretic/uncensored variants reduce model-level refusals. The local project still
 - Downloads are capped at 20 MiB and the real format is detected from magic bytes.
 - Full-resolution images exist only in memory plus a request-scoped temporary processing directory that is deleted before the response returns.
 - Prompt History is paginated and remains available across Discord and Vision restarts. Finished jobs and their small previews are retained until the user explicitly selects **Clear history**. Each preview is capped at 640 px and 2 MiB, keyed by the source SHA-256, and saved under the configured local folder's `.krea2-history-thumbnails` subfolder.
-- Discord job records, prompt text, feedback, reviews, sidecars, exports, and the Krea2 example cache are never persisted locally.
+- Session feedback, review notes, legacy sidecars, exports, and the Krea2 example cache are never persisted locally. Prompt History intentionally persists sanitized job records and generated prompt text until the user selects **Clear history**.
 - After the contribution disclosure is accepted, all three generated prompt texts are synchronously accepted by Seedframe before the local API returns success. The image and Discord attachment/account metadata are never sent with prompt contribution. Source images are eligible only for the separate, default-off failure-diagnostics feature after its own consent.
 - Automatic three-prompt contribution is off by default for new installs and can be enabled only after consent. It rides the same request-bound one-use loopback Vision session; BetterDiscord stores no reusable Seedframe credential.
 - Seedframe retries are bounded and memory-only. If the online dataset cannot confirm all three prompts, Discord receives a visible 503 and no prompt result.

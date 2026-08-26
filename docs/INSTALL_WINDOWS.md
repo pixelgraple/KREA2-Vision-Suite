@@ -2,21 +2,16 @@
 
 ## Normal installation: one guided setup
 
-1. Open Windows PowerShell and run the verified bootstrap. It downloads the current complete release without browser Mark-of-the-Web propagation, validates the stable manifest, exact byte length and SHA-256, then starts the guided installer:
+1. Download the complete [v0.13.21 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.21-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
+2. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
+3. Double-click **`START HERE - INSTALL.bat`** in the extracted folder.
+4. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.
+5. When Discord reopens, enable `Krea2DiscordCollector` if BetterDiscord asks, open a server channel, and use the first-run window to allow that server.
+6. Click the magnifier on a Discord image. Prompt History shows the queue immediately, refreshes its rail every five seconds, and refreshes an open job every second.
 
-   ```powershell
-   $p="$env:TEMP\Install-KREA2VisionSuite.ps1"; Invoke-WebRequest "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/Install-KREA2VisionSuite.ps1" -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
-   ```
-
-   Do not download only `Krea2DiscordCollector.plugin.js`. For a manual install, download the [v0.13.18 Windows ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.18-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
-
-## Updates
+## Manual updates
 
 The BetterDiscord plugin does not check for, download, or install updates. When a new release is announced, download the complete Windows ZIP from the official GitHub Releases page, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing models and settings are preserved.
-2. The bootstrap starts setup automatically. Manual ZIP users should double-click **`START HERE - INSTALL.bat`** after unblocking and extracting the ZIP.
-3. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.
-4. When Discord reopens, enable `Krea2DiscordCollector` if BetterDiscord asks, open a server channel, and use the first-run window to allow that server.
-5. Click the magnifier on a Discord image. Prompt History shows the queue immediately and refreshes an open job every second.
 
 The installer needs a network connection, Windows 10/11, `winget` (Windows App Installer), and a supported NVIDIA GPU with a current driver. It installs missing user-scoped copies of:
 
@@ -59,7 +54,7 @@ To make a different model the automatic first install choice, open PowerShell in
 powershell -ExecutionPolicy Bypass -File .\installer\Install-Krea2VisionSuite.ps1 -Model 4B
 ```
 
-## Starting, repairing, and updating
+## Starting and repairing
 
 - Normal Windows login: required local services start hidden automatically.
 - Manual start: double-click **Start KREA2 Vision Suite.bat** on the desktop, then use KREA2 inside Discord.

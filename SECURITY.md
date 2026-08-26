@@ -1,8 +1,8 @@
 # Security policy
 
-## Update trust boundary
+## Manual release trust boundary
 
-KREA2's updater is authenticated on literal loopback and code-pins the `pixelgraple/KREA2-Vision-Suite` stable manifest and release paths. Redirects, alternate hosts, malformed semantic versions, unexpected package sizes, SHA-256 mismatches, encrypted archives, symbolic links, path traversal, and oversized extraction are rejected before installer launch. Automatic updates are optional; the default requires one click in BetterDiscord. Protecting the GitHub maintainer account is therefore part of the release trust boundary.
+The public BetterDiscord plugin does not check for, download, or install updates. Users obtain a complete versioned ZIP from the official `pixelgraple/KREA2-Vision-Suite` repository, verify the published SHA-256 when available, extract it, and start the included installer themselves. Protecting the GitHub maintainer account and release artifacts is therefore part of the release trust boundary. Contributors must not replace release files through an alternate host, bundle secrets, or publish archives that contain symbolic links, path traversal, encrypted payloads, or unrelated executables.
 
 ## Supported deployment
 
@@ -18,7 +18,7 @@ An open-source plugin cannot cryptographically prove that BetterDiscord is insta
 
 ## Privacy
 
-Strict privacy mode is mandatory for routine user content. Vision Studio does not persist uploaded source images, generated prompts, feedback, reviews, exports, or prompt-history databases; request-scoped processing files are deleted before the request completes. BetterDiscord keeps only a bounded local Prompt History thumbnail cache (at most 250 previews, 640 px and 2 MiB each) under the user's configured save folder so completed results retain their image preview. It does not cache full-resolution source images or prompt text. The optional Krea2 contribution endpoint receives prompt text but never image bytes or Discord identity/location fields.
+Routine user content is processed locally by default. Request-scoped full-resolution processing files are deleted before the request completes. Generated prompts and sanitized job metadata remain in the private local Prompt History database until the user selects **Clear history**. BetterDiscord keeps bounded 640 px preview thumbnails under the user's configured save folder so completed results retain their image preview. It does not cache full-resolution source images. The optional Krea2 contribution endpoint receives prompt text but never image bytes or Discord identity/location fields.
 
 Separately consented failure diagnostics can contain a failed image, Discord username, partial prompt, model/stage/error data, image hash, and bounded job identifiers. Diagnostics are off by default, owner-review only, rate-limited, and nonblocking. Never attach diagnostic payloads to public issues. See [Privacy and diagnostics](docs/PRIVACY_AND_DIAGNOSTICS.md).
 

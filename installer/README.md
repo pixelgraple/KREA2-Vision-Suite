@@ -1,4 +1,4 @@
-# Windows installer, updater, and repair center
+# Windows installer and repair center
 
 Run `Krea2VisionSuite-Installer.cmd` from an extracted release or cloned repository.
 
@@ -16,8 +16,8 @@ The installer:
 - creates desktop Start/Repair BAT files and a hidden Windows-login launcher that starts Ollama compatibility and the Vision backend only when needed;
 - starts the backend and verifies its loopback health, selected Vision model, startup registration, and installed plugin SHA-256.
 
-The installer clearly announces the default 8B download before network work begins. Downloads use immutable Hugging Face revisions, resumable `.partial` files, exact byte lengths, and pinned SHA-256 values; existing verified files are reused. Use `-Model 4B` (or another listed ID) for a different automatic pair, `-Model Ask` for an interactive choice, or `-Model None` to skip Vision-model downloads. Rerun the desktop Repair shortcut after an interrupted update, or use `-Mode PluginOnly` to update only BetterDiscord.
+The installer clearly announces the default 8B download before network work begins. Downloads use immutable Hugging Face revisions, resumable `.partial` files, exact byte lengths, and pinned SHA-256 values; existing verified files are reused. Use `-Model 4B` (or another listed ID) for a different automatic pair, `-Model Ask` for an interactive choice, or `-Model None` to skip Vision-model downloads. Rerun the desktop Repair shortcut after an interrupted installation or download, or use `-Mode PluginOnly` to reinstall only BetterDiscord's plugin file.
 
-Installed plugins check the official stable manifest every six hours. A verified suite update invokes `-Mode Update -Model None -NonInteractive -NoDiscordRestart -SkipLlamaCppRuntime -SkipPromptTextModel`, preserving the selected model, model files, token, settings, and Discord session while replacing the matching plugin/backend code together.
+The public plugin contains no update checker, downloader, or installer. Publish a complete versioned ZIP and its checksum, then have users run the installer from that ZIP manually. The installer preserves verified model files, local settings, and the Discord session where possible.
 
 `-PlanOnly -Model 8B` performs a read-only prerequisite/model plan. Logs and the final non-secret installation receipt are stored under `%LOCALAPPDATA%\Krea2VisionSuite`.

