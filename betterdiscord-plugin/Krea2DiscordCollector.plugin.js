@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.22
+ * @version 0.13.23
  * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.22";
+const PLUGIN_VERSION = "0.13.23";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -981,6 +981,7 @@ const VISION_MODEL_OPTIONS = Object.freeze([
 const ONLINE_VISION_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l";
 const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB remote GPU)";
 const REMOTE_GATEWAY_URL = "https://seedframe.xyz/api/krea2-vision";
+const TRUSTED_CHECKOUT_HOSTS = new Set(["bitcoin.seedframe.xyz", "bitcoin.zoo-chat.org"]);
 const VISION_EXECUTION_OPTIONS = Object.freeze([
     ["Local GPU — use an installed model on this computer", "local"],
     ["Online API — Gemma 4 26B-A4B on the private remote worker (Discord sign-in required)", "online"]
@@ -1812,6 +1813,33 @@ function validateVisionLoopbackEndpoint(raw) {
     }
 
     return {ok: true, url: parsed.toString(), origin: parsed.origin};
+}
+
+function filterExternalUrl(raw, purpose) {
+    let parsed;
+    try {
+        parsed = new URL(String(raw || "").trim());
+    }
+    catch {
+        return {ok: false, error: "The external link is not a valid URL."};
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.hash) {
+        return {ok: false, error: "The external link must be a direct HTTPS URL without credentials, a port, or a fragment."};
+    }
+    if (purpose === "discord-oauth") {
+        if (parsed.hostname !== "discord.com" || parsed.pathname !== "/oauth2/authorize") {
+            return {ok: false, error: "The Discord sign-in link is not an approved Discord OAuth URL."};
+        }
+    }
+    else if (purpose === "checkout") {
+        if (!TRUSTED_CHECKOUT_HOSTS.has(parsed.hostname)) {
+            return {ok: false, error: "The payment link is not from an approved Krea2 checkout host."};
+        }
+    }
+    else {
+        return {ok: false, error: "The external-link purpose is not approved."};
+    }
+    return {ok: true, url: parsed.toString()};
 }
 
 function isExcludedAssetUrl(raw) {
@@ -6759,6 +6787,16 @@ class Krea2DiscordCollector {
         return JSON.parse(await readBoundedResponseText(response, HISTORY_MAX_RESPONSE_BYTES));
     }
 
+    openVerifiedExternal(rawUrl, purpose) {
+        const checked = filterExternalUrl(rawUrl, purpose);
+        if (!checked.ok) throw new Error(checked.error);
+        const external = this.api.Webpack.getByKeys?.("openExternal");
+        if (!external || typeof external.openExternal !== "function") {
+            throw new Error("Discord's supported external-link handler is unavailable.");
+        }
+        external.openExternal(checked.url);
+    }
+
     async ensureRemoteLicense(signal) {
         const saved = this.settings.remoteLicense;
         if (saved && Number(saved.authVersion) === 2 && /^lic_[A-Za-z0-9_-]{12,64}$/.test(String(saved.licenseId || "")) && /^[\x21-\x7e]{43,160}$/.test(String(saved.licenseToken || ""))) return saved;
@@ -6780,13 +6818,12 @@ class Krea2DiscordCollector {
         try { issued = JSON.parse(responseText); }
         catch { throw new Error("The Online API Discord sign-in service returned invalid JSON."); }
         const authorizeUrl = String(issued?.authorize_url || "");
-        if (!/^https:\/\/discord\.com\/oauth2\/authorize\?/.test(authorizeUrl) || String(issued?.enrollment_id || "") !== enrollmentId) throw new Error("The Online API Discord sign-in service returned an invalid authorization link.");
+        const approvedAuthorizeUrl = filterExternalUrl(authorizeUrl, "discord-oauth");
+        if (!approvedAuthorizeUrl.ok || !approvedAuthorizeUrl.url.includes("?") || String(issued?.enrollment_id || "") !== enrollmentId) throw new Error("The Online API Discord sign-in service returned an invalid authorization link.");
         const accepted = await this.confirmRemoteOAuth();
         if (!accepted) throw new Error("Discord sign-in was cancelled. Local GPU mode remains available without an account.");
         try {
-            const external = this.api.Webpack.getModule?.(module => typeof module?.openExternal === "function", {searchExports:true});
-            if (external?.openExternal) external.openExternal(authorizeUrl);
-            else window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+            this.openVerifiedExternal(approvedAuthorizeUrl.url, "discord-oauth");
         }
         catch { throw new Error("Could not open Discord sign-in. Allow Discord to open links, then retry."); }
         const deadline = Date.now() + Math.max(60, Math.min(Number(issued?.expires_in_seconds || 600), 600)) * 1000;
@@ -6854,11 +6891,10 @@ class Krea2DiscordCollector {
         catch { throw new Error("Bitcoin checkout returned invalid JSON."); }
         if (!invoiceResponse.ok) throw new Error(String(invoice?.detail || `Bitcoin checkout failed with HTTP ${invoiceResponse.status}.`));
         const checkoutUrl = String(invoice?.checkout_url || "");
-        if (!/^https:\/\//.test(checkoutUrl)) throw new Error("Bitcoin checkout returned an invalid payment link.");
+        const approvedCheckoutUrl = filterExternalUrl(checkoutUrl, "checkout");
+        if (!approvedCheckoutUrl.ok) throw new Error("Bitcoin checkout returned an invalid payment link.");
         try {
-            const external = this.api.Webpack.getModule?.(module => typeof module?.openExternal === "function", {searchExports:true});
-            if (external?.openExternal) external.openExternal(checkoutUrl);
-            else window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+            this.openVerifiedExternal(approvedCheckoutUrl.url, "checkout");
         }
         catch { throw new Error("Could not open Bitcoin checkout. Allow Discord to open links, then retry."); }
         const deadline = Date.now() + 30 * 60 * 1000;
@@ -8387,6 +8423,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     filenameFromContentDisposition,
     filenameFromUrl,
     filterHistoryJobs,
+    filterExternalUrl,
     formatAverageQueueTime,
     formatHistoryDuration,
     historyBaseUrlFromVisionEndpoint,

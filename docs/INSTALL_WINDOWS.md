@@ -2,7 +2,7 @@
 
 ## Normal installation: one guided setup
 
-1. Download the complete [v0.13.22 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.22-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
+1. Download the complete [v0.13.23 Windows ZIP](https://github.com/pixelgraple/KREA2-Vision-Suite/raw/main/releases/Krea2VisionSuite-v0.13.23-win64.zip). Do not download only `Krea2DiscordCollector.plugin.js`.
 2. Right-click the ZIP, select **Properties**, enable **Unblock**, select **Apply**, and only then extract it.
 3. Double-click **`START HERE - INSTALL.bat`** in the extracted folder.
 4. Accept the clearly listed program and model downloads. The default Vision choice is **Qwen3-VL 8B Heretic Q8_0**.

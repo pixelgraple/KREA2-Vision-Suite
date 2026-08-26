@@ -22,6 +22,7 @@ const {
     filenameFromContentDisposition,
     filenameFromUrl,
     filterHistoryJobs,
+    filterExternalUrl,
     formatAverageQueueTime,
     formatDownloadGiB,
     formatHistoryDuration,
@@ -131,6 +132,13 @@ assert.equal(validateEndpoint("https://seedframe.example/candidates").ok, true);
 assert.equal(validateEndpoint("http://127.0.0.1:8787/candidates").ok, true);
 assert.equal(validateEndpoint("http://seedframe.example/candidates").ok, false);
 assert.equal(validateEndpoint("https://token@seedframe.example/candidates").ok, false);
+assert.equal(filterExternalUrl("https://discord.com/oauth2/authorize?client_id=123&state=abc", "discord-oauth").ok, true);
+assert.equal(filterExternalUrl("https://discord.com/oauth2/authorize#fragment", "discord-oauth").ok, false);
+assert.equal(filterExternalUrl("https://discord.com.evil.example/oauth2/authorize?client_id=123", "discord-oauth").ok, false);
+assert.equal(filterExternalUrl("javascript:alert(1)", "discord-oauth").ok, false);
+assert.equal(filterExternalUrl("https://bitcoin.seedframe.xyz/i/demo", "checkout").ok, true);
+assert.equal(filterExternalUrl("https://bitcoin.zoo-chat.org/i/demo", "checkout").ok, true);
+assert.equal(filterExternalUrl("https://evil.example/i/demo", "checkout").ok, false);
 assert.equal(isCurrentPrivacyReceipt(null), false);
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION}), false);
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION - 1, acceptedAt: Date.now()}), false);
@@ -183,6 +191,9 @@ assert.match(pluginSource, /root\.dataset\.floating = "true"/, "Prompt History m
 assert.doesNotMatch(pluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/, "Prompt History must never mutate Discord's member-list layout");
 assert.doesNotMatch(pluginSource, /this\.ensureHistoryRail\(\);\s*\n\s*if \(!this\.getVerifiedRoute/, "Image scans must not rebuild the rail");
 assert.doesNotMatch(pluginSource, /\/api\/suite-update|checkForSuiteUpdate|startSuiteUpdate|pollSuiteUpdate/, "The published BetterDiscord plugin must not contain an updater");
+assert.match(pluginSource, /this\.api\.Webpack\.getByKeys\?\.\("openExternal"\)/, "External pages must use Discord's keyed openExternal module lookup");
+assert.match(pluginSource, /function filterExternalUrl\(/, "All externally supplied links must pass through the approved-host filter");
+assert.doesNotMatch(pluginSource, /window\.open\(/, "The plugin must not fall back to an unfiltered popup");
 assert.match(pluginSource, /Optional identity or role notes/);
 assert.match(pluginSource, /Identity is never inferred from pixels or anatomy/);
 assert.match(pluginSource, /Uploader-supplied identity or role metadata \(not inferred from pixels\)/);
@@ -306,7 +317,9 @@ assert.match(rootInstallerSource, /-Mode Install -Model 8B/);
 assert.doesNotMatch(builtPluginSource, /krea2history:\/\//);
 assert.match(builtPluginSource, /\/v1\/oauth\/start/);
 assert.match(builtPluginSource, /Connect Discord for Online API/);
-assert.match(builtPluginSource, /window\.open\(authorizeUrl, "_blank", "noopener,noreferrer"\)/);
+assert.match(builtPluginSource, /getByKeys\?\.\("openExternal"\)/);
+assert.match(builtPluginSource, /function filterExternalUrl\(/);
+assert.doesNotMatch(builtPluginSource, /window\.open\(/);
 assert.match(builtPluginSource, /document\.body\.append\(root\)/);
 assert.match(builtPluginSource, /root\.dataset\.detached = "true"/);
 assert.doesNotMatch(builtPluginSource, /membersWrap_/);
