@@ -26,8 +26,10 @@ the next cold start re-download and verify the artifacts.
 
 The exact model pair occupies 15,019,315,424 bytes (about 14.0 GiB). The 65 GB
 disk requirement leaves room for the CUDA/llama.cpp image, package layers, and
-temporary download state. Request/model-server output is discarded to
-`/dev/null`; no images or generated prompts are written to the worker volume.
+temporary download state. Request/model-server output is not written to the
+persistent model volume. A small marker-only file under `/tmp` carries
+model-ready/error lifecycle events to the Vast SDK; it never contains images,
+prompts, or model responses.
 Startup also checks free space before either
 artifact download and keeps a separate 6 GiB reserve; insufficient storage fails
 the worker cleanly instead of leaving a partial model.

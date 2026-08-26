@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from vastai import BenchmarkConfig, HandlerConfig, LogActionConfig, Worker, WorkerConfig
 
 
@@ -30,8 +32,10 @@ def workload(payload: dict) -> float:
 config = WorkerConfig(
     model_server_url="http://127.0.0.1",
     model_server_port=18000,
-    # Never persist request-adjacent model-server logs on the worker volume.
-    model_log_file="/dev/null",
+    # Read only the tiny ephemeral lifecycle-event stream. The llama.cpp log is
+    # intentionally not used here because it may contain request-adjacent
+    # diagnostics and because /dev/null can never deliver the READY marker.
+    model_log_file=os.environ.get("KREA2_EVENT_LOG", "/tmp/krea2-worker-events.log"),
     model_healthcheck_url="/health",
     handlers=[
         HandlerConfig(

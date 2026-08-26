@@ -7,6 +7,7 @@ export USE_SSL="${USE_SSL:-false}"
 
 MODEL_DIR="${KREA2_MODEL_DIR:-/workspace/krea2-models/gemma4-26b-a4b-heretic-q3-k-l}"
 LOG_DIR="/var/log/krea2"
+export KREA2_EVENT_LOG="${KREA2_EVENT_LOG:-/tmp/krea2-worker-events.log}"
 MODEL_PATH="$MODEL_DIR/gemma-4-26B-A4B-it-uncensored-heretic-Q3_K_L.gguf"
 MMPROJ_PATH="$MODEL_DIR/gemma-4-26B-A4B-it-mmproj-BF16.gguf"
 MODEL_URL="https://huggingface.co/llmfan46/gemma-4-26B-A4B-it-uncensored-heretic-GGUF/resolve/ea0259bf66bcd33b5f3425eb223932abaa0f4f07/gemma-4-26B-A4B-it-uncensored-heretic-Q3_K_L.gguf?download=true"
@@ -19,6 +20,14 @@ MMPROJ_SHA256="b3ee6c97d5a5bb1ae9eb93bf14c1d1b51a0179a45ac1076b195931814c759e1e"
 
 mkdir -p "$MODEL_DIR" "$LOG_DIR"
 : > "$LOG_DIR/llama-server.log"
+: > "$KREA2_EVENT_LOG"
+
+# The Vast SDK watches this ephemeral marker-only file to determine when the
+# model can accept work. It never contains images, prompts, or model output.
+emit_event() {
+  printf '%s\n' "$*" >> "$KREA2_EVENT_LOG"
+  printf '%s\n' "$*" >> "$LOG_DIR/llama-server.log"
+}
 
 # Forward the model server's own log to the Vast instance log so startup
 # failures remain diagnosable even when the PyWorker never reaches readiness.
@@ -47,14 +56,13 @@ require_download_space() {
   local expected_bytes="$1" free_kib free_bytes required_bytes
   free_kib="$(df -Pk "$MODEL_DIR" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || {
-    echo "KREA2_MODEL_ERROR unable to determine free model-cache space" >> "$LOG_DIR/llama-server.log"
+    emit_event "KREA2_MODEL_ERROR unable to determine free model-cache space"
     exit 1
   }
   free_bytes=$((free_kib * 1024))
   required_bytes=$((expected_bytes + DOWNLOAD_RESERVE_BYTES))
   if (( free_bytes < required_bytes )); then
-    echo "KREA2_MODEL_ERROR insufficient disk: ${free_bytes} bytes free; ${required_bytes} required" \
-      >> "$LOG_DIR/llama-server.log"
+    emit_event "KREA2_MODEL_ERROR insufficient disk: ${free_bytes} bytes free; ${required_bytes} required"
     exit 1
   fi
 }
@@ -75,7 +83,7 @@ download_verified() {
   fi
   remaining_bytes=$((expected_bytes - partial_bytes))
   require_download_space "$remaining_bytes"
-  echo "KREA2_MODEL_DOWNLOAD $(basename "$path")" >> "$LOG_DIR/llama-server.log"
+  emit_event "KREA2_MODEL_DOWNLOAD $(basename "$path")"
   aria2c \
     --allow-overwrite=true \
     --auto-file-renaming=false \
@@ -94,7 +102,7 @@ download_verified() {
     --out "$(basename "$path.part")" \
     "$url"
   if ! verify_file "$path.part" "$expected_bytes" "$expected_sha"; then
-    echo "KREA2_MODEL_ERROR artifact verification failed: $(basename "$path")" >> "$LOG_DIR/llama-server.log"
+    emit_event "KREA2_MODEL_ERROR artifact verification failed: $(basename "$path")"
     exit 1
   fi
   mv -- "$path.part" "$path"
@@ -109,8 +117,7 @@ download_verified "$MMPROJ_PATH" "$MMPROJ_URL" "$MMPROJ_BYTES" "$MMPROJ_SHA256"
 LLAMA_SERVER_LIB="$(find /app /usr/local/lib /usr/local/lib64 \
   -name 'libllama-server-impl.so' -type f -print -quit 2>/dev/null || true)"
 if [[ -z "$LLAMA_SERVER_LIB" ]]; then
-  echo "KREA2_MODEL_ERROR libllama-server-impl.so was not found in the llama.cpp image" \
-    >> "$LOG_DIR/llama-server.log"
+  emit_event "KREA2_MODEL_ERROR libllama-server-impl.so was not found in the llama.cpp image"
   exit 1
 fi
 LLAMA_SERVER_LIB_DIR="$(dirname "$LLAMA_SERVER_LIB")"
@@ -146,16 +153,16 @@ LLAMA_PID=$!
   trap - EXIT INT TERM
   for _ in $(seq 1 1800); do
     if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-      echo "KREA2_MODEL_ERROR llama-server exited during startup" >> "$LOG_DIR/llama-server.log"
+      emit_event "KREA2_MODEL_ERROR llama-server exited during startup"
       exit 1
     fi
     if curl --fail --silent http://127.0.0.1:18000/health >/dev/null; then
-      echo "KREA2_MODEL_READY" >> "$LOG_DIR/llama-server.log"
+      emit_event "KREA2_MODEL_READY"
       exit 0
     fi
     sleep 1
   done
-  echo "KREA2_MODEL_ERROR llama-server startup timed out" >> "$LOG_DIR/llama-server.log"
+  emit_event "KREA2_MODEL_ERROR llama-server startup timed out"
 ) &
 
 python3 /opt/krea2/worker.py
