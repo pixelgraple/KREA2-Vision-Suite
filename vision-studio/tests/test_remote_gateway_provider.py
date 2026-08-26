@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from PIL import Image
+import requests
 
 from app.models.remote_access import RemoteAccess
 from app.models.remote_gateway_provider import RemoteGatewayProvider
@@ -26,6 +27,21 @@ class _Http:
         self.calls.append((url, kwargs))
         if url.endswith("/v1/chat/completions"):
             return _Response(200, {"choices":[{"message":{"content":"pixel-grounded response"}}], "usage":{"completion_tokens":3}})
+        return _Response(200, {"accepted":True})
+
+
+class _TransientHttp(_Http):
+    def __init__(self):
+        super().__init__()
+        self.failures_remaining = 1
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if url.endswith("/v1/chat/completions") and self.failures_remaining:
+            self.failures_remaining -= 1
+            raise requests.ConnectionError("transient connection close")
+        if url.endswith("/v1/chat/completions"):
+            return _Response(200, {"choices":[{"message":{"content":"reconnected result"}}]})
         return _Response(200, {"accepted":True})
 
 
@@ -67,6 +83,14 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         self.assertEqual(url, "https://seedframe.xyz/api/krea2-vision/v1/audit/complete")
         self.assertEqual(request["json"]["source_url"], self.access.source_url)
         self.assertNotIn("data:image", str(request["json"]))
+
+    def test_retries_one_transient_gateway_disconnect_with_same_request_proof(self):
+        self.provider.http = _TransientHttp()
+        reply = self.provider.text("system", "describe", 0.1, 64)
+        self.assertEqual(reply.text, "reconnected result")
+        self.assertEqual(len(self.provider.http.calls), 2)
+        for _, request in self.provider.http.calls:
+            self.assertEqual(request["headers"]["X-Krea2-Request-Id"], self.access.request_id)
 
 
 if __name__ == "__main__":

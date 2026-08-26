@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,12 @@ class RemoteGatewayProviderError(RuntimeError):
 
 class RemoteGatewayProvider(VisionProvider):
     """OpenAI-compatible calls routed through the licensed KREA2 gateway."""
+
+    # A serverless worker can be replaced while an in-flight request is being
+    # routed. The request ID stays unchanged for this one replay, so the
+    # gateway can account for one image rather than two independent jobs.
+    TRANSIENT_ATTEMPTS = 2
+    TRANSIENT_RETRY_DELAY_SECONDS = 1.0
 
     def __init__(self, *, base_url: str, model: str, max_tokens: int, timeout: float, access: RemoteAccess, http: Any = requests):
         self.base_url = base_url.rstrip("/")
@@ -50,11 +57,33 @@ class RemoteGatewayProvider(VisionProvider):
         if json_mode:
             payload["response_format"] = {"type":"json_object"}
         headers = {"Authorization":self.access.authorization,"X-Krea2-Request-Id":self.access.request_id}
-        try:
-            response = self.http.post(f"{self.base_url}/v1/chat/completions", json=payload, headers=headers, timeout=self.timeout + 15)
-            body = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise RemoteGatewayProviderError("The remote Vision gateway is unavailable.") from exc
+        response = None
+        body = None
+        transport_error = None
+        for attempt in range(self.TRANSIENT_ATTEMPTS):
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout + 15,
+                )
+                body = response.json()
+            except (requests.RequestException, ValueError) as exc:
+                transport_error = exc
+                if attempt + 1 < self.TRANSIENT_ATTEMPTS:
+                    time.sleep(self.TRANSIENT_RETRY_DELAY_SECONDS)
+                    continue
+                raise RemoteGatewayProviderError(
+                    "The remote Vision connection ended before a response was returned. "
+                    "It retried once; please retry the image."
+                ) from exc
+            if response.status_code in {502, 503, 504} and attempt + 1 < self.TRANSIENT_ATTEMPTS:
+                time.sleep(self.TRANSIENT_RETRY_DELAY_SECONDS)
+                continue
+            break
+        if response is None:
+            raise RemoteGatewayProviderError("The remote Vision gateway is unavailable.") from transport_error
         if response.status_code >= 400:
             detail = str(body.get("detail") or "Remote Vision request failed.") if isinstance(body, dict) else "Remote Vision request failed."
             raise RemoteGatewayProviderError(detail[:400])
