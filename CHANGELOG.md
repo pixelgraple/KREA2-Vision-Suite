@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.17 - 2026-08-26
+
+- Replaces restart-volatile Discord Prompt History with a durable local SQLite database at `vision-studio/data/history/discord_vision_jobs.sqlite3`.
+- Retains completed prompts, errors, cancellations, model evidence, and safe job metadata until the user explicitly selects **Clear history**; no automatic age/count pruning remains.
+- Restores any compatible history already present in that database and preserves interrupted active jobs as actionable error records instead of silently dropping them.
+- Adds server-side pagination, status/model/search filtering, page totals, Previous/Next controls, and a clear-history control to the BetterDiscord history rail.
+- Adds pagination to the loopback Discord job dashboard and keeps small local thumbnails until history is cleared.
+- Continues to exclude full-resolution source images, Discord URLs/IDs, tokens, queue secrets, raw evidence, and full filesystem paths from the history database.
+
 ## 0.13.16 - 2026-08-26
 
 - Adds a dedicated fifth full-image evidence pass for visible skin condition, soft-tissue shape and broad age-related appearance without numeric-age guesses or medical diagnosis.

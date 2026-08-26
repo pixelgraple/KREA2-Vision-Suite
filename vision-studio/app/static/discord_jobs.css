@@ -194,6 +194,9 @@ main { width: min(1480px, calc(100% - 40px)); margin: 0 auto; padding: 32px 0 24
 .filter { padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: #111622; cursor: pointer; font-size: 11px; font-weight: 750; }
 .filter.active { border-color: rgba(167, 139, 250, .48); color: #efeaff; background: rgba(105, 73, 204, .24); }
 .jobs { display: grid; gap: 8px; max-height: 510px; overflow: auto; padding-right: 3px; }
+.jobs-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 13px; }
+.jobs-pagination .button { min-width: 82px; }
+.jobs-pagination .muted { min-width: 150px; text-align: center; }
 .job {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

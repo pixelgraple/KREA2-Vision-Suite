@@ -65,8 +65,8 @@ class Krea2DiagnosticReporterTests(unittest.TestCase):
             error_message="failed at C:\\Users\\person\\private.png token=secret-value https://private.example/image",
             stage="Waiting for remote worker",
             runtime="remote",
-            plugin_version="0.13.16",
-            backend_version="0.13.16",
+            plugin_version="0.13.17",
+            backend_version="0.13.17",
         )
         self.assertTrue(accepted)
         payload = http.calls[0][1]["json"]

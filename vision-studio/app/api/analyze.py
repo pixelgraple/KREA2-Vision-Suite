@@ -243,14 +243,33 @@ def strict_form_flag(value: str, field_name: str) -> bool:
     raise HTTPException(422, f"{field_name} must be 0 or 1.")
 
 @router.get("/discord-jobs")
-def discord_job_list(request:Request,response:Response,limit:int=100):
+def discord_job_list(
+    request:Request,
+    response:Response,
+    page:int=1,
+    page_size:int=20,
+    view:str="recent",
+    q:str="",
+    model:str="",
+    limit:int|None=None,
+):
     require_loopback(request,"Discord Vision job history is available on literal loopback only.")
     response.headers["Cache-Control"]="no-store"
+    try:
+        history=discord_jobs.list_page(
+            page=page,
+            page_size=limit if limit is not None else page_size,
+            view=view,
+            query=q,
+            model=model,
+        )
+    except (TypeError,ValueError) as exc:
+        raise HTTPException(422,str(exc)) from exc
     return {
         "summary":discord_jobs.summary(),
         "queue":discord_vision.queue.status(),
         "scheduler":discord_vision.scheduler_status(),
-        "jobs":discord_jobs.list(limit),
+        **history,
     }
 
 @router.get("/discord-jobs/{job_id}")

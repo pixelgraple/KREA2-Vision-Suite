@@ -45,8 +45,9 @@ class DiscordVisionJobStoreTests(unittest.TestCase):
             self.assertEqual(detail["prompt_words"], 400)
             self.assertNotIn("channel", listing[0]["prompt_preview"])
             self.assertNotIn("```", listing[0]["prompt_preview"])
+            store.close()
 
-    def test_lifecycle_persists_only_bounded_public_job_data(self):
+    def test_lifecycle_persists_only_safe_local_job_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = DiscordVisionJobStore(Path(temporary), terminal_limit=20)
             job_id = store.create(
@@ -96,16 +97,21 @@ class DiscordVisionJobStoreTests(unittest.TestCase):
                 "thread_id",
             ):
                 self.assertNotIn(forbidden, serialized)
-            self.assertEqual(list(Path(temporary).iterdir()), [])
+            self.assertEqual(
+                store.path,
+                Path(temporary) / "data" / "history" / "discord_vision_jobs.sqlite3",
+            )
+            self.assertTrue(store.path.is_file())
+            store.close()
 
-    def test_terminal_history_is_pruned_active_work_is_bounded_and_restart_forgets(self):
+    def test_terminal_history_survives_restart_until_clear_and_active_work_is_bounded(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             store = DiscordVisionJobStore(root, terminal_limit=10, max_active=2)
             for index in range(13):
                 job_id = store.create(f"{index:064x}", f"{index}.png")
                 store.complete(job_id, prompt=PROMPT, model="test", prompt_words=400)
-            self.assertEqual(len(store.list(100)), 10)
+            self.assertEqual(len(store.list(100)), 13)
 
             first = store.create("d" * 64, "first.png")
             second = store.create("e" * 64, "second.png")
@@ -114,10 +120,45 @@ class DiscordVisionJobStoreTests(unittest.TestCase):
                 store.create("f" * 64, "third.png")
 
             restarted = DiscordVisionJobStore(root, terminal_limit=20, max_active=2)
-            self.assertIsNone(restarted.get(first))
-            self.assertIsNone(restarted.get(second))
+            self.assertEqual(restarted.get(first)["status"], "error")
+            self.assertEqual(restarted.get(second)["status"], "error")
+            self.assertIn("restarted", restarted.get(first)["public_error"].lower())
             self.assertEqual(restarted.summary()["queued"], 0)
-            self.assertEqual(list(root.iterdir()), [])
+            self.assertEqual(restarted.summary()["total"], 15)
+            self.assertTrue(restarted.path.is_file())
+            store.close()
+            restarted.close()
+
+    def test_paginated_history_filters_and_searches_all_saved_jobs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = DiscordVisionJobStore(Path(temporary), max_active=4)
+            for index in range(27):
+                job_id = store.create(
+                    f"{index:064x}",
+                    f"winter-{index}.png" if index == 3 else f"image-{index}.png",
+                    model="model-a" if index % 2 else "model-b",
+                    created=1_000 + index,
+                )
+                if index % 5 == 0:
+                    store.update(job_id, status="error", public_error="test failure")
+                else:
+                    store.complete(job_id, prompt=PROMPT, model="model-a" if index % 2 else "model-b", prompt_words=400)
+
+            first = store.list_page(page=1, page_size=10)
+            third = store.list_page(page=3, page_size=10)
+            errors = store.list_page(page=1, page_size=10, view="errors")
+            searched = store.list_page(page=1, page_size=10, query="winter-3")
+            model_a = store.list_page(page=1, page_size=100, model="model-a")
+
+            self.assertEqual(first["pagination"]["total_items"], 27)
+            self.assertEqual(first["pagination"]["total_pages"], 3)
+            self.assertTrue(first["pagination"]["has_next"])
+            self.assertEqual(len(third["jobs"]), 7)
+            self.assertEqual(errors["pagination"]["total_items"], 6)
+            self.assertEqual(searched["pagination"]["total_items"], 1)
+            self.assertEqual(searched["jobs"][0]["filename"], "winter-3.png")
+            self.assertEqual(model_a["pagination"]["total_items"], 13)
+            store.close()
 
     def test_client_job_ids_cooperative_cancel_and_clear_terminal(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -140,6 +181,7 @@ class DiscordVisionJobStoreTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "32 lowercase hexadecimal"):
                 store.create(HASH, "bad.png", job_id="not-a-job-id")
+            store.close()
 
 
 class SharedQueueDashboardTests(unittest.TestCase):

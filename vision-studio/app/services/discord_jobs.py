@@ -28,27 +28,34 @@ def _safe_filename(value) -> str:
     return _clean_text(normalized.rsplit("/", 1)[-1], 240)
 
 
-class DiscordVisionJobStore:
-    """Bounded, process-memory prompt history for the Discord Vision dashboard.
+def _like_pattern(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
-    The shared in-memory SQLite database exists only while this store object is
-    alive. It never creates a database, WAL, thumbnail, image, or prompt file.
-    It also never receives Discord URLs or IDs, model evidence, queue tickets,
-    process IDs, tokens, or filesystem paths.
+
+class DiscordVisionJobStore:
+    """Durable local prompt history for the Discord Vision dashboard.
+
+    Jobs and generated prompts remain in a private SQLite database until the
+    user explicitly clears finished history. The database never receives source
+    image bytes, Discord URLs or IDs, raw model evidence, queue tickets, process
+    IDs, tokens, or full filesystem paths.
     """
 
     def __init__(self, root: Path, terminal_limit: int = 200, max_active: int = 16):
-        del root  # API compatibility; privacy mode deliberately ignores disk roots.
-        self.path = None
+        del terminal_limit  # Retained for API compatibility; history is user-cleared only.
+        self.path = Path(root) / "data" / "history" / "discord_vision_jobs.sqlite3"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(
-            ":memory:",
+            str(self.path),
             timeout=5.0,
             check_same_thread=False,
         )
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA busy_timeout=5000")
-        self.terminal_limit = max(10, min(int(terminal_limit), 1000))
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self.max_active = max(1, min(int(max_active), 64))
         self._initialize()
 
@@ -67,6 +74,12 @@ class DiscordVisionJobStore:
             self.close()
         except Exception:
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     @contextmanager
     def session(self):
@@ -120,22 +133,16 @@ class DiscordVisionJobStore:
                 "CREATE INDEX IF NOT EXISTS discord_vision_jobs_updated "
                 "ON discord_vision_jobs(updated DESC)"
             )
-            self._prune(db)
-
-    def _prune(self, db) -> None:
-        rows = db.execute(
-            """
-            SELECT id FROM discord_vision_jobs
-            WHERE status IN ('completed','rejected','error','cancelled')
-            ORDER BY updated DESC
-            LIMIT -1 OFFSET ?
-            """,
-            (self.terminal_limit,),
-        ).fetchall()
-        if rows:
-            db.executemany(
-                "DELETE FROM discord_vision_jobs WHERE id=?",
-                ((row["id"],) for row in rows),
+            now = time.time()
+            db.execute(
+                """
+                UPDATE discord_vision_jobs
+                SET status='error', stage='Vision restarted before this job completed',
+                    public_error='Vision restarted before this job completed. Retry the image.',
+                    updated=?, finished=?, queue_ahead=0
+                WHERE status IN ('queued','running')
+                """,
+                (now, now),
             )
 
     def create(
@@ -176,7 +183,6 @@ class DiscordVisionJobStore:
                     _clean_text(model, 160),
                 ),
             )
-            self._prune(db)
         return requested_job_id
 
     def update(
@@ -216,7 +222,6 @@ class DiscordVisionJobStore:
                 f"UPDATE discord_vision_jobs SET {assignments} WHERE id=?",
                 values,
             )
-            self._prune(db)
 
     def complete(
         self,
@@ -268,7 +273,6 @@ class DiscordVisionJobStore:
                     str(job_id),
                 ),
             )
-            self._prune(db)
 
     def set_reproducibility(self, job_id: str, payload: dict) -> None:
         serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -313,7 +317,6 @@ class DiscordVisionJobStore:
                 """,
                 (_clean_text(stage, 240), now, now, str(job_id)),
             )
-            self._prune(db)
             return cursor.rowcount > 0
 
     def clear_terminal(self) -> int:
@@ -377,22 +380,87 @@ class DiscordVisionJobStore:
             item["reproducibility"] = reproducibility if isinstance(reproducibility, dict) else {}
         return item
 
-    def list(self, limit: int = 100) -> list[dict]:
-        maximum = max(1, min(int(limit), 200))
+    @staticmethod
+    def _where(view: str, query: str, model: str) -> tuple[str, list[object]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        normalized_view = str(view or "recent").strip().lower()
+        if normalized_view == "completed":
+            clauses.append("status='completed'")
+        elif normalized_view == "queued":
+            clauses.append("status IN ('queued','running')")
+        elif normalized_view == "errors":
+            clauses.append("status IN ('rejected','error','cancelled')")
+        elif normalized_view not in {"all", "recent"}:
+            raise ValueError("Unknown Discord Vision history view.")
+
+        search = _clean_text(query, 200).lower()
+        if search:
+            pattern = _like_pattern(search)
+            clauses.append(
+                "(LOWER(filename) LIKE ? ESCAPE '\\' OR LOWER(model) LIKE ? ESCAPE '\\' OR "
+                "LOWER(requested_model) LIKE ? ESCAPE '\\' OR LOWER(prompt) LIKE ? ESCAPE '\\' OR "
+                "LOWER(public_error) LIKE ? ESCAPE '\\' OR LOWER(stage) LIKE ? ESCAPE '\\')"
+            )
+            values.extend([pattern] * 6)
+
+        normalized_model = _clean_text(model, 200).lower()
+        if normalized_model and normalized_model != "all":
+            pattern = _like_pattern(normalized_model)
+            clauses.append(
+                "(LOWER(model) LIKE ? ESCAPE '\\' OR LOWER(requested_model) LIKE ? ESCAPE '\\')"
+            )
+            values.extend([pattern, pattern])
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", values
+
+    def list_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        view: str = "recent",
+        query: str = "",
+        model: str = "",
+    ) -> dict:
+        current_page = max(1, int(page))
+        size = max(5, min(int(page_size), 100))
+        where, values = self._where(view, query, model)
         with self.session() as db:
+            total_items = int(
+                db.execute(
+                    f"SELECT COUNT(*) FROM discord_vision_jobs{where}", values
+                ).fetchone()[0]
+            )
+            total_pages = max(1, (total_items + size - 1) // size)
+            current_page = min(current_page, total_pages)
+            offset = (current_page - 1) * size
             rows = db.execute(
-                """
-                SELECT * FROM discord_vision_jobs
+                f"""
+                SELECT * FROM discord_vision_jobs{where}
                 ORDER BY
                     CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,
                     CASE WHEN status IN ('queued','running') THEN created END ASC,
                     updated DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (maximum,),
+                [*values, size, offset],
             ).fetchall()
         now = time.time()
-        return [self._public(row, include_prompt=False, now=now) for row in rows]
+        return {
+            "jobs": [self._public(row, include_prompt=False, now=now) for row in rows],
+            "pagination": {
+                "page": current_page,
+                "page_size": size,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_previous": current_page > 1,
+                "has_next": current_page < total_pages,
+            },
+        }
+
+    def list(self, limit: int = 100) -> list[dict]:
+        maximum = max(1, min(int(limit), 200))
+        return self.list_page(page=1, page_size=maximum)["jobs"]
 
     def get(self, job_id: str) -> dict | None:
         with self.session() as db:
@@ -419,6 +487,7 @@ class DiscordVisionJobStore:
             "queued": counts.get("queued", 0),
             "running": counts.get("running", 0),
             "completed_24h": completed_24h,
+            "total": sum(counts.values()),
             "rejected": counts.get("rejected", 0),
             "errors": counts.get("error", 0),
             "cancelled": counts.get("cancelled", 0),

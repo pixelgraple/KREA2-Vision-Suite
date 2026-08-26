@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Discord Vision Jobs · KREA2 Studio</title>
-  <link rel="stylesheet" href="/dashboard-assets/discord_jobs.css?v=2">
-  <script src="/dashboard-assets/discord_jobs.js?v=2" defer></script>
+  <link rel="stylesheet" href="/dashboard-assets/discord_jobs.css?v=3">
+  <script src="/dashboard-assets/discord_jobs.js?v=3" defer></script>
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -70,6 +70,11 @@
           <button class="filter" data-filter="attention" type="button">Attention</button>
         </div>
         <div id="jobs" class="jobs"></div>
+        <nav class="jobs-pagination" aria-label="Prompt history pages">
+          <button id="page-previous" class="button ghost" type="button">Previous</button>
+          <span id="page-label" class="muted">Page 1 of 1 · 0 jobs</span>
+          <button id="page-next" class="button ghost" type="button">Next</button>
+        </nav>
       </section>
 
       <aside class="detail-panel panel">

@@ -1769,6 +1769,7 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.sessions = DiscordVisionSessionStore()
 
     def tearDown(self):
+        self.jobs.close()
         self.temporary.cleanup()
 
     def post(
@@ -2285,13 +2286,15 @@ class DiscordVisionApiTests(unittest.TestCase):
             local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
             remote = TestClient(self.app, client=("192.0.2.10", 50000), base_url="http://127.0.0.1:7870")
             hostile_host = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://attacker.example")
-            listing = local.get("/api/discord-jobs")
+            listing = local.get("/api/discord-jobs?page=1&page_size=20&view=completed&q=test.png")
             detail = local.get(f"/api/discord-jobs/{job_id}")
             self.assertEqual(remote.get("/api/discord-jobs").status_code, 403)
             self.assertEqual(hostile_host.get("/api/discord-jobs").status_code, 403)
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.headers["cache-control"], "no-store")
         self.assertNotIn("prompt", listing.json()["jobs"][0])
+        self.assertEqual(listing.json()["pagination"]["total_items"], 1)
+        self.assertEqual(listing.json()["pagination"]["page"], 1)
         self.assertEqual(detail.json()["prompt"], prompt)
         serialized = json.dumps(listing.json())
         self.assertNotIn("handoff_nonce", serialized)
@@ -2386,7 +2389,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             blocked = remote.post("/api/discord-errors", headers={"X-Krea2-Vision-Token": TOKEN}, json=payload)
             accepted = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.16"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.17"},
                 json=payload,
             )
         self.assertEqual(denied.status_code, 401)
@@ -2407,7 +2410,7 @@ class DiscordVisionApiTests(unittest.TestCase):
             local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
             response = local.post(
                 "/api/discord-errors",
-                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.16"},
+                headers={"X-Krea2-Vision-Token": TOKEN, "X-Krea2-Collector-Version": "0.13.17"},
                 json={
                     "event_id": "e" * 32,
                     "model_id": "llamacpp::heretic-4b-q8_0",

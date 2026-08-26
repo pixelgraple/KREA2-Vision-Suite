@@ -17,7 +17,7 @@ KREA2 Vision Suite adds a private Vision magnifier, an Interrogate upload tab, a
 6. Open a server channel, complete the first-run disclosure, choose **Local GPU**, and allow the current server.
 7. Click the magnifier on an image, or open **Prompt History → Interrogate** to upload one. You can queue multiple images; each enters the shared FIFO and runs one at a time.
 
-Manual ZIP alternative: download the complete [v0.13.16 ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.16-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply before extracting it**. Then extract it and run **`START HERE - INSTALL.bat`**. If the ZIP was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
+Manual ZIP alternative: download the complete [v0.13.17 ZIP](https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.17-win64.zip), right-click the ZIP, select **Properties**, enable **Unblock**, and select **Apply before extracting it**. Then extract it and run **`START HERE - INSTALL.bat`**. If the ZIP was already extracted while blocked, delete only that extracted copy, unblock the original ZIP, and extract it again.
 
 If setup is interrupted, double-click **Repair KREA2 Vision Suite.bat** on the desktop. The installer resumes verified downloads instead of starting them over.
 
@@ -29,7 +29,7 @@ The plugin checks the official stable release manifest shortly after startup and
 - Prompt History refreshes queued and running jobs every second and shows the exact model that completed each result.
 - Each completed image produces three grounded prompt variations.
 - Pose is checked twice against the image before the three final prompts are returned, including support contacts, limb paths, torso bend, head/neck direction and camera-relative proof.
-- Full-resolution images and prompt text are not cached locally. A bounded 640 px thumbnail cache preserves Prompt History previews.
+- Full-resolution images are not copied into history. Generated prompts, sanitized job metadata, and 640 px previews remain locally until the user selects **Clear history**.
 - Successful prompt text is contributed to the Krea2 dataset under the disclosure shown during first-run setup; image bytes and Discord identifiers are not uploaded with that contribution.
 - Required privacy-minimal operational errors send only an anonymous installation digest, model/pipeline, sanitized error/stage, runtime, and software versions. They never send images, image hashes, prompts, Discord identity, URLs, filenames, or local paths. Optional rich failure diagnostics remain separate and off by default; after explicit disclosure they may include the failed image, Discord username, and an available partial prompt for owner-only maintenance.
 

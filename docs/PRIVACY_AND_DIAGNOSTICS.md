@@ -7,16 +7,16 @@ KREA2 is designed around data minimization, explicit feature boundaries, and loc
 - No advertising telemetry or behavioral analytics.
 - No contact list, friend list, server membership, or general message collection.
 - No full-resolution image library.
-- No durable prompt-history text database in strict privacy mode.
+- Discord Prompt History is the intentional local exception: generated prompts and sanitized job metadata remain in private local SQLite until the user selects **Clear history**.
 - Optional network features are separately named and disclosed.
 - Required operational error reporting is limited to technical fields and excludes user content.
 - Credentials, logs, runtime data, models, and user content are excluded from the public repository.
 
 ## Local inference
 
-The plugin sends the selected image only to the literal loopback Vision service. The service validates and processes it in a request-scoped workspace. Temporary processing files are deleted before request completion. Generated prompt text is returned to Discord and is not written to a durable local prompt database in strict privacy mode.
+The plugin sends the selected image only to the literal loopback Vision service. The service validates and processes it in a request-scoped workspace. Temporary full-resolution processing files are deleted before request completion. Generated prompt text and sanitized job metadata are written to the local Prompt History database so results survive restart; source-image bytes, Discord IDs/URLs, tokens, raw evidence, queue secrets, and full paths are not written there.
 
-The plugin may keep bounded 640 px preview thumbnails, up to its configured count/size limits, in the user's chosen local folder. This exists so completed history cards retain a preview. It is not a full-resolution source-image cache.
+The plugin keeps 640 px preview thumbnails, each capped at 2 MiB, in the user's chosen local folder until Prompt History is cleared. This exists so completed history cards retain a preview. It is not a full-resolution source-image cache.
 
 ## Online inference
 
@@ -68,4 +68,4 @@ The release process must reject or exclude `.env` files, API keys, tokens, Bette
 
 ## Deletion and control
 
-Local thumbnails can be cleared through plugin/history controls or by removing the configured preview folder after closing Discord. Disabling contribution or rich diagnostics prevents future submissions of those optional records, but required privacy-minimal operational errors remain enabled. Already accepted server-side records cannot be removed automatically; deletion requests are governed by the current Seedframe policy and operator process.
+Local prompts, sanitized job records, and thumbnails can be cleared together through the Prompt History **Clear** control. The preview folder can also be removed manually after closing Discord. Disabling contribution or rich diagnostics prevents future submissions of those optional records, but required privacy-minimal operational errors remain enabled. Already accepted server-side records cannot be removed automatically; deletion requests are governed by the current Seedframe policy and operator process.

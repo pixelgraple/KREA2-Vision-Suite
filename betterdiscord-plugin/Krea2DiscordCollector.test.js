@@ -10,6 +10,7 @@ const {
     buildOperationalErrorReport,
     buildVisionMultipartBody,
     chooseBestMediaUrl,
+    clearHistoryThumbnailCache,
     decodeHtmlEntities,
     DEFAULT_SETTINGS,
     detectImageFormat,
@@ -59,7 +60,6 @@ const {
     PRIVACY_RECEIPT_VERSION,
     promptDiffSummary,
     promptPresetGuidance,
-    pruneHistoryThumbnailCache,
     readBoundedResponseText,
     readFileCompat,
     readReusableVisionPrompt,
@@ -217,10 +217,8 @@ assert.throws(() => historyThumbnailCacheCandidates("C:\\Krea2Vision", "not-a-ha
             fs.writeFileSync(path.join(cacheDirectory, `${hash}.webp`), Buffer.from("RIFF"));
         }
         fs.writeFileSync(path.join(cacheDirectory, "do-not-delete.txt"), "unrelated");
-        pruneHistoryThumbnailCache(cacheDirectory, 250);
-        const remaining = fs.readdirSync(cacheDirectory);
-        assert.equal(remaining.filter(name => /^[a-f0-9]{64}\.webp$/.test(name)).length, 250);
-        assert.equal(remaining.includes("do-not-delete.txt"), true);
+        assert.equal(clearHistoryThumbnailCache(cacheDirectory), 252);
+        assert.deepEqual(fs.readdirSync(cacheDirectory), ["do-not-delete.txt"]);
     }
     finally {
         fs.rmSync(cacheRoot, {recursive: true, force: true});
@@ -488,12 +486,17 @@ const historyCompletedSecond = {
     finished: 260
 };
 const parsedHistory = parseHistoryListResponse(JSON.stringify({
-    summary: {queued: 1, running: 0, completed_24h: 1, rejected: 0, errors: 0},
+    summary: {queued: 1, running: 0, completed_24h: 1, total: 42, rejected: 0, errors: 0},
     scheduler: {warm: {active: true, seconds_remaining: 12}, next_eligible_job: {eligible_now: false, reason: "Waiting"}},
+    pagination: {page: 2, page_size: 20, total_items: 42, total_pages: 3, has_previous: true, has_next: true},
     jobs: [historyCompleted, historyQueued]
 }));
 assert.equal(parsedHistory.jobs.length, 2);
 assert.equal(parsedHistory.summary.queued, 1);
+assert.equal(parsedHistory.summary.total, 42);
+assert.equal(parsedHistory.pagination.page, 2);
+assert.equal(parsedHistory.pagination.total_pages, 3);
+assert.equal(parsedHistory.pagination.has_previous, true);
 assert.deepEqual(filterHistoryJobs(parsedHistory.jobs, "completed").map(job => job.id), [historyCompleted.id]);
 assert.deepEqual(filterHistoryJobs(parsedHistory.jobs, "queued").map(job => job.id), [historyQueued.id]);
 assert.equal(historyJobTitle(parsedHistory.jobs[0]), `Image ${"b".repeat(10)}`);

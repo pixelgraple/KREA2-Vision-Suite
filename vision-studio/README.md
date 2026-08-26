@@ -62,7 +62,7 @@ The BetterDiscord selector shows current available VRAM, the conservative model 
 * Optional WD14 evidence—explicitly supplemental, never a prompt replacement.
 * Detail, style, realism, and ten prompt-composer controls; they guide model wording rather than appearing as numerical prompt text.
 * Editable prompt/negative prompt, section locks, reference comparison scores, and Apply Missing Details.
-* Session-only in-memory presets and prompt history; no image, prompt, thumbnail, sidecar, review, or history database is written to disk.
+* Manual-Studio presets remain session-only. Discord Prompt History is intentionally durable and user-cleared: generated prompts and sanitized job metadata are stored in local SQLite, while full-resolution source images, sidecars, raw evidence, tokens, Discord IDs/URLs, and full paths are not stored there.
 * Privacy Mode defaults on: source images and thumbnails are not stored. Every processing copy is temporary and deleted after the request.
 
 ## Private Discord vision bridge
@@ -89,7 +89,7 @@ Queued requests retain only the bounded temporary image, not an additional base6
 
 ### Discord queue and prompt history
 
-The BetterDiscord Prompt History rail shows the sanitized shared Forge/Ollama FIFO, queued/running stages, recent session results, and prompt details. Discord job history is a bounded in-memory SQLite database that exists only for the current Vision process. It creates no database, WAL, or SHM files and is empty after restart. Request-scoped temporary image files are deleted before the API response returns. The only durable user-content store is the separately configured Krea2 provenance database; operational model/runtime/settings/queue files remain on disk.
+The BetterDiscord Prompt History rail shows the sanitized shared Forge/Ollama FIFO, queued/running stages, paginated results, and prompt details. Discord job history is stored at `data/history/discord_vision_jobs.sqlite3` and remains across Discord and Vision restarts until the user explicitly selects **Clear history**. Interrupted active jobs become retained error records after restart instead of disappearing. Request-scoped full-resolution image files are deleted before the API response returns. The database stores generated prompts, image hashes, sanitized filenames, model evidence, status/stage, timings, and bounded reproducibility metadata; it excludes source-image bytes, Discord IDs/URLs, tokens, queue tickets/secrets, raw evidence, and full filesystem paths.
 
 ## Optional WD14
 

@@ -53,7 +53,7 @@ The bootstrap downloads the stable manifest and release, verifies the exact byte
 
 ### Manual package
 
-Download [Krea2VisionSuite-v0.13.16-win64.zip](releases/Krea2VisionSuite-v0.13.16-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.13.17-win64.zip](releases/Krea2VisionSuite-v0.13.17-win64.zip), right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -173,14 +173,14 @@ There is no advertising telemetry, behavioral analytics, contact list collection
 | Feature | Default | Leaves the PC? | Data involved |
 |---|---:|---:|---|
 | Local Vision inference | On | No | Request image and generated prompts are processed by the local service |
-| Prompt History thumbnails | Local | No | Bounded 640 px local previews; no full-resolution cache or durable prompt-text history |
+| Prompt History | Local | No | Paginated local SQLite job/prompt history plus 640 px previews, retained until **Clear history**; no full-resolution source-image cache |
 | Eight-example KREA2 guidance | Off | Yes, read-only | Eight approved prompt texts and opaque sample metadata are fetched from Seedframe |
 | KREA2 prompt contribution | User choice | Yes | Three generated prompt texts plus bounded model/pipeline provenance; no image or Discord identity |
 | Vast Online API | Off/operator-configured | Yes | Image and request metadata are sent to the configured worker for inference; the worker is designed for memory-only processing |
 | Operational error reports | Required | Yes | Anonymous installation digest, model/pipeline, stage, error code/message, runtime, and software versions; no image, image hash, prompt, Discord identity, URL, filename, or path |
 | Rich failure attachments | Off/separate consent | Yes | A failed image, partial prompt, Discord username, model/stage/status, error details, and bounded identifiers may be sent to Seedframe for debugging |
 
-Strict privacy mode does not persist uploaded full-resolution images, generated prompts, feedback, exports, or a prompt-history database. Request-scoped processing files are deleted before a request completes. The plugin may retain a bounded thumbnail preview cache in the user's configured local folder so completed cards do not become blank.
+The suite does not persist uploaded full-resolution images, feedback examples, or exports. Request-scoped processing files are deleted before a request completes. Prompt History intentionally persists generated prompt text and sanitized job metadata in a private local SQLite database, plus small preview thumbnails in the user's configured folder, until the user selects **Clear history**. The history database excludes source-image bytes, Discord IDs/URLs, tokens, queue secrets, raw evidence, and full local paths.
 
 Automatic operational errors are mandatory, bounded, and privacy-minimal. They first use the authenticated loopback broker; if that broker cannot deliver the report, the plugin can submit the same digest-bound technical record directly to the canonical Seedframe receiver. Failed delivery stays only in a bounded in-memory retry queue and is never written to disk. Rich failure attachments are deliberately separate because they can contain user data, and remain disabled unless the user accepts their additional disclosure. Never attach real rich diagnostic payloads to public GitHub issues.
 

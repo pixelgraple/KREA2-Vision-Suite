@@ -1,7 +1,11 @@
 "use strict";
 
 const byId = id => document.getElementById(id);
-const state = {jobs: [], queue: [], selected: null, filter: "all", timer: null, detailToken: 0, refreshToken: 0};
+const state = {
+  jobs: [], queue: [], selected: null, filter: "all", page: 1,
+  pagination: {page: 1, page_size: 20, total_items: 0, total_pages: 1},
+  timer: null, detailToken: 0, refreshToken: 0
+};
 
 function node(tag, className = "", text = "") {
   const element = document.createElement(tag);
@@ -101,7 +105,7 @@ function renderScheduler(scheduler = {}) {
 function filteredJobs() {
   if (state.filter === "active") return state.jobs.filter(job => ["queued", "running"].includes(job.status));
   if (state.filter === "completed") return state.jobs.filter(job => job.status === "completed");
-  if (state.filter === "attention") return state.jobs.filter(job => ["rejected", "error"].includes(job.status));
+  if (state.filter === "attention") return state.jobs.filter(job => ["rejected", "error", "cancelled"].includes(job.status));
   return state.jobs;
 }
 
@@ -136,6 +140,16 @@ function renderJobs() {
     );
     return button;
   }));
+}
+
+function renderPagination() {
+  const pagination = state.pagination || {};
+  const page = Math.max(1, Number(pagination.page) || 1);
+  const totalPages = Math.max(1, Number(pagination.total_pages) || 1);
+  const totalItems = Math.max(0, Number(pagination.total_items) || 0);
+  byId("page-label").textContent = `Page ${page} of ${totalPages} · ${totalItems} ${totalItems === 1 ? "job" : "jobs"}`;
+  byId("page-previous").disabled = page <= 1;
+  byId("page-next").disabled = page >= totalPages;
 }
 
 function renderDetail(job) {
@@ -218,13 +232,20 @@ async function refresh(manual = false) {
   window.clearTimeout(state.timer);
   const token = ++state.refreshToken;
   try {
-    const payload = await requestJson("/api/discord-jobs?limit=100");
+    const views = {all: "recent", active: "queued", completed: "completed", attention: "errors"};
+    const params = new URLSearchParams({
+      page: String(state.page), page_size: "20", view: views[state.filter] || "recent"
+    });
+    const payload = await requestJson(`/api/discord-jobs?${params}`);
     if (token !== state.refreshToken) return;
     state.jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+    state.pagination = payload.pagination || state.pagination;
+    state.page = Math.max(1, Number(state.pagination.page) || 1);
     renderStats(payload.summary);
     renderQueue(payload.queue);
     renderScheduler(payload.scheduler);
     renderJobs();
+    renderPagination();
     setConnection(true, "Studio online");
     byId("last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit", second: "2-digit"})}`;
     if (state.selected && state.jobs.some(job => job.id === state.selected)) {
@@ -251,16 +272,28 @@ document.querySelectorAll(".filter").forEach(button => {
   button.setAttribute("aria-pressed", String(button.classList.contains("active")));
   button.addEventListener("click", () => {
     state.filter = button.dataset.filter || "all";
+    state.page = 1;
     document.querySelectorAll(".filter").forEach(item => {
       const active = item === button;
       item.classList.toggle("active", active);
       item.setAttribute("aria-pressed", String(active));
     });
-    renderJobs();
+    void refresh();
   });
 });
 
 byId("refresh").addEventListener("click", () => refresh(true));
+byId("page-previous").addEventListener("click", () => {
+  if (state.page <= 1) return;
+  state.page -= 1;
+  void refresh();
+});
+byId("page-next").addEventListener("click", () => {
+  const totalPages = Math.max(1, Number(state.pagination?.total_pages) || 1);
+  if (state.page >= totalPages) return;
+  state.page += 1;
+  void refresh();
+});
 byId("copy-prompt").addEventListener("click", async () => {
   const prompt = byId("prompt").value;
   if (!prompt) return;

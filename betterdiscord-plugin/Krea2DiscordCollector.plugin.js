@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.16
+ * @version 0.13.17
  * @description Local Discord Vision with three grounded prompt variants and automatic online Krea2 prompt contribution.
  */
 
@@ -685,7 +685,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.16";
+const PLUGIN_VERSION = "0.13.17";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -698,7 +698,6 @@ const MAX_CACHED_ORIGINALS = 1;
 const HISTORY_THUMBNAIL_DIRECTORY = ".krea2-history-thumbnails";
 const HISTORY_THUMBNAIL_MAX_SIDE = 640;
 const HISTORY_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
-const MAX_PERSISTED_HISTORY_THUMBNAILS = 250;
 const MAX_METADATA_PROBES = 250;
 const METADATA_PROBE_RETRY_MS = 60 * 1000;
 const MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -712,6 +711,7 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_INITIAL_DELAY_MS = 15 * 1000;
 const UPDATE_STATUS_POLL_MS = 2000;
 const HISTORY_LIMIT = 100;
+const HISTORY_PAGE_SIZE = 20;
 const HISTORY_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PRODUCT_FAVORITES = 500;
 const MAX_EDITED_PROMPTS = 250;
@@ -1513,6 +1513,13 @@ const CSS = `
 .krea2-history-tab[aria-selected="true"] { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: #2a303a; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
 
 .krea2-history-list { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
+.krea2-history-pagination { display: flex; align-items: center; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--krea2-border); }
+.krea2-history-pagination[hidden] { display: none !important; }
+.krea2-history-page-label { min-width: 0; flex: 1; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); font-size: 9px; text-align: center; }
+.krea2-history-page-button { min-width: 28px; height: 28px; padding: 0 8px; border: 1px solid var(--krea2-border); border-radius: 7px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: var(--krea2-surface-raised); cursor: pointer; font: 700 10px/1 system-ui,sans-serif; }
+.krea2-history-page-button:hover:not(:disabled) { border-color: #6670dd; background: var(--krea2-surface-hover); }
+.krea2-history-page-button:disabled { opacity: .4; cursor: default; }
+.krea2-history-page-clear { color: #ffb4ba; -webkit-text-fill-color: #ffb4ba; }
 .krea2-history-empty { padding: 32px 18px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); text-align: center; font-size: 11px; }
 .krea2-interrogate-panel { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 14px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
 .krea2-interrogate-card { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--krea2-border); border-radius: 11px; background: var(--krea2-surface-raised); }
@@ -2199,25 +2206,21 @@ function historyThumbnailCacheCandidates(folder, hash) {
     return [".webp", ".png", ".jpg", ".jpeg"].map(extension => path.win32.join(directory, `${key}${extension}`));
 }
 
-function pruneHistoryThumbnailCache(directory, keep = MAX_PERSISTED_HISTORY_THUMBNAILS, fileSystem = fs) {
-    const limit = Math.max(1, Math.trunc(Number(keep) || MAX_PERSISTED_HISTORY_THUMBNAILS));
+function clearHistoryThumbnailCache(directory, fileSystem = fs) {
+    let removed = 0;
     try {
-        const entries = fileSystem.readdirSync(directory, {withFileTypes: true})
-            .filter(entry => entry?.isFile?.() && /^[a-f0-9]{64}\.(?:webp|png|jpe?g)$/i.test(entry.name))
-            .map(entry => {
-                const filePath = path.win32.join(directory, entry.name);
-                let modified = 0;
-                try { modified = Number(fileSystem.statSync(filePath)?.mtimeMs || 0); }
-                catch {}
-                return {filePath, modified};
-            })
-            .sort((left, right) => right.modified - left.modified);
-        for (const entry of entries.slice(limit)) {
-            try { fileSystem.unlinkSync(entry.filePath); }
+        const entries = fileSystem.readdirSync(directory, {withFileTypes: true});
+        for (const entry of entries) {
+            if (!entry?.isFile?.() || !/^[a-f0-9]{64}\.(?:webp|png|jpe?g)$/i.test(entry.name)) continue;
+            try {
+                fileSystem.unlinkSync(path.win32.join(directory, entry.name));
+                removed += 1;
+            }
             catch {}
         }
     }
     catch {}
+    return removed;
 }
 
 async function savePromptSidecar(imagePath, prompt, fileSystem = fs) {
@@ -3047,17 +3050,32 @@ function parseHistoryListResponse(rawText) {
     }
     const summary = state.summary && typeof state.summary === "object" && !Array.isArray(state.summary) ? state.summary : {};
     const scheduler = state.scheduler && typeof state.scheduler === "object" && !Array.isArray(state.scheduler) ? state.scheduler : {};
+    const rawPagination = state.pagination && typeof state.pagination === "object" && !Array.isArray(state.pagination) ? state.pagination : {};
+    const jobs = state.jobs.slice(0, HISTORY_LIMIT).map(job => normalizeHistoryJob(job));
+    const totalItems = Math.max(jobs.length, Math.trunc(Number(rawPagination.total_items) || jobs.length));
+    const pageSize = Math.max(1, Math.min(HISTORY_LIMIT, Math.trunc(Number(rawPagination.page_size) || Math.max(1, jobs.length))));
+    const totalPages = Math.max(1, Math.trunc(Number(rawPagination.total_pages) || Math.ceil(totalItems / pageSize) || 1));
+    const page = Math.max(1, Math.min(totalPages, Math.trunc(Number(rawPagination.page) || 1)));
     return {
         summary: {
             queued: Math.max(0, Math.trunc(Number(summary.queued) || 0)),
             running: Math.max(0, Math.trunc(Number(summary.running) || 0)),
             completed_24h: Math.max(0, Math.trunc(Number(summary.completed_24h) || 0)),
+            total: Math.max(0, Math.trunc(Number(summary.total) || totalItems)),
             rejected: Math.max(0, Math.trunc(Number(summary.rejected) || 0)),
             errors: Math.max(0, Math.trunc(Number(summary.errors) || 0))
             ,cancelled: Math.max(0, Math.trunc(Number(summary.cancelled) || 0))
         },
         scheduler,
-        jobs: state.jobs.slice(0, HISTORY_LIMIT).map(job => normalizeHistoryJob(job))
+        pagination: {
+            page,
+            page_size: pageSize,
+            total_items: totalItems,
+            total_pages: totalPages,
+            has_previous: rawPagination.has_previous === true || page > 1,
+            has_next: rawPagination.has_next === true || page < totalPages
+        },
+        jobs
     };
 }
 
@@ -3359,10 +3377,13 @@ class Krea2DiscordCollector {
         this.updateStatusTimer = null;
         this.updatePromptVersion = "";
         this.historyRequestController = null;
+        this.historySearchTimer = null;
         this.historyRoot = null;
         this.historyJobs = [];
         this.historySummary = null;
         this.historyScheduler = null;
+        this.historyPage = 1;
+        this.historyPagination = {page: 1, page_size: HISTORY_PAGE_SIZE, total_items: 0, total_pages: 1, has_previous: false, has_next: false};
         this.historyFilter = "recent";
         this.historySearch = "";
         this.historyModelFilter = "all";
@@ -3531,6 +3552,8 @@ class Krea2DiscordCollector {
         this.removeContextMenus();
         if (this.historyPollTimer !== null) clearInterval(this.historyPollTimer);
         this.historyPollTimer = null;
+        if (this.historySearchTimer !== null) clearTimeout(this.historySearchTimer);
+        this.historySearchTimer = null;
         if (this.updateCheckTimer !== null) clearInterval(this.updateCheckTimer);
         this.updateCheckTimer = null;
         if (this.updateInitialTimer !== null) clearTimeout(this.updateInitialTimer);
@@ -3665,7 +3688,7 @@ class Krea2DiscordCollector {
         heading.id = "krea2-onboarding-title";
         heading.textContent = "Choose where Vision runs";
         const intro = document.createElement("p");
-        intro.textContent = "Use an installed model on this computer, or send the request through the authenticated local broker to the private online Gemma worker. The remote address and provider credential are never stored in BetterDiscord. For reliable Prompt History previews, the plugin keeps at most 250 local thumbnails (640 px, 2 MiB maximum each) under the configured save folder; full-resolution source images and prompt text are not cached.";
+        intro.textContent = "Use an installed model on this computer, or send the request through the authenticated local broker to the private online Gemma worker. The remote address and provider credential are never stored in BetterDiscord. Prompt History and generated prompts remain in the private local Vision database until you choose Clear history. Small local thumbnails are kept under the configured save folder for matching previews; full-resolution source images are not copied into history.";
         headingCopy.append(eyebrow, heading, intro);
         const close = document.createElement("button");
         close.type = "button";
@@ -4158,7 +4181,9 @@ class Krea2DiscordCollector {
             button.setAttribute("aria-selected", filter === this.historyFilter ? "true" : "false");
             button.addEventListener("click", () => {
                 this.historyFilter = filter;
+                this.historyPage = 1;
                 this.renderHistoryRail();
+                if (filter !== "interrogate") void this.refreshHistory(true);
             });
             tabs.append(button);
         }
@@ -4173,7 +4198,13 @@ class Krea2DiscordCollector {
         search.setAttribute("aria-label", "Search Vision prompt history");
         search.addEventListener("input", () => {
             this.historySearch = search.value;
+            this.historyPage = 1;
             this.renderHistoryRail();
+            if (this.historySearchTimer !== null) clearTimeout(this.historySearchTimer);
+            this.historySearchTimer = setTimeout(() => {
+                this.historySearchTimer = null;
+                if (this.running) void this.refreshHistory(true);
+            }, 250);
         });
         const modelFilter = document.createElement("select");
         modelFilter.className = "krea2-history-model-filter";
@@ -4187,7 +4218,9 @@ class Krea2DiscordCollector {
         modelFilter.value = this.historyModelFilter;
         modelFilter.addEventListener("change", () => {
             this.historyModelFilter = modelFilter.value;
+            this.historyPage = 1;
             this.renderHistoryRail();
+            void this.refreshHistory(true);
         });
         libraryTools.append(search, modelFilter);
 
@@ -4205,12 +4238,15 @@ class Krea2DiscordCollector {
         list.className = "krea2-history-list";
         list.dataset.role = "list";
         list.setAttribute("role", "tabpanel");
+        const pagination = document.createElement("div");
+        pagination.className = "krea2-history-pagination";
+        pagination.dataset.role = "pagination";
         const interrogate = document.createElement("div");
         interrogate.className = "krea2-interrogate-panel";
         interrogate.dataset.role = "interrogate";
         interrogate.setAttribute("role", "tabpanel");
         this.buildInterrogatePanel(interrogate);
-        expanded.append(header, summary, averageQueue, scheduler, tabs, libraryTools, completion, interrogate, list);
+        expanded.append(header, summary, averageQueue, scheduler, tabs, libraryTools, completion, interrogate, list, pagination);
 
         const resizer = document.createElement("div");
         resizer.className = "krea2-history-resizer krea2-history-expanded";
@@ -4705,7 +4741,13 @@ class Krea2DiscordCollector {
         this.renderHistoryRail();
         try {
             const baseUrl = historyBaseUrlFromVisionEndpoint(this.settings.visionEndpoint);
-            const expectedUrl = `${baseUrl}/api/discord-jobs?limit=${HISTORY_LIMIT}`;
+            const requestUrl = new URL(`${baseUrl}/api/discord-jobs`);
+            requestUrl.searchParams.set("page", String(this.historyPage));
+            requestUrl.searchParams.set("page_size", String(HISTORY_PAGE_SIZE));
+            requestUrl.searchParams.set("view", this.historyFilter === "interrogate" ? "recent" : this.historyFilter);
+            if (this.historySearch.trim()) requestUrl.searchParams.set("q", this.historySearch.trim().slice(0, 200));
+            if (this.historyModelFilter !== "all") requestUrl.searchParams.set("model", this.historyModelFilter);
+            const expectedUrl = requestUrl.toString();
             const response = await this.api.Net.fetch(expectedUrl, {
                 method: "GET",
                 headers: {Accept: "application/json"},
@@ -4729,6 +4771,8 @@ class Krea2DiscordCollector {
             this.historyJobs = state.jobs;
             this.historySummary = state.summary;
             this.historyScheduler = state.scheduler;
+            this.historyPagination = state.pagination;
+            this.historyPage = state.pagination.page;
         }
         catch (error) {
             if (error?.name !== "AbortError") this.historyError = error instanceof Error ? error.message : String(error);
@@ -4751,10 +4795,11 @@ class Krea2DiscordCollector {
         const libraryTools = root?.querySelector(".krea2-history-library-tools");
         const interrogateNode = root?.querySelector('[data-role="interrogate"]');
         const listNode = root?.querySelector('[data-role="list"]');
+        const paginationNode = root?.querySelector('[data-role="pagination"]');
         const favoritesFilter = root?.querySelector('[data-role="favorites-filter"]');
         const batchOpen = root?.querySelector('[data-role="batch-open"]');
         const completion = root?.querySelector('[data-role="completion"]');
-        if (!summaryNode || !averageQueueNode || !schedulerNode || !interrogateNode || !listNode) return;
+        if (!summaryNode || !averageQueueNode || !schedulerNode || !interrogateNode || !listNode || !paginationNode) return;
 
         const isInterrogate = this.historyFilter === "interrogate";
         if (heading) heading.textContent = isInterrogate ? "Interrogate" : "Prompt History";
@@ -4762,6 +4807,7 @@ class Krea2DiscordCollector {
         if (libraryTools) libraryTools.hidden = isInterrogate;
         interrogateNode.hidden = !isInterrogate;
         listNode.hidden = isInterrogate;
+        paginationNode.hidden = isInterrogate;
 
         for (const tab of root.querySelectorAll(".krea2-history-tab")) {
             tab.setAttribute("aria-selected", tab.dataset.filter === this.historyFilter ? "true" : "false");
@@ -4810,6 +4856,7 @@ class Krea2DiscordCollector {
         }
 
         listNode.replaceChildren();
+        this.renderHistoryPagination(paginationNode);
         if (this.historyError) {
             const empty = document.createElement("div");
             empty.className = "krea2-history-empty";
@@ -4834,6 +4881,77 @@ class Krea2DiscordCollector {
             return;
         }
         for (const job of jobs) listNode.append(this.createHistoryJobRow(job));
+    }
+
+    renderHistoryPagination(container) {
+        if (!container) return;
+        container.replaceChildren();
+        const pagination = this.historyPagination || {};
+        const page = Math.max(1, Number(pagination.page) || 1);
+        const totalPages = Math.max(1, Number(pagination.total_pages) || 1);
+        const totalItems = Math.max(0, Number(pagination.total_items) || 0);
+
+        const previous = document.createElement("button");
+        previous.type = "button";
+        previous.className = "krea2-history-page-button";
+        previous.textContent = "‹";
+        previous.title = "Previous history page";
+        previous.setAttribute("aria-label", previous.title);
+        previous.disabled = this.historyLoading || page <= 1;
+        previous.addEventListener("click", () => {
+            if (page <= 1) return;
+            this.historyPage = page - 1;
+            void this.refreshHistory(true);
+        });
+
+        const label = document.createElement("div");
+        label.className = "krea2-history-page-label";
+        label.textContent = `Page ${page} of ${totalPages} · ${totalItems} ${totalItems === 1 ? "job" : "jobs"}`;
+
+        const next = document.createElement("button");
+        next.type = "button";
+        next.className = "krea2-history-page-button";
+        next.textContent = "›";
+        next.title = "Next history page";
+        next.setAttribute("aria-label", next.title);
+        next.disabled = this.historyLoading || page >= totalPages;
+        next.addEventListener("click", () => {
+            if (page >= totalPages) return;
+            this.historyPage = page + 1;
+            void this.refreshHistory(true);
+        });
+
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "krea2-history-page-button krea2-history-page-clear";
+        clear.textContent = "Clear";
+        clear.title = "Clear all finished prompt history and local history thumbnails";
+        const allHistoryItems = Math.max(totalItems, Number(this.historySummary?.total) || 0);
+        clear.disabled = this.historyLoading || allHistoryItems <= 0;
+        clear.addEventListener("click", async () => {
+            const view = this.historyRoot?.ownerDocument?.defaultView || window;
+            if (!view.confirm("Clear all finished KREA2 Vision history? Completed prompts, errors, cancelled jobs, and their local thumbnails will be removed. Active jobs will remain.")) return;
+            clear.disabled = true;
+            try {
+                const result = await this.postVisionControl("/api/discord-jobs-clear-terminal");
+                let removedThumbnails = 0;
+                try { removedThumbnails = clearHistoryThumbnailCache(historyThumbnailCacheDirectory(this.settings.saveFolder)); }
+                catch {}
+                for (const objectUrl of this.historyThumbnailUrls.values()) this.revokeObjectUrl(objectUrl);
+                this.historyThumbnailUrls.clear();
+                this.historyThumbnailLoads.clear();
+                this.historyOriginalPaths.clear();
+                this.historyPage = 1;
+                this.toast(`Cleared ${Number(result.cleared) || 0} finished Vision jobs and ${removedThumbnails} local thumbnails.`, "success");
+                await this.refreshHistory(true);
+            }
+            catch (error) {
+                this.toast(error instanceof Error ? error.message : String(error), "error");
+            }
+            finally { clear.disabled = false; }
+        });
+
+        container.append(previous, label, next, clear);
     }
 
     createHistoryJobRow(job) {
@@ -5056,7 +5174,6 @@ class Krea2DiscordCollector {
         await mkdirCompat(fs, directory);
         const destination = path.win32.join(directory, `${key}${encoded.extension}`);
         await writeFileCompat(fs, destination, encoded.bytes, {flag: "w"});
-        pruneHistoryThumbnailCache(directory);
         return destination;
     }
 
@@ -6565,15 +6682,10 @@ class Krea2DiscordCollector {
         clearFinished.type = "button";
         clearFinished.className = "krea2-history-action";
         clearFinished.textContent = "Clear finished history";
-        clearFinished.addEventListener("click", async () => {
-            clearFinished.disabled = true;
-            try {
-                const result = await this.postVisionControl("/api/discord-jobs-clear-terminal");
-                this.toast(`Cleared ${Number(result.cleared) || 0} finished Vision jobs.`, "success");
-                void this.refreshHistory(true);
-            }
-            catch (error) { this.toast(error instanceof Error ? error.message : String(error), "error"); }
-            finally { clearFinished.disabled = false; }
+        clearFinished.addEventListener("click", () => {
+            const clearButton = this.historyRoot?.querySelector(".krea2-history-page-clear");
+            if (clearButton instanceof HTMLButtonElement) clearButton.click();
+            else this.toast("Open Prompt History to clear saved history.", "info");
         });
         toolbar.append(add, start, pause, cancel, cancelVision, clearFinished);
         const list = modalDocument.createElement("div");
@@ -7783,7 +7895,7 @@ class Krea2DiscordCollector {
         const contributionCopy = contributed
             ? " All three prompts were accepted by the online Krea2 dataset."
             : " Prompt contribution is disabled; nothing was submitted to Krea2.";
-        this.setButtonState(button, "vision-ready", "✓", `Detailed Vision prompts are ready for this session.${suffix}${contributionCopy} A bounded local history thumbnail was cached; no full-resolution source image or prompt text was saved.`);
+        this.setButtonState(button, "vision-ready", "✓", `Detailed Vision prompts are ready.${suffix}${contributionCopy} The prompts and a small local thumbnail remain in Prompt History until you clear it; no full-resolution source image was copied into history.`);
         this.toast(
             contributed
                 ? "Three prompts are ready in session memory and were added to the online Krea2 dataset."
@@ -7928,7 +8040,7 @@ class Krea2DiscordCollector {
         panel.style.cssText = "padding:16px;max-width:760px;color:var(--text-normal);line-height:1.45";
 
         const intro = document.createElement("p");
-        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint and returns three grounded prompt variations. If automatic Krea2 contribution is enabled, all three generated prompt texts are submitted with model/pipeline IDs and an anonymous installation digest. Contributions never include image bytes or Discord identifiers. Technical failures always submit privacy-minimal operational fields to the owner-only Seedframe error console: anonymous installation digest, model, pipeline, stage, error code/message, and software versions. Mandatory error telemetry never includes an image, image hash, prompt, Discord identity or IDs, URL, filename, or local path. The separate rich failure-diagnostic option remains opt-in. The plugin stores at most 250 local history thumbnails (640 px and 2 MiB maximum each) under the configured save folder so completed prompts retain their preview. It does not cache full-resolution source images or prompt text; feedback lasts only for this Discord session.";
+        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint and returns three grounded prompt variations. If automatic Krea2 contribution is enabled, all three generated prompt texts are submitted with model/pipeline IDs and an anonymous installation digest. Contributions never include image bytes or Discord identifiers. Technical failures always submit privacy-minimal operational fields to the owner-only Seedframe error console: anonymous installation digest, model, pipeline, stage, error code/message, and software versions. Mandatory error telemetry never includes an image, image hash, prompt, Discord identity or IDs, URL, filename, or local path. The separate rich failure-diagnostic option remains opt-in. Generated prompts and sanitized job metadata remain in the private local Prompt History database until you select Clear history. Small local thumbnails are retained under the configured save folder for previews; full-resolution source images are not copied into history; feedback lasts only for this Discord session.";
         panel.append(intro);
 
         const addField = ({label, note, key, type = "text", placeholder = "", browseFolder = false}) => {
@@ -8238,6 +8350,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     comparisonPromptSidecarPath,
     cosineSimilarity,
     chooseBestMediaUrl,
+    clearHistoryThumbnailCache,
     decodeHtmlEntities,
     DEFAULT_SETTINGS,
     formatDownloadGiB,
@@ -8298,7 +8411,6 @@ Krea2DiscordCollector.helpers = Object.freeze({
     DIAGNOSTIC_RECEIPT_VERSION,
     promptDiffSummary,
     promptPresetGuidance,
-    pruneHistoryThumbnailCache,
     readBoundedResponseText,
     readFileCompat,
     readReusableVisionPrompt,
