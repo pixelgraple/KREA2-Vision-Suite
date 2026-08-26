@@ -1,0 +1,55 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.token
+*-token
+.forge-handoff-token
+.seedframe-provenance-token
+
+# Python / Node build state
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+
+# Private runtime data
+data/
+logs/
+backups/
+deployment-snapshots/
+prompt-assistant/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+*.out
+*.err
+*.tmp
+
+# Large model/runtime artifacts
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.zip
+*.partial
+.krea2-llamacpp-install-receipt.json
+
+# The current verified Windows release is intentionally published. Runtime ZIPs
+# elsewhere remain excluded by the broad *.zip rule above.
+!releases/
+releases/*
+!releases/Krea2VisionSuite-v*-win64.zip
+!releases/Krea2VisionSuite-v*-win64.zip.sha256.txt
+!releases/latest.json
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

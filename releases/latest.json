@@ -1,0 +1,11 @@
+{
+    "schema_version":  1,
+    "product":  "krea2-vision-suite",
+    "channel":  "stable",
+    "version":  "0.13.13",
+    "published_at":  "2026-08-26T01:49:45.5010531+00:00",
+    "download_url":  "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.13.13-win64.zip",
+    "sha256":  "ed3965ebfea9e040d249e208b64eff90b165e373190e42bd957b712908481267",
+    "bytes":  488780,
+    "notes_url":  "https://github.com/pixelgraple/KREA2-Vision-Suite#download"
+}

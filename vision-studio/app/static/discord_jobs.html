@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Discord Vision Jobs · KREA2 Studio</title>
+  <link rel="stylesheet" href="/dashboard-assets/discord_jobs.css?v=2">
+  <script src="/dashboard-assets/discord_jobs.js?v=2" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Back to KREA2 Vision Prompt Studio">
+      <span class="brand-mark">K2</span>
+      <span><strong>KREA2 Vision Studio</strong><small>Discord job monitor</small></span>
+    </a>
+    <div class="top-actions">
+      <span id="connection" class="connection"><i></i> Connecting</span>
+      <a class="button ghost" href="/">Manual Studio</a>
+      <button id="refresh" class="button" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">LOCAL OLLAMA · SHARED FORGE GPU QUEUE</p>
+        <h1>Discord Vision Jobs</h1>
+        <p class="lede">Watch magnifier requests move through the local queue, then inspect and copy every completed KREA2 prompt.</p>
+      </div>
+      <div class="privacy-capsules" aria-label="Privacy properties">
+        <span>LOCAL ONLY</span>
+        <span>127.0.0.1</span>
+        <span>NO SOURCE IMAGES STORED HERE</span>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="Discord Vision job totals">
+      <article><span class="stat-icon violet">Q</span><div><strong id="stat-queued">0</strong><small>Waiting</small></div></article>
+      <article><span class="stat-icon aqua">AI</span><div><strong id="stat-running">0</strong><small>Running</small></div></article>
+      <article><span class="stat-icon green">✓</span><div><strong id="stat-completed">0</strong><small>Completed · 24h</small></div></article>
+      <article><span class="stat-icon amber">–</span><div><strong id="stat-rejected">0</strong><small>Rejected · history</small></div></article>
+      <article><span class="stat-icon red">!</span><div><strong id="stat-errors">0</strong><small>Errors · history</small></div></article>
+    </section>
+
+    <section class="queue-card panel">
+      <div class="section-heading">
+        <div><p class="eyebrow">ONE GPU · FAIR FIFO</p><h2>Shared generation queue</h2></div>
+        <span id="queue-count" class="counter">0 jobs</span>
+      </div>
+      <div id="queue" class="queue"></div>
+      <div class="scheduler" aria-live="polite">
+        <div><span class="scheduler-label">Heretic warm window</span><strong id="warm-status">Checking…</strong><small id="warm-detail"></small></div>
+        <div><span class="scheduler-label">Next eligible job</span><strong id="next-job">Checking…</strong><small id="next-job-detail"></small></div>
+      </div>
+    </section>
+
+    <section class="workbench">
+      <section class="jobs-panel panel">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">DISCORD MAGNIFIER</p><h2>Recent jobs</h2></div>
+          <span id="last-updated" class="muted">Waiting for Studio…</span>
+        </div>
+        <div class="filters" role="group" aria-label="Filter jobs">
+          <button class="filter active" data-filter="all" type="button">All</button>
+          <button class="filter" data-filter="active" type="button">Active</button>
+          <button class="filter" data-filter="completed" type="button">Completed</button>
+          <button class="filter" data-filter="attention" type="button">Attention</button>
+        </div>
+        <div id="jobs" class="jobs"></div>
+      </section>
+
+      <aside class="detail-panel panel">
+        <div id="detail-empty" class="empty detail-empty">
+          <span class="empty-mark">🔍</span>
+          <h2>No job selected</h2>
+          <p>Click an item to inspect its status. Completed jobs reveal the full local prompt here.</p>
+        </div>
+        <div id="detail" class="detail" hidden>
+          <div class="detail-head">
+            <div><span id="detail-status" class="status">Status</span><h2 id="detail-title">Vision prompt</h2></div>
+            <button id="copy-prompt" class="button" type="button" disabled>Copy prompt</button>
+          </div>
+          <dl class="metadata">
+            <div><dt>Image hash</dt><dd id="detail-hash">—</dd></div>
+            <div><dt>Duration</dt><dd id="detail-duration">—</dd></div>
+            <div><dt>Words</dt><dd id="detail-words">—</dd></div>
+            <div><dt>Model path</dt><dd id="detail-model">—</dd></div>
+          </dl>
+          <p id="detail-stage" class="stage-line"></p>
+          <textarea id="prompt" class="prompt" readonly spellcheck="false" aria-label="Generated KREA2 prompt"></textarea>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <footer>Prompts and job state stay on this PC. The dashboard stores no source images, Discord links, access tokens, raw evidence, or queue secrets.</footer>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# Optional supplemental tag evidence. CPU is recommended when Forge shares the GPU.
+transformers>=4.48
+torch>=2.4

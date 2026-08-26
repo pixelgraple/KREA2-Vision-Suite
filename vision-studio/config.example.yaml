@@ -1,0 +1,58 @@
+model:
+  backend: ollama
+  # 30b is a quality-oriented RTX 5090 starting point; use 8b/32b or any
+  # locally installed Qwen3-VL tag as appropriate.
+  model: qwen3-vl:30b
+  api_base: http://127.0.0.1:11434
+  context_length: 32768
+  max_output_tokens: 8192
+  # Keep one Ollama model resident across its related passes. Every pipeline
+  # explicitly unloads in a finally block before releasing the shared queue.
+  keep_alive: "5m"
+  temperatures: { analysis: 0.12, critic: 0.08, merger: 0.05, composer: 0.38 }
+llama_cpp:
+  # The runtime is installed separately; model GGUF files are downloaded
+  # manually into the 2B/4B/8B subfolders under this model root.
+  server_exe: '~/AppData/Local/Krea2Vision/llama.cpp/b10590/llama-server.exe'
+  model_root: '~/Documents/KreaHereticModels'
+  # Discovery fails closed when a model body or selected projector differs
+  # from the checked-in byte size or SHA-256 manifest.
+  artifact_manifest: scripts/heretic_llamacpp_artifacts.json
+  # The server always binds to 127.0.0.1; only the loopback port is configurable.
+  port: 8091
+  startup_timeout_seconds: 180
+  vram_headroom_mb: 4096
+  # Advisory model-allocation target. Models above it remain selectable when
+  # the authoritative post-Forge-unload admission check has enough capacity.
+  model_allocation_target_mb: 12288
+  telemetry_path: data/history/llama_cpp_runtime.json
+  context_cap: 8192
+vast_serverless:
+  # Opt-in remote inference. The API key stays only in vision-studio/.env;
+  # BetterDiscord continues to call the authenticated loopback Studio API.
+  enabled: false
+  endpoint: ""
+  python_exe: '~/AppData/Local/Krea2Vision/vastsdk/Scripts/python.exe'
+  request_timeout_seconds: 1200
+  # This deployment is intentionally pinned to one exact model. It must never
+  # silently fall back to a different local or remote model.
+  model_id: vast::gemma4-26b-a4b-heretic-q3_k_l
+app:
+  host: 127.0.0.1
+  port: 7870
+  max_upload_mb: 30
+  max_image_pixels: 60000000
+  max_image_side: 3072
+  privacy_mode: true
+  save_source_images: false
+  save_thumbnails: false
+queue:
+  enabled: true
+  directory: ""
+  poll_seconds: 0.25
+  stale_ticket_seconds: 21600
+  forge_unload_urls: http://127.0.0.1:7861,http://127.0.0.1:7862
+  forge_unload_timeout_seconds: 45
+  # Must point at the same machine-local credential used by both Forge APIs.
+  forge_handoff_token_file: "~/AppData/Local/Krea2VisionSuite/forge-handoff-token"
+wd14: { model: SmilingWolf/wd-vit-tagger-v3, device: cpu }
