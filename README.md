@@ -1,5 +1,18 @@
 # KREA2 Vision Suite
 
+## Start here: what this does
+
+KREA2 Vision Suite adds an image-description tool to Discord. Install BetterDiscord, install this plugin, choose which Discord servers may use it, and then click the magnifier in the top-right corner of an image. KREA2 Vision examines that image and gives you three detailed prompts you can use to recreate a similar image in Krea2 or another image generator.
+
+During first-run setup, choose one of two Vision modes:
+
+- **Local GPU Vision** runs a Heretic vision-language model (VLM) on your own NVIDIA GPU. The installer downloads the selected model once, then your image analysis runs from your computer.
+- **Online Cloud Vision** sends the image securely to the KREA2 online Vision service, which runs the pinned Heretic model in the cloud. This is useful when you do not have enough GPU VRAM for a local model.
+
+The plugin setup itself is designed to take about a minute. A local model download can take longer, depending on the model size and your internet connection. Once setup is complete, every image in a Discord server that you explicitly allow gets a magnifier action. You can queue several images, watch their progress in Prompt History, see the exact model used for each result, or open **Interrogate** to upload an image manually.
+
+KREA2 Vision Suite is in beta. It is already useful, but bugs and occasional errors can still happen while the project is being improved. Join the new community server for updates, help, and bug reports: [discord.gg/gdxCYCWd8g](https://discord.gg/gdxCYCWd8g).
+
 KREA2 Vision Suite is a free, open-source Windows application that adds detailed image interrogation to Discord through BetterDiscord. Select an image, choose a supported local or remote Vision model, and receive three distinct, evidence-grounded image-generation prompts.
 
 The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. Seedframe prompt contribution, KREA2 guidance, and rich failure attachments are separately disclosed and controlled. Privacy-minimal operational error reporting is required so launch and GPU-capacity failures can be repaired across installations.
