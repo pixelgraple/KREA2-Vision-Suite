@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 try:
@@ -36,6 +36,11 @@ ENROLLMENT_ID_RE = re.compile(r"^enr_[A-Za-z0-9_-]{24,96}$")
 ENROLLMENT_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
 OAUTH_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
 OAUTH_ENROLLMENT_TTL_SECONDS = 10 * 60
+WELCOME_CREDITS = 120
+IMAGE_CREDIT_COST = 3
+CREDIT_PACK_CREDITS = 1200
+CREDIT_PACK_PRICE_USD = "20"
+CREDIT_RESERVATION_TTL_SECONDS = 2 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,10 @@ class Config:
     discord_client_secret: str
     discord_redirect_uri: str
     license_signing_key: str
+    btcpay_url: str = ""
+    btcpay_store_id: str = ""
+    btcpay_api_key: str = ""
+    btcpay_webhook_secret: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -68,6 +77,10 @@ class Config:
             discord_client_secret=os.getenv("KREA2_GATEWAY_DISCORD_CLIENT_SECRET", ""),
             discord_redirect_uri=os.getenv("KREA2_GATEWAY_DISCORD_REDIRECT_URI", "").strip(),
             license_signing_key=os.getenv("KREA2_GATEWAY_LICENSE_SIGNING_KEY", ""),
+            btcpay_url=os.getenv("KREA2_GATEWAY_BTCPAY_URL", "").strip().rstrip("/"),
+            btcpay_store_id=os.getenv("KREA2_GATEWAY_BTCPAY_STORE_ID", "").strip(),
+            btcpay_api_key=os.getenv("KREA2_GATEWAY_BTCPAY_API_KEY", ""),
+            btcpay_webhook_secret=os.getenv("KREA2_GATEWAY_BTCPAY_WEBHOOK_SECRET", ""),
         )
 
 
@@ -94,6 +107,11 @@ class AuditCompletion(BaseModel):
 
 class RevokeRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=240)
+
+
+class CreditPurchaseRequest(BaseModel):
+    """A deliberately empty, authenticated purchase request for the fixed credit pack."""
+    confirmation: str = Field(default="", max_length=80)
 
 
 def clean_text(value: object, maximum: int) -> str:
@@ -174,11 +192,35 @@ class Gateway:
                     source_url TEXT, prompt_variants_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS remote_jobs_retention_idx ON remote_jobs(completed_at);
+                CREATE TABLE IF NOT EXISTS credit_accounts (
+                    discord_user_id TEXT PRIMARY KEY, available_credits INTEGER NOT NULL CHECK(available_credits >= 0),
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS credit_ledger (
+                    entry_id INTEGER PRIMARY KEY AUTOINCREMENT, discord_user_id TEXT NOT NULL,
+                    delta_credits INTEGER NOT NULL, entry_kind TEXT NOT NULL,
+                    request_id TEXT, invoice_id TEXT, idempotency_key TEXT NOT NULL UNIQUE,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS credit_ledger_user_idx ON credit_ledger(discord_user_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS credit_invoices (
+                    invoice_id TEXT PRIMARY KEY, purchase_reference TEXT NOT NULL UNIQUE,
+                    discord_user_id TEXT NOT NULL, license_id TEXT NOT NULL,
+                    credits INTEGER NOT NULL, amount TEXT NOT NULL, currency TEXT NOT NULL,
+                    checkout_url TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('new','settled','expired','invalid')),
+                    created_at INTEGER NOT NULL, settled_at INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS btcpay_webhook_deliveries (
+                    delivery_id TEXT PRIMARY KEY, received_at INTEGER NOT NULL
+                );
             """)
 
             columns = {row[1] for row in db.execute("PRAGMA table_info(licenses)")}
             if "auth_method" not in columns:
                 db.execute("ALTER TABLE licenses ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'legacy_claim'")
+            job_columns = {row[1] for row in db.execute("PRAGMA table_info(remote_jobs)")}
+            if "credit_state" not in job_columns:
+                db.execute("ALTER TABLE remote_jobs ADD COLUMN credit_state TEXT NOT NULL DEFAULT 'none'")
 
     def oauth_configured(self) -> bool:
         return bool(
@@ -187,6 +229,30 @@ class Gateway:
             and self.config.discord_redirect_uri.startswith("https://")
             and len(self.config.license_signing_key) >= 32
         )
+
+    def btcpay_configured(self) -> bool:
+        return bool(
+            self.config.btcpay_url.startswith("https://")
+            and len(self.config.btcpay_store_id) >= 6
+            and len(self.config.btcpay_api_key) >= 24
+            and len(self.config.btcpay_webhook_secret) >= 32
+        )
+
+    @staticmethod
+    def _account_balance(db: sqlite3.Connection, discord_user_id: str) -> int:
+        row = db.execute("SELECT available_credits FROM credit_accounts WHERE discord_user_id=?", (discord_user_id,)).fetchone()
+        return int(row["available_credits"]) if row else 0
+
+    def _grant_welcome_credits(self, db: sqlite3.Connection, discord_user_id: str, now: int) -> None:
+        inserted = db.execute(
+            "INSERT OR IGNORE INTO credit_accounts(discord_user_id,available_credits,created_at,updated_at) VALUES(?,?,?,?)",
+            (discord_user_id, WELCOME_CREDITS, now, now),
+        ).rowcount
+        if inserted:
+            db.execute(
+                "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,idempotency_key,created_at) VALUES(?,?,?,?,?)",
+                (discord_user_id, WELCOME_CREDITS, "welcome", f"welcome:{discord_user_id}", now),
+            )
 
     def start_oauth(self, request: OAuthStartRequest) -> dict[str, str | int]:
         if not self.oauth_configured():
@@ -283,13 +349,12 @@ class Gateway:
                 return 403, "Online API access is unavailable for this Discord account."
             db.execute("UPDATE licenses SET status='suspended', revoked_at=?, revoked_reason='replaced after Discord OAuth enrollment' WHERE discord_user_id=? AND installation_digest=? AND status='active'", (now, user_id, enrollment["installation_digest"]))
             db.execute("INSERT INTO licenses(license_id,discord_user_id,discord_username,installation_digest,token_salt,token_digest,auth_method,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (license_id, user_id, username, enrollment["installation_digest"], token_salt, token_hash(token_salt, token), "discord_oauth", "active", now, now))
+            self._grant_welcome_credits(db, user_id, now)
             db.execute("UPDATE oauth_enrollments SET status='complete', completed_at=?, discord_user_id=?, discord_username=?, license_id=? WHERE enrollment_id=?", (now, user_id, username, license_id, enrollment["enrollment_id"]))
         return 200, "Discord account verified. You can close this page and return to KREA2 Vision Suite."
 
-    def authenticate(self, authorization: str | None, request_id: str) -> sqlite3.Row:
+    def authenticate_license(self, authorization: str | None) -> sqlite3.Row:
         license_id, token = parse_bearer(authorization)
-        if not REQUEST_ID_RE.fullmatch(request_id):
-            raise HTTPException(422, "Remote request provenance is invalid.")
         with self.connection() as db:
             row = db.execute("SELECT * FROM licenses WHERE license_id=?", (license_id,)).fetchone()
             if not row or not hmac.compare_digest(row["token_digest"], token_hash(row["token_salt"], token)):
@@ -298,6 +363,85 @@ class Gateway:
                 raise HTTPException(403, "Remote KREA2 API access is unavailable for this Discord account.")
             db.execute("UPDATE licenses SET last_seen_at=? WHERE license_id=?", (int(time.time()), license_id))
             return row
+
+    def authenticate(self, authorization: str | None, request_id: str) -> sqlite3.Row:
+        if not REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(422, "Remote request provenance is invalid.")
+        return self.authenticate_license(authorization)
+
+    def credit_status(self, license_row: sqlite3.Row) -> dict[str, int | str | bool]:
+        with self.connection() as db:
+            now = int(time.time())
+            self._release_stale_reservations(db, now)
+            self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
+            balance = self._account_balance(db, str(license_row["discord_user_id"]))
+        return {
+            "available_credits": balance,
+            "credits_per_image": IMAGE_CREDIT_COST,
+            "images_available": balance // IMAGE_CREDIT_COST,
+            "pack_credits": CREDIT_PACK_CREDITS,
+            "pack_price_usd": CREDIT_PACK_PRICE_USD,
+            "payments_configured": self.btcpay_configured(),
+        }
+
+    def _reserve_image_credits(self, db: sqlite3.Connection, license_row: sqlite3.Row, request_id: str, now: int) -> None:
+        job = db.execute("SELECT license_id,credit_state FROM remote_jobs WHERE request_id=?", (request_id,)).fetchone()
+        if job:
+            if job["license_id"] != license_row["license_id"]:
+                raise HTTPException(409, "Remote request ownership is invalid.")
+            if job["credit_state"] in {"reserved", "charged"}:
+                db.execute("UPDATE remote_jobs SET calls=calls+1 WHERE request_id=?", (request_id,))
+                return
+        self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
+        updated = db.execute(
+            "UPDATE credit_accounts SET available_credits=available_credits-?,updated_at=? WHERE discord_user_id=? AND available_credits>=?",
+            (IMAGE_CREDIT_COST, now, license_row["discord_user_id"], IMAGE_CREDIT_COST),
+        ).rowcount
+        if not updated:
+            raise HTTPException(402, "Online API credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin or select Local GPU.")
+        db.execute(
+            "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+            (license_row["discord_user_id"], -IMAGE_CREDIT_COST, "image_reservation", request_id, f"reserve:{request_id}", now),
+        )
+        if job:
+            db.execute("UPDATE remote_jobs SET calls=calls+1,credit_state='reserved' WHERE request_id=?", (request_id,))
+        else:
+            db.execute(
+                "INSERT INTO remote_jobs(request_id,license_id,model_id,discord_user_id,discord_username,started_at,calls,credit_state) VALUES(?,?,?,?,?,?,1,'reserved')",
+                (request_id, license_row["license_id"], PUBLIC_MODEL_ID, license_row["discord_user_id"], license_row["discord_username"], now),
+            )
+
+    def _release_image_credits(self, db: sqlite3.Connection, license_row: sqlite3.Row, request_id: str, now: int) -> bool:
+        changed = db.execute(
+            "UPDATE remote_jobs SET credit_state='refunded' WHERE request_id=? AND license_id=? AND credit_state='reserved'",
+            (request_id, license_row["license_id"]),
+        ).rowcount
+        if not changed:
+            return False
+        db.execute("UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?", (IMAGE_CREDIT_COST, now, license_row["discord_user_id"]))
+        db.execute(
+            "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+            (license_row["discord_user_id"], IMAGE_CREDIT_COST, "image_refund", request_id, f"refund:{request_id}", now),
+        )
+        return True
+
+    def _release_stale_reservations(self, db: sqlite3.Connection, now: int) -> int:
+        """Return abandoned image holds if a client disappears before it can report failure."""
+        stale = db.execute(
+            "SELECT request_id,discord_user_id FROM remote_jobs WHERE credit_state='reserved' AND started_at<?",
+            (now - CREDIT_RESERVATION_TTL_SECONDS,),
+        ).fetchall()
+        released = 0
+        for job in stale:
+            if not db.execute("UPDATE remote_jobs SET credit_state='refunded' WHERE request_id=? AND credit_state='reserved'", (job["request_id"],)).rowcount:
+                continue
+            db.execute("UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?", (IMAGE_CREDIT_COST, now, job["discord_user_id"]))
+            db.execute(
+                "INSERT OR IGNORE INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+                (job["discord_user_id"], IMAGE_CREDIT_COST, "stale_image_refund", job["request_id"], f"refund:{job['request_id']}", now),
+            )
+            released += 1
+        return released
 
     async def infer(self, payload: ChatRequest, license_row: sqlite3.Row, request_id: str) -> dict[str, Any]:
         if payload.model != MODEL_ID or payload.stream:
@@ -309,18 +453,24 @@ class Gateway:
         if CoroutineServerless is None:
             raise HTTPException(503, "The remote Vision SDK is not installed.")
         with self.connection() as db:
-            db.execute("INSERT INTO remote_jobs(request_id,license_id,model_id,discord_user_id,discord_username,started_at,calls) VALUES(?,?,?,?,?,?,1) ON CONFLICT(request_id) DO UPDATE SET calls=calls+1", (request_id, license_row["license_id"], PUBLIC_MODEL_ID, license_row["discord_user_id"], license_row["discord_username"], int(time.time())))
+            now = int(time.time())
+            self._release_stale_reservations(db, now)
+            self._reserve_image_credits(db, license_row, request_id, now)
         try:
             async with CoroutineServerless(api_key=self.config.vast_api_key, default_request_timeout=self.config.request_timeout_seconds) as client:
                 endpoint = await client.get_endpoint(self.config.vast_endpoint)
                 result = await endpoint.request("/v1/chat/completions", payload.model_dump(exclude_none=True), cost=payload.max_tokens, timeout=self.config.request_timeout_seconds, retry=True)
         except Exception as exc:
+            with self.connection() as db:
+                self._release_image_credits(db, license_row, request_id, int(time.time()))
             raise HTTPException(503, "Remote GPU not available. Retry shortly.") from exc
         nested = result.get("response", result) if isinstance(result, dict) else None
         if isinstance(nested, str):
             try: nested = json.loads(nested)
             except json.JSONDecodeError as exc: raise HTTPException(502, "Remote Vision returned invalid JSON.") from exc
         if not isinstance(nested, dict) or nested.get("ok") is False:
+            with self.connection() as db:
+                self._release_image_credits(db, license_row, request_id, int(time.time()))
             raise HTTPException(503, "Remote GPU not available. Retry shortly.")
         return nested
 
@@ -339,9 +489,74 @@ class Gateway:
                 raise HTTPException(404, "The remote request record was not found.")
             if job["completed_at"] is not None:
                 return
-            db.execute("UPDATE remote_jobs SET completed_at=?, source_url=?, prompt_variants_json=? WHERE request_id=?", (int(time.time()), source_url or None, json.dumps(variants, ensure_ascii=False), request_id))
+            now = int(time.time())
+            if job["credit_state"] == "reserved":
+                db.execute("UPDATE remote_jobs SET credit_state='charged' WHERE request_id=?", (request_id,))
+            db.execute("UPDATE remote_jobs SET completed_at=?, source_url=?, prompt_variants_json=? WHERE request_id=?", (now, source_url or None, json.dumps(variants, ensure_ascii=False), request_id))
         self._post_webhook(license_row, request_id, source_url, variants)
         self.prune_audits()
+
+    def fail_audit(self, license_row: sqlite3.Row, request_id: str) -> None:
+        with self.connection() as db:
+            self._release_image_credits(db, license_row, request_id, int(time.time()))
+
+    def create_credit_invoice(self, license_row: sqlite3.Row) -> dict[str, str | int]:
+        if not self.btcpay_configured():
+            raise HTTPException(503, "Bitcoin credit purchases are not configured yet. Local GPU remains free.")
+        now = int(time.time())
+        purchase_reference = "krea2-credit-" + secrets.token_urlsafe(18)
+        try:
+            response = self.http.post(
+                f"{self.config.btcpay_url}/api/v1/stores/{self.config.btcpay_store_id}/invoices",
+                headers={"Authorization": f"token {self.config.btcpay_api_key}", "Content-Type": "application/json"},
+                json={
+                    "amount": CREDIT_PACK_PRICE_USD, "currency": "USD",
+                    "metadata": {"orderId": purchase_reference, "itemCode": "krea2-credits-1200"},
+                    "checkout": {"redirectAutomatically": False},
+                },
+                timeout=15,
+            )
+            body = response.json()
+            invoice_id = str(body.get("id") or "")
+            checkout_url = str(body.get("checkoutLink") or "")
+            if getattr(response, "status_code", 500) >= 400 or not invoice_id or not checkout_url.startswith("https://"):
+                raise ValueError("BTCPay did not return a valid checkout")
+        except Exception as exc:
+            raise HTTPException(503, "Bitcoin checkout is temporarily unavailable. Retry shortly.") from exc
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (invoice_id, purchase_reference, license_row["discord_user_id"], license_row["license_id"], CREDIT_PACK_CREDITS, CREDIT_PACK_PRICE_USD, "USD", checkout_url, "new", now),
+            )
+        return {"invoice_id": invoice_id, "checkout_url": checkout_url, "credits": CREDIT_PACK_CREDITS, "price_usd": CREDIT_PACK_PRICE_USD}
+
+    def accept_btcpay_webhook(self, raw_body: bytes, signature: str | None) -> None:
+        if not self.btcpay_configured():
+            raise HTTPException(503, "Bitcoin webhook is not configured.")
+        expected = "sha256=" + hmac.new(self.config.btcpay_webhook_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+        if not signature or not hmac.compare_digest(expected, signature):
+            raise HTTPException(401, "BTCPay webhook signature is invalid.")
+        try:
+            event = json.loads(raw_body.decode("utf-8"))
+            delivery_id, event_type = str(event.get("deliveryId") or ""), str(event.get("type") or "")
+            invoice_id, store_id = str(event.get("invoiceId") or ""), str(event.get("storeId") or "")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(422, "BTCPay webhook payload is invalid.") from exc
+        if not delivery_id or not invoice_id or store_id != self.config.btcpay_store_id:
+            raise HTTPException(422, "BTCPay webhook payload is invalid.")
+        with self.connection() as db:
+            if not db.execute("INSERT OR IGNORE INTO btcpay_webhook_deliveries(delivery_id,received_at) VALUES(?,?)", (delivery_id, int(time.time()))).rowcount:
+                return
+            if event_type != "InvoiceSettled":
+                return
+            invoice = db.execute("SELECT * FROM credit_invoices WHERE invoice_id=?", (invoice_id,)).fetchone()
+            if not invoice or invoice["status"] == "settled":
+                return
+            now = int(time.time())
+            self._grant_welcome_credits(db, str(invoice["discord_user_id"]), now)
+            db.execute("UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?", (int(invoice["credits"]), now, invoice["discord_user_id"]))
+            db.execute("INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,invoice_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)", (invoice["discord_user_id"], int(invoice["credits"]), "bitcoin_purchase", invoice_id, f"invoice:{invoice_id}", now))
+            db.execute("UPDATE credit_invoices SET status='settled',settled_at=? WHERE invoice_id=?", (now, invoice_id))
 
     def _post_webhook(self, license_row: sqlite3.Row, request_id: str, source_url: str, variants: list[str]) -> None:
         if not self.config.audit_webhook_url:
@@ -374,6 +589,7 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             "ok": True, "model": PUBLIC_MODEL_ID,
             "configured": bool(gateway.config.vast_endpoint and len(gateway.config.vast_api_key) >= 24),
             "discord_oauth_configured": gateway.oauth_configured(),
+            "bitcoin_credits_configured": gateway.btcpay_configured(),
         }
 
     @app.post("/v1/oauth/start")
@@ -399,6 +615,27 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
     def complete(payload: AuditCompletion, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
         license_row = gateway.authenticate(authorization, request_id or "")
         gateway.complete_audit(payload, license_row, request_id or "")
+        return {"accepted": True}
+
+    @app.post("/v1/audit/fail")
+    def fail(authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
+        license_row = gateway.authenticate(authorization, request_id or "")
+        gateway.fail_audit(license_row, request_id or "")
+        return {"accepted": True}
+
+    @app.get("/v1/credits/balance")
+    def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, int | str | bool]:
+        return gateway.credit_status(gateway.authenticate_license(authorization))
+
+    @app.post("/v1/credits/purchase")
+    def credit_purchase(payload: CreditPurchaseRequest, authorization: str | None = Header(default=None)) -> dict[str, str | int]:
+        if payload.confirmation not in {"", "buy-1200-credits"}:
+            raise HTTPException(422, "The requested credit pack is invalid.")
+        return gateway.create_credit_invoice(gateway.authenticate_license(authorization))
+
+    @app.post("/v1/btcpay/webhook")
+    async def btcpay_webhook(request: Request, signature: str | None = Header(default=None, alias="BTCPay-Sig")) -> dict[str, bool]:
+        gateway.accept_btcpay_webhook(await request.body(), signature)
         return {"accepted": True}
 
     @app.post("/v1/admin/licenses/{license_id}/revoke")

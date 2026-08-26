@@ -70,7 +70,7 @@ class GatewayTests(unittest.TestCase):
         request_id = "b" * 64
         gateway = self.app.state.gateway
         with gateway.connection() as db:
-            db.execute("INSERT INTO remote_jobs VALUES(?,?,?,?,?,?,NULL,1,NULL,NULL)", (request_id, license["license_id"], PUBLIC_MODEL_ID, "123456789012345678", "tester", 1))
+            db.execute("INSERT INTO remote_jobs(request_id,license_id,model_id,discord_user_id,discord_username,started_at,calls,source_url,prompt_variants_json,credit_state) VALUES(?,?,?,?,?,?,1,NULL,NULL,'none')", (request_id, license["license_id"], PUBLIC_MODEL_ID, "123456789012345678", "tester", 1))
         body = {"model_id":PUBLIC_MODEL_ID,"prompt_variants":["x " * 700,"y " * 700,"z " * 700],"source_url":""}
         self.assertEqual(self.client.post("/v1/audit/complete", headers=self.headers(license, request_id), json=body).status_code, 200)
         self.assertEqual(self.client.post("/v1/audit/complete", headers=self.headers(license, request_id), json=body).status_code, 200)
@@ -88,6 +88,39 @@ class GatewayTests(unittest.TestCase):
             db.execute("INSERT INTO licenses(license_id,discord_user_id,discord_username,installation_digest,token_salt,token_digest,auth_method,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?)", ("lic_" + "l" * 18, "123456789012345678", "legacy", "x", "salt", token_hash("salt", "t" * 48), "legacy_claim", "active", 1, 1))
         response = self.client.post("/v1/chat/completions", headers={"Authorization":f"Krea2License lic_{'l' * 18}.{'t' * 48}","X-Krea2-Request-Id":"c" * 64}, json={"model":"gemma4-26b-a4b-heretic-q3-k-l","messages":[{"role":"user","content":"x"}],"temperature":0,"max_tokens":32})
         self.assertEqual(response.status_code, 403)
+
+    def test_welcome_credits_are_reserved_once_and_refunded_after_a_failed_image(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+        now = __import__("time").time_ns() // 1_000_000_000
+        with gateway.connection() as db:
+            gateway._reserve_image_credits(db, row, "d" * 64, now)
+            gateway._reserve_image_credits(db, row, "d" * 64, now + 1)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+        gateway.fail_audit(row, "d" * 64)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+        with gateway.connection() as db:
+            entries = db.execute("SELECT entry_kind,delta_credits FROM credit_ledger WHERE discord_user_id=? ORDER BY entry_id", (row["discord_user_id"],)).fetchall()
+        self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 120), ("image_reservation", -3), ("image_refund", 3)])
+
+    def test_signed_settlement_webhook_credits_once(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = Config(
+            gateway.config.database, "", "", "", gateway.config.admin_key, 1200, 12 * 1024 * 1024, 30,
+            gateway.config.discord_client_id, gateway.config.discord_client_secret, gateway.config.discord_redirect_uri,
+            gateway.config.license_signing_key, "https://bitcoin.example", "store-123", "p" * 24, "w" * 32,
+        )
+        with gateway.connection() as db:
+            db.execute("INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", ("invoice-1", "purchase-1", "123456789012345678", license["license_id"], 1200, "20", "USD", "https://bitcoin.example/i/invoice-1", "new", 1))
+        body = b'{"deliveryId":"delivery-1","type":"InvoiceSettled","invoiceId":"invoice-1","storeId":"store-123"}'
+        signature = "sha256=" + __import__("hmac").new(b"w" * 32, body, __import__("hashlib").sha256).hexdigest()
+        gateway.accept_btcpay_webhook(body, signature)
+        gateway.accept_btcpay_webhook(body, signature)
+        row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 1320)
 
 
 if __name__ == "__main__": unittest.main()

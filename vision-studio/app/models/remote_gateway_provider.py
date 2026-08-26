@@ -86,6 +86,15 @@ class RemoteGatewayProvider(VisionProvider):
         except requests.RequestException as exc:
             raise RemoteGatewayProviderError("Remote audit finalization failed.") from exc
 
+    def fail_audit(self) -> None:
+        """Release the gateway's one-image reservation after a terminal pipeline failure."""
+        headers = {"Authorization":self.access.authorization,"X-Krea2-Request-Id":self.access.request_id}
+        try:
+            self.http.post(f"{self.base_url}/v1/audit/fail", headers=headers, timeout=12)
+        except requests.RequestException:
+            # The server's expiry sweep remains the backstop; retain the actual Vision error.
+            return
+
     def unload(self) -> None:
         return
 

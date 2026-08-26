@@ -6825,12 +6825,88 @@ class Krea2DiscordCollector {
         throw new Error("Discord sign-in timed out. Start Online API again.");
     }
 
+    async remoteCreditStatus(license, signal) {
+        let response;
+        try {
+            response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/balance`, {
+                method: "GET", redirect: "manual", maxRedirects: 0, timeout: 15000, signal,
+                headers: {Accept:"application/json", Authorization:`Krea2License ${license.licenseId}.${license.licenseToken}`}
+            });
+        }
+        catch { throw new Error("The Online API credit service is unavailable. Retry shortly."); }
+        const text = await readBoundedResponseText(response, 64 * 1024);
+        let status;
+        try { status = JSON.parse(text); }
+        catch { throw new Error("The Online API credit service returned invalid JSON."); }
+        if (!response.ok) throw new Error(String(status?.detail || `Online API credit check failed with HTTP ${response.status}.`));
+        if (!Number.isInteger(status?.available_credits) || !Number.isInteger(status?.credits_per_image) || status.credits_per_image !== 3) throw new Error("The Online API credit balance is invalid.");
+        return status;
+    }
+
+    async ensureRemoteCredits(signal) {
+        const license = await this.ensureRemoteLicense(signal);
+        let status = await this.remoteCreditStatus(license, signal);
+        if (status.available_credits >= status.credits_per_image) return license;
+        if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Select Local GPU or retry later.");
+        const accepted = await this.confirmCreditPurchase(status);
+        if (!accepted) throw new Error("Online API credits are required. Select Local GPU or purchase credits to continue.");
+        let invoiceResponse;
+        try {
+            invoiceResponse = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/purchase`, {
+                method:"POST", redirect:"manual", maxRedirects:0, timeout:15000, signal,
+                headers:{Accept:"application/json", "Content-Type":"application/json", Authorization:`Krea2License ${license.licenseId}.${license.licenseToken}`},
+                body:JSON.stringify({confirmation:"buy-1200-credits"})
+            });
+        }
+        catch { throw new Error("Bitcoin checkout is unavailable. Retry shortly."); }
+        const invoiceText = await readBoundedResponseText(invoiceResponse, 64 * 1024);
+        let invoice;
+        try { invoice = JSON.parse(invoiceText); }
+        catch { throw new Error("Bitcoin checkout returned invalid JSON."); }
+        if (!invoiceResponse.ok) throw new Error(String(invoice?.detail || `Bitcoin checkout failed with HTTP ${invoiceResponse.status}.`));
+        const checkoutUrl = String(invoice?.checkout_url || "");
+        if (!/^https:\/\//.test(checkoutUrl)) throw new Error("Bitcoin checkout returned an invalid payment link.");
+        try {
+            const external = this.api.Webpack.getModule?.(module => typeof module?.openExternal === "function", {searchExports:true});
+            if (external?.openExternal) external.openExternal(checkoutUrl);
+            else window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+        }
+        catch { throw new Error("Could not open Bitcoin checkout. Allow Discord to open links, then retry."); }
+        const deadline = Date.now() + 30 * 60 * 1000;
+        while (Date.now() < deadline) {
+            if (signal?.aborted) throw new Error("Bitcoin payment wait was cancelled.");
+            await new Promise(resolve => setTimeout(resolve, 4000));
+            status = await this.remoteCreditStatus(license, signal);
+            if (status.available_credits >= status.credits_per_image) {
+                this.toast(`Online API credits added: ${status.available_credits} available.`, "success");
+                return license;
+            }
+        }
+        throw new Error("Bitcoin payment is still awaiting settlement. Credits will appear automatically after the invoice settles.");
+    }
+
+    confirmCreditPurchase(status) {
+        return new Promise(resolve => {
+            const content = document.createElement("div");
+            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
+            const lead = document.createElement("p");
+            lead.textContent = `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
+            const detail = document.createElement("p");
+            detail.textContent = "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
+            content.append(lead, detail);
+            this.api.UI.showConfirmationModal("Purchase Online API credits", content, {
+                confirmText: "Open Bitcoin checkout", cancelText: "Use Local GPU", danger: false,
+                onConfirm: () => resolve(true), onCancel: () => resolve(false)
+            });
+        });
+    }
+
     confirmRemoteOAuth() {
         return new Promise(resolve => {
             const content = document.createElement("div");
             content.style.cssText = "line-height:1.55;color:var(--text-normal)";
             const lead = document.createElement("p");
-            lead.textContent = "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a free, revocable account license and enforce its terms and rate limits.";
+            lead.textContent = "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a revocable account license, grant 120 introductory credits, and enforce its terms and rate limits.";
             const list = document.createElement("ul");
             for (const text of [
                 "Discord handles the sign-in. KREA2 never receives your Discord password.",
@@ -6847,7 +6923,7 @@ class Krea2DiscordCollector {
 
     async issueVisionSession(visionConfig, idempotencyKey, model, signal, sourceUrl = "") {
         const expectedUrl = `${visionConfig.origin}/api/discord-session`;
-        const remoteLicense = model === ONLINE_VISION_MODEL_ID ? await this.ensureRemoteLicense(signal) : null;
+        const remoteLicense = model === ONLINE_VISION_MODEL_ID ? await this.ensureRemoteCredits(signal) : null;
         const response = await this.api.Net.fetch(expectedUrl, {
             method: "POST",
             redirect: "manual",

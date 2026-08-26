@@ -1755,6 +1755,7 @@ class DiscordVisionService:
             acquired = "acquired" in str(message).casefold()
             report("running" if acquired else "queued", str(message), int(ahead.group(1)) if ahead else 0)
 
+        remote_provider = None
         try:
             check_cancelled()
             spec = self.pipeline._select_spec(model_id)
@@ -1777,6 +1778,8 @@ class DiscordVisionService:
                 queue_timeout_seconds=None if remote else self.settings.gpu_availability_timeout_seconds,
                 remote_access=remote_access,
             ) as (provider,_,_,_):
+                if remote:
+                    remote_provider = provider
                 inspect = getattr(provider,"with_image_text",None)
                 if not callable(inspect):
                     raise DiscordVisionBackendError("The selected Heretic runtime cannot return grounded prose.")
@@ -2202,19 +2205,31 @@ class DiscordVisionService:
                         log.warning("remote Vision audit delivery failed (%s)",type(exc).__name__)
                 return response
         except DiscordVisionCancelled:
+            if remote_provider is not None:
+                try: remote_provider.fail_audit()
+                except Exception: pass
             self.warm.evict("job-cancelled")
             raise
         except DiscordVisionRejected as exc:
+            if remote_provider is not None:
+                try: remote_provider.fail_audit()
+                except Exception: pass
             if is_cancelled is not None and is_cancelled():
                 self.warm.evict("job-cancelled")
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.") from exc
             raise
         except DiscordVisionBackendError as exc:
+            if remote_provider is not None:
+                try: remote_provider.fail_audit()
+                except Exception: pass
             if is_cancelled is not None and is_cancelled():
                 self.warm.evict("job-cancelled")
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.") from exc
             raise
         except Exception as exc:
+            if remote_provider is not None:
+                try: remote_provider.fail_audit()
+                except Exception: pass
             if is_cancelled is not None and is_cancelled():
                 self.warm.evict("job-cancelled")
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.") from exc
