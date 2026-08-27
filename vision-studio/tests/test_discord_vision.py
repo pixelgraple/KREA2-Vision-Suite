@@ -1543,6 +1543,49 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertIn("faithful recreation",result.model)
         self.assertTrue(any("Preserving the audited image-grounded draft" in stage for stage in progress))
 
+    def test_heretic_returns_grounded_draft_if_final_wrapper_rejects_its_own_repair(self):
+        """A duplicate JSON-path check must not turn an already audited result into an error."""
+        pipeline=FakeHereticPipeline()
+        draft_words=variant_prose(0,420).rstrip(".").split()
+        draft=" ".join(
+            " ".join(draft_words[index:index+60])+"."
+            for index in range(0,len(draft_words),60)
+        )
+
+        def failed_final_rewrites(system,user,*args):
+            pipeline.provider.text_calls+=1
+            pipeline.provider.text_prompts.append((system,user))
+            pipeline.provider.text_output_budgets.append(args[1] if len(args) > 1 else None)
+            if system == HERETIC_SINGLE_COMPOSER_SYSTEM and "DRAFT ROLE" in user:
+                return ModelReply(json.dumps({"prompt":draft}))
+            if system == HERETIC_COMPOSER_SYSTEM:
+                return ModelReply("the batch stopped after writing unusable transport")
+            return ModelReply(json.dumps({"prompt":"too short"}))
+
+        pipeline.provider.text=failed_final_rewrites
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        original_final=service._final_prompt
+
+        def final_with_duplicate_rejection(raw,*args,**kwargs):
+            if args and "audited-draft fallback" in str(args[1]):
+                raise DiscordVisionRejected("duplicate wrapper rejected its own repair")
+            return original_final(raw,*args,**kwargs)
+
+        service._final_prompt=final_with_duplicate_rejection
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(image,model="llamacpp::heretic-8b-q8_0")
+
+        self.assertEqual(len(result.prompt_variants),3)
+        self.assertTrue(all(350 <= len(item.split()) <= 850 for item in result.prompt_variants))
+        self.assertIn("faithful recreation",result.model)
+
     def test_deterministic_grounding_repair_keeps_evidence_and_restores_locked_pose(self):
         base_words=variant_prose(0,420).rstrip(".").split()
         base=(
