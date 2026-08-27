@@ -4,6 +4,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+import app as gateway_module
 from app import Config, PUBLIC_MODEL_ID, create_app, token_hash
 
 
@@ -106,6 +107,37 @@ class GatewayTests(unittest.TestCase):
         with gateway.connection() as db:
             entries = db.execute("SELECT entry_kind,delta_credits FROM credit_ledger WHERE discord_user_id=? ORDER BY entry_id", (row["discord_user_id"],)).fetchall()
         self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 120), ("image_reservation", -3), ("image_refund", 3)])
+
+    def test_unattached_or_empty_remote_worker_never_reserves_credits_or_waits_for_a_long_retry(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = Config(
+            gateway.config.database, "endpoint", "v" * 24, "", gateway.config.admin_key, 1200,
+            12 * 1024 * 1024, 30, gateway.config.discord_client_id, gateway.config.discord_client_secret,
+            gateway.config.discord_redirect_uri, gateway.config.license_signing_key,
+        )
+
+        class EmptyEndpoint:
+            id = 123
+            async def get_workers(self): return []
+
+        class EmptyClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): return False
+            async def get_endpoint(self, _name): return EmptyEndpoint()
+            async def find_workergroup_for_endpoint(self, _endpoint_id): return 456
+
+        original = gateway_module.CoroutineServerless
+        gateway_module.CoroutineServerless = lambda **_kwargs: EmptyClient()
+        try:
+            response = self.client.post(
+                "/v1/chat/completions", headers=self.headers(license, "f" * 64),
+                json={"model":"gemma4-26b-a4b-heretic-q3-k-l","messages":[{"role":"user","content":"x"}],"temperature":0,"max_tokens":32},
+            )
+        finally:
+            gateway_module.CoroutineServerless = original
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 120)
 
     def test_signed_settlement_webhook_credits_once(self):
         license = self.enroll()

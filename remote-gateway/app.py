@@ -238,6 +238,52 @@ class Gateway:
             and len(self.config.btcpay_webhook_secret) >= 32
         )
 
+    async def remote_readiness(self) -> dict[str, Any]:
+        """Return a secret-free snapshot of the actual serverless capacity.
+
+        A configured endpoint is not necessarily a usable endpoint: Vast can
+        retain the endpoint settings after a worker group/template disappears.
+        Check this before reserving image credits or accepting a long request.
+        """
+        configured = bool(self.config.vast_endpoint and len(self.config.vast_api_key) >= 24)
+        snapshot: dict[str, Any] = {
+            "configured": configured,
+            "sdk_available": CoroutineServerless is not None,
+            "workergroup_attached": False,
+            "worker_count": 0,
+            "ready_workers": 0,
+            "reason": "",
+        }
+        if not configured:
+            snapshot["reason"] = "Remote Vision is not configured."
+            return snapshot
+        if CoroutineServerless is None:
+            snapshot["reason"] = "Remote Vision SDK is unavailable."
+            return snapshot
+        try:
+            async with CoroutineServerless(api_key=self.config.vast_api_key) as client:
+                endpoint = await client.get_endpoint(self.config.vast_endpoint)
+                workergroup_id = await client.find_workergroup_for_endpoint(int(endpoint.id))
+                snapshot["workergroup_attached"] = bool(workergroup_id)
+                if not workergroup_id:
+                    snapshot["reason"] = "No serverless worker group is attached."
+                    return snapshot
+                workers = await endpoint.get_workers()
+        except Exception:
+            snapshot["reason"] = "Remote worker status could not be verified."
+            return snapshot
+        snapshot["worker_count"] = len(workers)
+        ready_states = {"READY", "IDLE", "LOADED", "RUNNING"}
+        snapshot["ready_workers"] = sum(
+            1 for worker in workers
+            if str(getattr(worker, "status", "")).upper() in ready_states
+        )
+        if not workers:
+            snapshot["reason"] = "No remote GPU worker is ready."
+        elif not snapshot["ready_workers"]:
+            snapshot["reason"] = "Remote GPU worker is still starting."
+        return snapshot
+
     @staticmethod
     def _account_balance(db: sqlite3.Connection, discord_user_id: str) -> int:
         row = db.execute("SELECT available_credits FROM credit_accounts WHERE discord_user_id=?", (discord_user_id,)).fetchone()
@@ -458,6 +504,11 @@ class Gateway:
             raise HTTPException(503, "The remote Vision service is not configured.")
         if CoroutineServerless is None:
             raise HTTPException(503, "The remote Vision SDK is not installed.")
+        readiness = await self.remote_readiness()
+        if not readiness["workergroup_attached"]:
+            raise HTTPException(503, "Remote GPU not available. Retry shortly.")
+        if readiness["worker_count"] < 1 or readiness["ready_workers"] < 1:
+            raise HTTPException(503, "Remote GPU not available. Retry shortly.")
         with self.connection() as db:
             now = int(time.time())
             self._release_stale_reservations(db, now)
@@ -465,7 +516,7 @@ class Gateway:
         try:
             async with CoroutineServerless(api_key=self.config.vast_api_key, default_request_timeout=self.config.request_timeout_seconds) as client:
                 endpoint = await client.get_endpoint(self.config.vast_endpoint)
-                result = await endpoint.request("/v1/chat/completions", payload.model_dump(exclude_none=True), cost=payload.max_tokens, timeout=self.config.request_timeout_seconds, retry=True)
+                result = await endpoint.request("/v1/chat/completions", payload.model_dump(exclude_none=True), cost=payload.max_tokens, timeout=self.config.request_timeout_seconds, retry=False)
         except Exception as exc:
             with self.connection() as db:
                 self._release_image_credits(db, license_row, request_id, int(time.time()))
@@ -590,10 +641,15 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
     app.state.gateway = gateway
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
+        remote = await gateway.remote_readiness()
         return {
             "ok": True, "model": PUBLIC_MODEL_ID,
-            "configured": bool(gateway.config.vast_endpoint and len(gateway.config.vast_api_key) >= 24),
+            "configured": remote["configured"],
+            "remote_ready": bool(remote["ready_workers"]),
+            "remote_worker_count": remote["worker_count"],
+            "remote_workergroup_attached": remote["workergroup_attached"],
+            "remote_status": remote["reason"] or "Remote GPU ready.",
             "discord_oauth_configured": gateway.oauth_configured(),
             "bitcoin_credits_configured": gateway.btcpay_configured(),
         }

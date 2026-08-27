@@ -18,11 +18,11 @@ class RemoteGatewayProviderError(RuntimeError):
 class RemoteGatewayProvider(VisionProvider):
     """OpenAI-compatible calls routed through the licensed KREA2 gateway."""
 
-    # A serverless worker can be replaced while an in-flight request is being
-    # routed. The request ID stays unchanged for this one replay, so the
-    # gateway can account for one image rather than two independent jobs.
-    TRANSIENT_ATTEMPTS = 2
-    TRANSIENT_RETRY_DELAY_SECONDS = 1.0
+    # The gateway is responsible for admitting a request only when its worker
+    # group is healthy.  Replaying a disconnected serverless request here made
+    # a lost worker look like a very slow model call and doubled the wait for
+    # the user.  Preserve one request/one accounting decision instead.
+    TRANSIENT_ATTEMPTS = 1
 
     def __init__(self, *, base_url: str, model: str, max_tokens: int, timeout: float, access: RemoteAccess, http: Any = requests):
         self.base_url = base_url.rstrip("/")
@@ -71,16 +71,9 @@ class RemoteGatewayProvider(VisionProvider):
                 body = response.json()
             except (requests.RequestException, ValueError) as exc:
                 transport_error = exc
-                if attempt + 1 < self.TRANSIENT_ATTEMPTS:
-                    time.sleep(self.TRANSIENT_RETRY_DELAY_SECONDS)
-                    continue
                 raise RemoteGatewayProviderError(
-                    "The remote Vision connection ended before a response was returned. "
-                    "It retried once; please retry the image."
+                    "Remote GPU not available. Retry shortly."
                 ) from exc
-            if response.status_code in {502, 503, 504} and attempt + 1 < self.TRANSIENT_ATTEMPTS:
-                time.sleep(self.TRANSIENT_RETRY_DELAY_SECONDS)
-                continue
             break
         if response is None:
             raise RemoteGatewayProviderError("The remote Vision gateway is unavailable.") from transport_error

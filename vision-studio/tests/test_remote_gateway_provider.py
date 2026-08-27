@@ -8,7 +8,7 @@ from PIL import Image
 import requests
 
 from app.models.remote_access import RemoteAccess
-from app.models.remote_gateway_provider import RemoteGatewayProvider
+from app.models.remote_gateway_provider import RemoteGatewayProvider, RemoteGatewayProviderError
 
 
 class _Response:
@@ -92,11 +92,11 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         self.assertEqual(request["headers"]["X-Krea2-Request-Id"], self.access.request_id)
         self.assertNotIn("json", request)
 
-    def test_retries_one_transient_gateway_disconnect_with_same_request_proof(self):
+    def test_fails_fast_on_a_gateway_disconnect_without_replaying_the_image(self):
         self.provider.http = _TransientHttp()
-        reply = self.provider.text("system", "describe", 0.1, 64)
-        self.assertEqual(reply.text, "reconnected result")
-        self.assertEqual(len(self.provider.http.calls), 2)
+        with self.assertRaisesRegex(RemoteGatewayProviderError, "Remote GPU not available"):
+            self.provider.text("system", "describe", 0.1, 64)
+        self.assertEqual(len(self.provider.http.calls), 1)
         for _, request in self.provider.http.calls:
             self.assertEqual(request["headers"]["X-Krea2-Request-Id"], self.access.request_id)
 
