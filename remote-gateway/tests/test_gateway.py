@@ -108,7 +108,7 @@ class GatewayTests(unittest.TestCase):
             entries = db.execute("SELECT entry_kind,delta_credits FROM credit_ledger WHERE discord_user_id=? ORDER BY entry_id", (row["discord_user_id"],)).fetchall()
         self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 120), ("image_reservation", -3), ("image_refund", 3)])
 
-    def test_unattached_or_empty_remote_worker_never_reserves_credits_or_waits_for_a_long_retry(self):
+    def test_sleeping_attached_worker_group_accepts_one_cold_start_request(self):
         license = self.enroll()
         gateway = self.app.state.gateway
         gateway.config = Config(
@@ -119,7 +119,11 @@ class GatewayTests(unittest.TestCase):
 
         class EmptyEndpoint:
             id = 123
+            request_calls = 0
             async def get_workers(self): return []
+            async def request(self, *_args, **_kwargs):
+                type(self).request_calls += 1
+                return {"id": "cold-start-ok", "choices": []}
 
         class EmptyClient:
             async def __aenter__(self): return self
@@ -136,8 +140,9 @@ class GatewayTests(unittest.TestCase):
             )
         finally:
             gateway_module.CoroutineServerless = original
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 120)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(EmptyEndpoint.request_calls, 1)
+        self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 117)
 
     def test_signed_settlement_webhook_credits_once(self):
         license = self.enroll()

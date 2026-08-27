@@ -250,6 +250,7 @@ class Gateway:
             "configured": configured,
             "sdk_available": CoroutineServerless is not None,
             "workergroup_attached": False,
+            "cold_start_eligible": False,
             "worker_count": 0,
             "ready_workers": 0,
             "reason": "",
@@ -265,6 +266,10 @@ class Gateway:
                 endpoint = await client.get_endpoint(self.config.vast_endpoint)
                 workergroup_id = await client.find_workergroup_for_endpoint(int(endpoint.id))
                 snapshot["workergroup_attached"] = bool(workergroup_id)
+                # A Serverless worker group is allowed to scale to zero.  An
+                # empty worker list therefore means "asleep", not necessarily
+                # "broken": submitting a request is what wakes a cold worker.
+                snapshot["cold_start_eligible"] = bool(workergroup_id)
                 if not workergroup_id:
                     snapshot["reason"] = "No serverless worker group is attached."
                     return snapshot
@@ -279,7 +284,7 @@ class Gateway:
             if str(getattr(worker, "status", "")).upper() in ready_states
         )
         if not workers:
-            snapshot["reason"] = "No remote GPU worker is ready."
+            snapshot["reason"] = "Remote GPU is asleep; a cold worker can start on demand."
         elif not snapshot["ready_workers"]:
             snapshot["reason"] = "Remote GPU worker is still starting."
         return snapshot
@@ -507,8 +512,9 @@ class Gateway:
         readiness = await self.remote_readiness()
         if not readiness["workergroup_attached"]:
             raise HTTPException(503, "Remote GPU not available. Retry shortly.")
-        if readiness["worker_count"] < 1 or readiness["ready_workers"] < 1:
-            raise HTTPException(503, "Remote GPU not available. Retry shortly.")
+        # Do not reject an attached Serverless group merely because it scaled
+        # to zero after its idle window. Vast needs the request itself to wake
+        # a cold worker. Credits are still refunded if that request fails.
         with self.connection() as db:
             now = int(time.time())
             self._release_stale_reservations(db, now)
@@ -647,6 +653,7 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             "ok": True, "model": PUBLIC_MODEL_ID,
             "configured": remote["configured"],
             "remote_ready": bool(remote["ready_workers"]),
+            "remote_cold_start_eligible": bool(remote["cold_start_eligible"]),
             "remote_worker_count": remote["worker_count"],
             "remote_workergroup_attached": remote["workergroup_attached"],
             "remote_status": remote["reason"] or "Remote GPU ready.",
