@@ -33,7 +33,7 @@ vast_serverless:
   enabled: false
   endpoint: ""
   python_exe: '~/AppData/Local/Krea2Vision/vastsdk/Scripts/python.exe'
-  request_timeout_seconds: 1200
+  request_timeout_seconds: 90
   # This deployment is intentionally pinned to one exact model. It must never
   # silently fall back to a different local or remote model.
   model_id: vast::gemma4-26b-a4b-heretic-q3_k_l

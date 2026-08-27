@@ -23,12 +23,17 @@ class RemoteGatewayProvider(VisionProvider):
     # a lost worker look like a very slow model call and doubled the wait for
     # the user.  Preserve one request/one accounting decision instead.
     TRANSIENT_ATTEMPTS = 1
+    # A cold serverless worker needs a little time to wake, but a multi-minute
+    # socket wait is not a useful user experience and prevents the gateway from
+    # recovering a lost worker.  This is a per-call ceiling; the complete
+    # evidence pipeline can still make its normal series of bounded calls.
+    MAX_REQUEST_TIMEOUT_SECONDS = 120.0
 
     def __init__(self, *, base_url: str, model: str, max_tokens: int, timeout: float, access: RemoteAccess, http: Any = requests):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.max_tokens = int(max_tokens)
-        self.timeout = float(timeout)
+        self.timeout = min(float(timeout), self.MAX_REQUEST_TIMEOUT_SECONDS)
         self.access = access
         self.http = http
         try:
@@ -37,7 +42,7 @@ class RemoteGatewayProvider(VisionProvider):
             raise RemoteGatewayProviderError(str(exc)) from exc
         if not self.base_url.startswith("https://"):
             raise RemoteGatewayProviderError("Remote Vision gateway must use HTTPS.")
-        if not 1 <= self.max_tokens <= 2048 or not 30 <= self.timeout <= 3600:
+        if not 1 <= self.max_tokens <= 2048 or not 30 <= self.timeout <= self.MAX_REQUEST_TIMEOUT_SECONDS:
             raise RemoteGatewayProviderError("Remote Vision configuration is invalid.")
 
     @staticmethod

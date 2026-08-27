@@ -15,6 +15,7 @@ from app.models import factory as factory_module
 from app.models.factory import provider_for
 from app.models.remote_access import RemoteAccess
 from app.models.remote_gateway_provider import RemoteGatewayProvider
+from app.models.remote_gateway_provider import RemoteGatewayProvider
 from app.models.vast_serverless_provider import (
     VastServerlessProvider,
     VastServerlessProviderError,
@@ -97,6 +98,26 @@ class VastServerlessProviderTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(VastServerlessProviderError, "no worker available"):
                 provider.text("system", "prompt", 0.1)
+
+    def test_remote_gateway_caps_a_stuck_worker_wait(self):
+        access_kwargs={
+            "license_id":"lic_" + "x" * 18,
+            "license_token":"t" * 48,
+            "request_id":"a" * 64,
+        }
+        if "discord_user_id" in RemoteAccess.__dataclass_fields__:
+            access_kwargs.update(
+                discord_user_id="123456789012345678",
+                discord_username="test-user",
+            )
+        provider = RemoteGatewayProvider(
+            base_url="https://vision.example.test",
+            model="gemma4-26b-a4b-heretic-q3-k-l",
+            max_tokens=2048,
+            timeout=2700,
+            access=RemoteAccess(**access_kwargs),
+        )
+        self.assertEqual(provider.timeout, 120.0)
 
     def test_catalog_exposes_only_fully_configured_opt_in_remote_model(self):
         with tempfile.TemporaryDirectory() as directory:
