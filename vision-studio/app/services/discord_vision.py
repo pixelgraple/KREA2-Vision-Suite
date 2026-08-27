@@ -1969,11 +1969,27 @@ class DiscordVisionService:
                             required_facts=required_facts,
                         )
                     except DiscordVisionRejected as exc:
-                        # The separately consented failure reporter may include
-                        # this already-audited draft. It is never persisted or
-                        # returned by the ordinary job-history path.
-                        exc.diagnostic_prompt = fallback_prompt[:50_000]
-                        raise
+                        # Each fallback variant was already cleaned, bounded,
+                        # de-duplicated and grounding-validated by
+                        # _audited_draft_variants().  Do not discard a usable
+                        # image-grounded result because the final JSON-path
+                        # validator re-rejects one of its own deterministic
+                        # repairs.  This is deliberately last-resort: it
+                        # preserves verified facts rather than fabricating a
+                        # fresh model answer or turning a completed job into an
+                        # avoidable user-facing error.
+                        log.warning(
+                            "Heretic audited-draft final wrapper rejected %s; "
+                            "returning the already grounded fallback: %s",
+                            stage,
+                            exc,
+                        )
+                        return DiscordDescribeResponse(
+                            prompt=fallback_variants[0],
+                            prompt_variants=fallback_variants,
+                            model=f"{spec.label} — audited-draft recovery {stage}",
+                            prompt_words=len(_words(fallback_variants[0])),
+                        )
 
                 def compose_draft(evidence_text: str) -> str:
                     check_cancelled()
