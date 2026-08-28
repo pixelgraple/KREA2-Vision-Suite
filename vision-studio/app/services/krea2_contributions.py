@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 import unicodedata
 from dataclasses import dataclass
+from time import sleep as _retry_sleep
 from typing import Any
 
 import requests
@@ -134,7 +134,7 @@ class Krea2PromptContributor:
             except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = f"Seedframe contribution transport failed ({type(exc).__name__})."
             if attempt + 1 < self.attempts:
-                time.sleep(0.25 * (attempt + 1))
+                _retry_sleep(0.25 * (attempt + 1))
         raise Krea2ContributionError(last_error)
 
     def submit(self, result: Any) -> ContributionReceipt:

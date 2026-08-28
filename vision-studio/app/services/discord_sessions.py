@@ -4,8 +4,8 @@ import hashlib
 import hmac
 import secrets
 import threading
-import time
 from dataclasses import dataclass
+from time import monotonic as _session_monotonic
 
 from ..models.remote_access import RemoteAccess
 
@@ -66,7 +66,7 @@ class DiscordVisionSessionStore:
         elif remote_access is not None:
             raise ValueError("Remote KREA2 access may only be used with the Online API model.")
         token = secrets.token_urlsafe(48)
-        now = time.monotonic()
+        now = _session_monotonic()
         with self._lock:
             self._prune_locked(now)
             self._sessions[self._digest(token)] = DiscordVisionSession(
@@ -90,7 +90,7 @@ class DiscordVisionSessionStore:
         supplied = str(token or "").strip()
         if len(supplied) < 32 or len(supplied) > 512:
             return None
-        now = time.monotonic()
+        now = _session_monotonic()
         with self._lock:
             self._prune_locked(now)
             session = self._sessions.pop(self._digest(supplied), None)

@@ -113,7 +113,7 @@ class Krea2ContributionTests(unittest.TestCase):
             }),
         ])
         contributor = Krea2PromptContributor(TOKEN, http=http, attempts=2)
-        with patch("app.services.krea2_contributions.time.sleep") as sleep:
+        with patch("app.services.krea2_contributions._retry_sleep") as sleep:
             receipt = contributor.submit(result)
         self.assertTrue(receipt.duplicate)
         self.assertEqual(len(http.calls), 2)

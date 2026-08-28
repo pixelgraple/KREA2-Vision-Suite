@@ -35,7 +35,7 @@ class DiscordVisionSessionStoreTests(unittest.TestCase):
         self.assertFalse(self.store.consume(token, self.key, self.version, self.model))
 
     def test_expired_session_is_rejected(self):
-        with patch("app.services.discord_sessions.time.monotonic", side_effect=[10.0, 41.0]):
+        with patch("app.services.discord_sessions._session_monotonic", side_effect=[10.0, 41.0]):
             token, _ = self.store.issue(self.key, self.version, self.model, self._remote_access())
             self.assertFalse(self.store.consume(token, self.key, self.version, self.model))
 
