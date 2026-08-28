@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Adds a complete Qwen 3.8 Prompt Changer guide covering natural-language workflows, precise edit patterns, multi-turn behavior, image-versus-text limitations, one-credit settlement and refunds, privacy, request validation, cold starts, troubleshooting, and the authenticated technical contract.
+- Makes the Prompt Changer visible in the main README and links the BetterDiscord documentation to the full guide.
+
 ## 0.14.6 - 2026-08-28
 
 - Adds visible Windows, Linux, and macOS support badges plus an explicit per-feature platform matrix.

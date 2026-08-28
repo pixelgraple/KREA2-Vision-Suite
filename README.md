@@ -31,6 +31,7 @@ Online inference means the selected image and bounded request metadata must leav
 - [What it does](#what-it-does)
 - [Platform support](#platform-support)
 - [Download and install](#download-and-install)
+- [Qwen 3.8 Prompt Changer](#qwen-38-prompt-changer)
 - [How the Vision pipeline works](#how-the-vision-pipeline-works)
 - [How the three prompts are written](#how-the-three-prompts-are-written)
 - [Optional eight-example KREA2 guidance](#optional-eight-example-krea2-guidance)
@@ -48,6 +49,7 @@ Online inference means the selected image and bounded request metadata must leav
 - Adds an **Interrogate** tab for uploading an image manually.
 - Queues multiple jobs and reports queued, running, completed, and failed work.
 - Shows the exact requested and completed model for every result.
+- Includes a conversational **Qwen 3.8 Prompt Changer** that can revise any part of an existing prompt through natural-language instructions.
 - Produces three different prompts that reconstruct the same visible image with balanced, subject/pose, and scene/light emphasis.
 - Audits subject count, pose, visible anatomy, clothing, expression, camera placement, lighting, and scene layout before returning prompts.
 - Supports local llama.cpp multimodal models and an optional operator-configured Vast Serverless worker.
@@ -107,6 +109,16 @@ chmod +x installer/Install-Krea2VisionSuite.sh installer/Start-Krea2VisionSuite.
 The portable installer creates an isolated Python environment, installs the generated plugin in the current user's BetterDiscord plugin directory, creates matching private loopback credentials, selects V2 Online API by default, starts port `7870`, and verifies its health. It does not require a local GPU or model download. Restart Discord completely after installation.
 
 See [Linux and macOS installation](docs/INSTALL_LINUX_MACOS.md) for default paths, local-inference options, limitations, startup, and manual updates.
+
+## Qwen 3.8 Prompt Changer
+
+The Discord-native **Qwen Prompt Editor** lets users paste or open a complete KREA2 prompt and change any part of it with ordinary language. Ask it to correct a pose, preserve one foot on a skateboard, redesign an outfit, rotate the camera, change the lighting, expand texture detail, shorten repetitive wording, or coordinate several changes at once. Each reply is a complete revised prompt, and the conversation can continue across several edits.
+
+The editor is available from the KREA2 Vision header, completed Vision results, Prompt History, and locally extracted metadata/YAML prompts. It uses the pinned `heretic-3.8-q4-cloud` model and costs exactly **1 Online API credit per successful reply**. Opening, typing, copying, selecting a revision, or starting a new chat is free; failed, cancelled, invalid, or timed-out requests refund the reservation automatically.
+
+Qwen edits text only—it does not receive the source image. Users should explicitly correct any image fact the original prompt got wrong. Conversation content is forwarded for inference but is not stored in the KREA2 gateway database; the recoverable draft lives only in the current Discord session.
+
+See the complete [Qwen 3.8 Prompt Changer guide](docs/QWEN_38_PROMPT_CHANGER.md) for workflows, dozens of editable attributes, example instructions, multi-turn usage, credit behavior, privacy, reliability controls, cold-start behavior, troubleshooting, the technical request contract, and the difference between Prompt Changer and Vision interrogation.
 
 ## How the Vision pipeline works
 
