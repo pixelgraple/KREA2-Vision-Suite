@@ -77,6 +77,7 @@ from app.services.discord_vision import (
     _has_positive_visible_anatomy_evidence,
     _needs_anatomy_verification,
     _repair_grounding_locked_prompt,
+    _v2_pose_locked_payload,
     _validate_required_grounding,
     _words,
     dataset_guidance_receipt,
@@ -1422,8 +1423,11 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertNotIn("This balanced reconstruction",result.prompt)
         self.assertIn("V2 Direct Fidelity",result.model)
         self.assertTrue(any("V2 Direct Fidelity" in stage for stage in stages))
-        self.assertLess(len(V2_DIRECT_FIDELITY_SYSTEM),5400)
+        self.assertLess(len(V2_DIRECT_FIDELITY_SYSTEM),7200)
         self.assertIn("first 80 words",V2_DIRECT_FIDELITY_SYSTEM)
+        self.assertIn("pose_check",V2_DIRECT_FIDELITY_SYSTEM)
+        self.assertIn("sitting requires visibly supported pelvis or buttocks",V2_DIRECT_FIDELITY_SYSTEM.lower())
+        self.assertIn("skateboard",V2_DIRECT_FIDELITY_SYSTEM.lower())
         self.assertIn("broad apparent adult age range",V2_DIRECT_FIDELITY_SYSTEM)
         self.assertIn("photographic imperfections",V2_DIRECT_FIDELITY_SYSTEM)
         self.assertIn("depth of field",V2_DIRECT_FIDELITY_SYSTEM)
@@ -1449,6 +1453,113 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertEqual(reproducibility["detail_crops"],1)
         self.assertEqual(reproducibility["image_audits"],0)
         self.assertTrue(reproducibility["contact_probe"])
+
+    def test_v2_pose_ledger_corrects_false_skateboard_sitting_without_another_call(self):
+        raw=json.dumps({
+            "pose_check":{
+                "subject_count":1,
+                "primary_posture":"sitting",
+                "pelvis_support":"not_supported",
+                "pelvis_support_surface":"none",
+                "left_foot_weight_bearing":True,
+                "left_foot_surface":"the skateboard deck",
+                "right_foot_weight_bearing":True,
+                "right_foot_surface":"the asphalt pavement",
+                "knee_flexion":"slight",
+                "hip_height_relative_to_knees":"above",
+                "other_weight_bearing_support":"none",
+                "camera_view":"a steep overhead selfie angle",
+            },
+            "prompt":"A single adult woman is sitting on a skateboard with bent knees. "+prose(180),
+        })
+        locked=_v2_pose_locked_payload(raw,False)
+        prompt=json.loads(locked)["prompt"]
+        self.assertIn("standing and balancing",prompt)
+        self.assertIn("skateboard deck",prompt)
+        self.assertIn("asphalt pavement",prompt)
+        self.assertIn("pelvis and buttocks are unsupported",prompt)
+        self.assertIn("steep overhead selfie angle",prompt)
+        self.assertNotRegex(prompt.lower(),r"\b(?:sitting|seated|sits)\b")
+        validated=DiscordVisionService._v2_direct_prompt(locked)
+        self.assertGreaterEqual(len(_words(validated)),160)
+        self.assertLessEqual(len(_words(validated)),520)
+
+    def test_v2_pose_ledger_preserves_visibly_supported_sitting(self):
+        raw=json.dumps({
+            "pose_check":{
+                "subject_count":1,
+                "primary_posture":"sitting",
+                "pelvis_support":"supported",
+                "pelvis_support_surface":"a wooden chair seat",
+                "left_foot_weight_bearing":True,
+                "left_foot_surface":"the floor",
+                "right_foot_weight_bearing":True,
+                "right_foot_surface":"the floor",
+                "knee_flexion":"deep",
+                "hip_height_relative_to_knees":"level",
+                "other_weight_bearing_support":"none",
+                "camera_view":"eye level",
+            },
+            "prompt":"A single adult woman is sitting upright on a wooden chair. "+prose(180),
+        })
+        prompt=json.loads(_v2_pose_locked_payload(raw,False))["prompt"]
+        self.assertIn("sitting",prompt.lower())
+        self.assertIn("pelvis or buttocks visibly supported by a wooden chair seat",prompt)
+        self.assertNotIn("standing and balancing",prompt)
+
+    def test_v2_pose_ledger_rejects_same_skateboard_as_pelvis_and_foot_support(self):
+        raw=json.dumps({
+            "pose_check":{
+                "subject_count":1,
+                "primary_posture":"sitting",
+                "pelvis_support":"supported",
+                "pelvis_support_surface":"the skateboard deck",
+                "left_foot_weight_bearing":True,
+                "left_foot_surface":"the skateboard deck",
+                "right_foot_weight_bearing":True,
+                "right_foot_surface":"the pavement",
+                "knee_flexion":"slight",
+                "hip_height_relative_to_knees":"above",
+                "other_weight_bearing_support":"none",
+                "camera_view":"a steep overhead selfie angle",
+            },
+            "prompt":"A single adult woman is seated on the skateboard. "+prose(180),
+        })
+        prompt=json.loads(_v2_pose_locked_payload(raw,False))["prompt"]
+        self.assertIn("standing and balancing",prompt)
+        self.assertNotRegex(prompt.lower(),r"\b(?:sitting|seated|sits)\b")
+
+    def test_v2_pose_ledger_corrects_all_three_variants(self):
+        raw=json.dumps({
+            "pose_check":{
+                "subject_count":1,
+                "primary_posture":"sitting",
+                "pelvis_support":"not_supported",
+                "pelvis_support_surface":"none",
+                "left_foot_weight_bearing":True,
+                "left_foot_surface":"a skateboard deck",
+                "right_foot_weight_bearing":True,
+                "right_foot_surface":"the pavement",
+                "knee_flexion":"mixed",
+                "hip_height_relative_to_knees":"above",
+                "other_weight_bearing_support":"none",
+                "camera_view":"a high overhead view",
+            },
+            "prompt_variants":[
+                "A single adult woman is seated on a skateboard. "+prose(180),
+                "The woman sits down on a skateboard. "+prose(180),
+                "A person is sitting on the board. "+prose(180),
+            ],
+        })
+        variants=json.loads(_v2_pose_locked_payload(raw,True))["prompt_variants"]
+        self.assertEqual(len(variants),3)
+        for prompt in variants:
+            self.assertIn("standing and balancing",prompt)
+            self.assertNotRegex(prompt.lower(),r"\b(?:sitting|seated|sits)\b")
+
+    def test_v2_pose_ledger_keeps_legacy_prompt_only_response_compatible(self):
+        raw=json.dumps({"prompt":"A single adult woman stands on pavement. "+prose(180)})
+        self.assertEqual(_v2_pose_locked_payload(raw,False),raw)
 
     def test_v2_compatibility_variants_leave_canonical_prompt_unchanged(self):
         draft=prose(400)

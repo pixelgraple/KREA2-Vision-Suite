@@ -187,9 +187,9 @@ HERETIC_COMPOSER_SYSTEM = f"""You write evidence-grounded KREA2 positive prompts
 
 HERETIC_SINGLE_COMPOSER_SYSTEM = f"""You write one evidence-grounded KREA2 positive prompt for faithful reference-image reconstruction. Return strict JSON with exactly one string key named prompt containing one cohesive English natural-language paragraph. Target 450-550 words and never finish below 400 words; the accepted hard range is 350-850 words. Preserve every supported non-negotiable fact, exact subject count, stable Subject A/B/C mapping, presentation, directly visible anatomy, actor/action/target roles, pose geometry, wardrobe, props, spatial layout, lighting and colors. Apply this mandatory final-detail checklist: {FINAL_DETAIL_CHECKLIST} Also cover location cues, objects, focus, lighting, shadows, reflections, materials, textures, imperfections, atmosphere and color treatment. Do not turn absent or uncertain items into claims, apply an age-status classification, identify a real person, or add facts absent from the evidence. An explicit uploader-supplied identity or role note may provide identity labels and pronouns, but it never overrides pixel-grounded anatomy, pose, participant mapping or contact geometry. Never emit LoRA, model, adapter, embedding, or any other angle-bracketed tag; omit it entirely. Do not include headings, lists, a negative prompt, refusal language, analysis commentary, checklist commentary or generic quality-spam."""
 
-V2_DIRECT_FIDELITY_SYSTEM = """You are the V2 Direct Fidelity observer for KREA2 reference-image reconstruction. Inspect the supplied image itself and return strict JSON with exactly one string key named prompt. The value must be one cohesive English paragraph of roughly 260-440 words. Its purpose is to reproduce this particular frame, not to demonstrate how many visual categories you know.
+V2_DIRECT_FIDELITY_SYSTEM = """You are the V2 Direct Fidelity observer for KREA2 reference-image reconstruction. Inspect the supplied image itself and return strict JSON with exactly two keys named pose_check and prompt. The prompt value must be one cohesive English paragraph of roughly 260-440 words. The pose_check value must be an object with exactly these keys: subject_count (integer), primary_posture (one of standing, sitting, kneeling, crouching, squatting, on_all_fours, reclining, lying, visually_uncertain), pelvis_support (one of supported, not_supported, not_visible), pelvis_support_surface (a short literal surface name or none), left_foot_weight_bearing (true, false, or null when not visible), left_foot_surface (a short literal surface name or not_visible), right_foot_weight_bearing (true, false, or null when not visible), right_foot_surface (a short literal surface name or not_visible), knee_flexion (one of straight, slight, deep, mixed, not_visible), hip_height_relative_to_knees (one of above, level, below, not_visible), other_weight_bearing_support (a short literal body-part-to-surface statement or none), and camera_view (a short literal viewing-angle statement). Fill pose_check from visible pixels before writing the prompt; it is a compact support ledger, not an explanation. Its purpose is to prevent a bent or foreshortened standing body from becoming seated and to reproduce this particular frame, not to demonstrate how many visual categories you know.
 
-Put decisive facts first. Within the first 80 words state visible subject count, defining action, exact physical contacts, primary whole-body pose or support state, and camera-relative view. Solve geometry joint by joint with anatomical left and right kept separate: torso lean/bend/twist, spine, pelvis and hips; neck bend; head yaw/pitch/roll and gaze; shoulders; each arm, elbow, wrist, hand and visible finger; each thigh, knee, calf, ankle, foot and visible toe; stance, overlap, foreshortening, weight distribution and support contacts. Call the body standing, sitting, kneeling, crouching, squatting, reclining, lying, on all fours, or visually uncertain only when visible support geometry proves it. Stop at crop or occlusion. Bind every contact to the exact actor body part, target region and side; never move it to a familiar adjacent landmark. Never weaken touching, gripping, kissing, licking, resting, bracing or weight-bearing into near, close or positioned. State narrow uncertainty once when needed.
+Put decisive facts first. Within the first 80 words state visible subject count, defining action, exact physical contacts, primary whole-body pose or support state, and camera-relative view. Solve geometry joint by joint with anatomical left and right kept separate: torso lean/bend/twist, spine, pelvis and hips; neck bend; head yaw/pitch/roll and gaze; shoulders; each arm, elbow, wrist, hand and visible finger; each thigh, knee, calf, ankle, foot and visible toe; stance, overlap, foreshortening, weight distribution and support contacts. Call the body standing, sitting, kneeling, crouching, squatting, reclining, lying, on all fours, or visually uncertain only when visible support geometry proves it. Sitting requires visibly supported pelvis or buttocks and the exact support surface; bent knees, a low camera projection, or a board beneath the feet never proves sitting. Standing includes upright or bent-knee balance when one or both feet carry the body and the pelvis is unsupported. When a skateboard, board, step, pedal or other prop is under only one foot, explicitly map that foot to the prop and the other foot to its own surface; never collapse this into sitting on the prop. Make pose_check and the opening prompt sentence agree. Stop at crop or occlusion. Bind every contact to the exact actor body part, target region and side; never move it to a familiar adjacent landmark. Never weaken touching, gripping, kissing, licking, resting, bracing or weight-bearing into near, close or positioned. State narrow uncertainty once when needed.
 
 Before appearance, lock the interaction topology. Count every visible or partially occluded adult; a mostly hidden body remains a subject. Identify the defining action, actor and target; camera-relative and partner-relative facing; above/below and front/behind order; torso and pelvic orientation and alignment; weight support; and every visible thigh, knee, leg, arm, hand and body contact. When unmistakably adult participants are clearly engaged in sexual activity, state that defining activity directly and neutrally in the first sentence. Uncertainty about visible penetration applies only to penetration and must never erase otherwise unmistakable sexual activity. If the geometry clearly establishes a woman-on-top sexual position while the genital junction is occluded, say the adults are engaged in a woman-on-top sexual position and preserve her straddle, pelvic alignment, support and camera-facing orientation without claiming visible penetration. Never downgrade clear sexual activity into a solo pose, generic intimacy or sitting near another person. Expression never overrides the defining action. Before returning, reject any prompt that changes multi-person sexual activity into a solo or nonsexual scene.
 
@@ -198,8 +198,8 @@ Then record broad apparent adult age range only when visually clear, never an ex
 Describe adult nudity or intimate contact neutrally and literally when it is directly visible. If any depicted person is not unmistakably adult-presenting, return an empty prompt. Never identify a real person, infer hidden anatomy or off-frame details, guess relationships, invent camera metadata, beautify skin, or add cinematic mood, atmosphere, quality claims, negative-prompt terms, LoRA tags, generic reconstruction commentary, headings or lists. Omit unsupported categories completely instead of guessing. Do not explain the image or your process. End only after the defining action, pose, appearance, wardrobe or visible anatomy, spatial arrangement, scene, camera, lighting, textures, colors and visible photographic character have been preserved. Return only the required finished-prompt JSON."""
 
 V2_DIRECT_FIDELITY_TRIPLE_SYSTEM = V2_DIRECT_FIDELITY_SYSTEM.replace(
-    "return strict JSON with exactly one string key named prompt. The value must be one cohesive English paragraph of roughly 260-440 words.",
-    "return strict JSON with exactly one key named prompt_variants. Its value must be an array of exactly three distinct cohesive English paragraphs of roughly 260-440 words each.",
+    "return strict JSON with exactly two keys named pose_check and prompt. The prompt value must be one cohesive English paragraph of roughly 260-440 words.",
+    "return strict JSON with exactly two keys named pose_check and prompt_variants. The prompt_variants value must be an array of exactly three distinct cohesive English paragraphs of roughly 260-440 words each.",
 ) + """
 
 Apply every grounding rule independently to all three prompts. Every prompt must reproduce the same visible frame without contradiction or invention. Prompt 1 is balanced and literal. Prompt 2 changes wording and organization while putting subject appearance, exact pose, action and contacts first. Prompt 3 changes wording and organization while putting scene geometry, camera angle, framing, lighting, cast shadows, focus, materials and colors first. These are three genuine writing variations from the same direct image observation, not alternate scenes and not appended boilerplate. Return no key other than prompt_variants."""
@@ -1272,6 +1272,202 @@ def _single_prompt_candidate(raw: str) -> str:
     )
 
 
+V2_POSE_VALUES = frozenset(
+    {"standing", "sitting", "kneeling", "crouching", "squatting", "on_all_fours", "reclining", "lying", "visually_uncertain"}
+)
+V2_UNKNOWN_SUPPORT = frozenset({"", "none", "not visible", "not_visible", "unknown", "uncertain", "not applicable", "n/a"})
+
+
+def _v2_short_fact(value: object, maximum: int = 120) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:maximum]
+
+
+def _v2_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().casefold()
+    if normalized in {"true", "yes", "1"}:
+        return True
+    if normalized in {"false", "no", "0"}:
+        return False
+    return None
+
+
+def _v2_pose_check(value: object) -> dict[str, object] | None:
+    """Normalize the model's compact same-call support ledger without trusting free-form data."""
+
+    if not isinstance(value, dict):
+        return None
+    posture = _v2_short_fact(value.get("primary_posture"), 32).casefold().replace(" ", "_")
+    if posture not in V2_POSE_VALUES:
+        return None
+    pelvis_support = _v2_short_fact(value.get("pelvis_support"), 32).casefold().replace(" ", "_")
+    if pelvis_support not in {"supported", "not_supported", "not_visible"}:
+        pelvis_support = "not_visible"
+    try:
+        subject_count = max(0, min(12, int(value.get("subject_count"))))
+    except (TypeError, ValueError):
+        subject_count = 0
+    return {
+        "subject_count": subject_count,
+        "primary_posture": posture,
+        "pelvis_support": pelvis_support,
+        "pelvis_support_surface": _v2_short_fact(value.get("pelvis_support_surface")),
+        "left_foot_weight_bearing": _v2_optional_bool(value.get("left_foot_weight_bearing")),
+        "left_foot_surface": _v2_short_fact(value.get("left_foot_surface")),
+        "right_foot_weight_bearing": _v2_optional_bool(value.get("right_foot_weight_bearing")),
+        "right_foot_surface": _v2_short_fact(value.get("right_foot_surface")),
+        "knee_flexion": _v2_short_fact(value.get("knee_flexion"), 24).casefold().replace(" ", "_"),
+        "hip_height_relative_to_knees": _v2_short_fact(value.get("hip_height_relative_to_knees"), 24).casefold().replace(" ", "_"),
+        "other_weight_bearing_support": _v2_short_fact(value.get("other_weight_bearing_support")),
+        "camera_view": _v2_short_fact(value.get("camera_view")),
+    }
+
+
+def _v2_surface_is_known(value: object) -> bool:
+    return _v2_short_fact(value).casefold() not in V2_UNKNOWN_SUPPORT
+
+
+def _v2_resolved_posture(check: dict[str, object]) -> str:
+    """Resolve contradictions using visible support mechanics from the same model call."""
+
+    posture = str(check["primary_posture"])
+    pelvis = str(check["pelvis_support"])
+    left_support = check["left_foot_weight_bearing"] is True and _v2_surface_is_known(check["left_foot_surface"])
+    right_support = check["right_foot_weight_bearing"] is True and _v2_surface_is_known(check["right_foot_surface"])
+    foot_supports = int(left_support) + int(right_support)
+    knee_flexion = str(check["knee_flexion"])
+    hip_height = str(check["hip_height_relative_to_knees"])
+    pelvis_surface = _v2_short_fact(check["pelvis_support_surface"])
+    pelvis_surface_known = _v2_surface_is_known(pelvis_surface)
+    feet = [_v2_short_fact(check["left_foot_surface"]), _v2_short_fact(check["right_foot_surface"])]
+    pelvis_matches_foot_prop = bool(
+        pelvis_surface_known
+        and re.search(r"\b(?:skateboard|board|deck|step|pedal)\b", pelvis_surface, re.I)
+        and any(
+            bearing is True and surface.casefold() == pelvis_surface.casefold()
+            for surface, bearing in zip(
+                feet,
+                (check["left_foot_weight_bearing"], check["right_foot_weight_bearing"]),
+            )
+        )
+    )
+    standing_mechanics = (
+        bool(foot_supports)
+        and knee_flexion in {"straight", "slight", "mixed"}
+        and hip_height in {"above", "not_visible"}
+    )
+    if posture == "sitting" and (pelvis != "supported" or not pelvis_surface_known or pelvis_matches_foot_prop):
+        if standing_mechanics:
+            return "standing"
+        return "visually_uncertain"
+    if posture == "standing" and pelvis == "supported":
+        return "visually_uncertain"
+    if posture == "standing" and foot_supports == 0 and not _v2_surface_is_known(check["other_weight_bearing_support"]):
+        return "visually_uncertain"
+    return posture
+
+
+def _v2_pose_lead(check: dict[str, object], posture: str) -> str:
+    camera = _v2_short_fact(check.get("camera_view"))
+    camera_clause = f", viewed from {camera}" if _v2_surface_is_known(camera) else ""
+    if posture == "visually_uncertain":
+        return f"The primary subject's whole-body support state is visually uncertain from the visible crop{camera_clause}."
+    if posture == "standing":
+        left = _v2_short_fact(check.get("left_foot_surface"))
+        right = _v2_short_fact(check.get("right_foot_surface"))
+        known = [surface for surface, bearing in (
+            (left, check.get("left_foot_weight_bearing")),
+            (right, check.get("right_foot_weight_bearing")),
+        ) if bearing is True and _v2_surface_is_known(surface)]
+        board = next((item for item in known if re.search(r"\b(?:skateboard|board|deck)\b", item, re.I)), "")
+        ground = next((item for item in known if re.search(r"\b(?:pavement|asphalt|road|ground|floor|sidewalk)\b", item, re.I)), "")
+        if board and ground and board != ground:
+            return f"The primary subject is standing and balancing with one foot visibly weight-bearing on {board} and the other visibly weight-bearing on {ground}; the pelvis and buttocks are unsupported{camera_clause}."
+        if len(known) == 2:
+            return f"The primary subject is standing with the left foot visibly weight-bearing on {known[0]} and the right foot visibly weight-bearing on {known[1]}; the pelvis and buttocks are unsupported{camera_clause}."
+        if len(known) == 1:
+            return f"The primary subject is standing and balancing with one visible foot weight-bearing on {known[0]}; the pelvis and buttocks are unsupported{camera_clause}."
+        return f"The primary subject is standing with visible weight-bearing support and no seated pelvic support{camera_clause}."
+    if posture == "sitting":
+        surface = _v2_short_fact(check.get("pelvis_support_surface"))
+        surface = surface if _v2_surface_is_known(surface) else "a visible support surface"
+        return f"The primary subject is sitting with her pelvis or buttocks visibly supported by {surface}{camera_clause}."
+    phrase = posture.replace("_", " ")
+    return f"The primary subject is {phrase} with the visible support geometry preserved{camera_clause}."
+
+
+def _v2_replace_single_subject_posture(prompt: str, resolved: str) -> str:
+    """Remove a contradictory primary pose while leaving all non-pose visual detail intact."""
+
+    if resolved == "visually_uncertain":
+        progressive = "in a visually uncertain support posture"
+        finite = "has a visually uncertain support posture"
+    elif resolved == "on_all_fours":
+        progressive = "on all fours"
+        finite = "is on all fours"
+    else:
+        progressive = resolved
+        finite = {
+            "standing": "stands",
+            "sitting": "sits",
+            "kneeling": "kneels",
+            "crouching": "crouches",
+            "squatting": "squats",
+            "reclining": "reclines",
+            "lying": "lies",
+        }[resolved]
+    categorical = r"(?:standing|sitting|seated|kneeling|crouching|squatting|on all fours|reclining|lying)"
+    finite_forms = r"(?:stands|sits|kneels|crouches|squats|reclines|lies)"
+    sentences = re.split(r"(?<=[.!?])\s+", prompt)
+    output: list[str] = []
+    subject_re = re.compile(rf"\b{PRIMARY_SUBJECT_NOUN}\b", re.I)
+    for sentence in sentences:
+        if subject_re.search(sentence):
+            sentence = re.sub(r"\bsits?\s+down\b", finite, sentence, flags=re.I)
+            sentence = re.sub(rf"\bis\s+{categorical}\b", f"is {progressive}", sentence, flags=re.I)
+            sentence = re.sub(rf"\b{finite_forms}\b", finite, sentence, flags=re.I)
+            sentence = re.sub(rf"\b{categorical}\b", progressive, sentence, flags=re.I)
+        output.append(sentence)
+    return " ".join(output).strip()
+
+
+def _v2_pose_locked_payload(raw: str, triple_variants: bool) -> str:
+    """Apply the same-call support ledger and return the legacy prompt-only schema."""
+
+    candidate = unwrap_model_transport(raw)
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+    if not isinstance(parsed, dict):
+        return raw
+    check = _v2_pose_check(parsed.get("pose_check"))
+    if check is None:
+        return raw
+    key = "prompt_variants" if triple_variants else "prompt"
+    values = parsed.get(key)
+    if triple_variants:
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            return raw
+        prompts = list(values)
+    else:
+        if not isinstance(values, str):
+            return raw
+        prompts = [values]
+    posture = _v2_resolved_posture(check)
+    lead = _v2_pose_lead(check, posture)
+    corrected: list[str] = []
+    for prompt in prompts:
+        body = prompt
+        if int(check.get("subject_count") or 0) == 1:
+            body = _v2_replace_single_subject_posture(body, posture)
+        corrected.append(_dedupe_prompt_clauses(f"{lead} {body}"))
+    return json.dumps({key: corrected if triple_variants else corrected[0]}, ensure_ascii=False)
+
+
 def _repair_grounding_locked_prompt(
     prompt: str,
     required_facts: dict[str, str] | None,
@@ -1859,7 +2055,9 @@ class DiscordVisionService:
         response; never ask the remote model to inspect the image a second time.
         """
 
-        candidate = unwrap_model_transport(raw)
+        # Preserve any valid same-call pose/support correction even when the
+        # surrounding response needs deterministic schema or length recovery.
+        candidate = unwrap_model_transport(_v2_pose_locked_payload(raw, triple_variants))
         recovered_variants: list[str] = []
         recovered_prompt = ""
         try:
@@ -2276,6 +2474,7 @@ class DiscordVisionService:
                         )
 
                     def validate_v2(raw: str) -> tuple[DiscordDescribeResponse, list[str]]:
+                        raw = _v2_pose_locked_payload(raw, triple_variants)
                         model_label = (
                             f"{spec.label} — V2 Direct Fidelity (one-pass full-frame direct observation)"
                             if remote

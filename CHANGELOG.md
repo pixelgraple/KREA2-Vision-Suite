@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.5 - 2026-08-28
+
+- Makes V2 Direct Fidelity produce a compact pose/support ledger in the same paid image call, with no extra inference or credit.
+- Distinguishes standing or balancing from sitting by requiring visible pelvis or buttock support before accepting a seated classification.
+- Tracks left and right foot weight-bearing surfaces separately, including one foot on a skateboard and the other on pavement.
+- Locally corrects contradictory single- and three-prompt results while preserving camera angle, body-joint geometry, wardrobe, lighting, and scene detail.
+- Keeps legacy prompt-only model responses compatible and preserves deterministic format recovery.
+- Adds exact regressions for false skateboard sitting, true supported sitting, all three V2 variations, and legacy response compatibility.
+
 ## 0.14.4 - 2026-08-28
 
 - Prevents a completed background Vision image from auto-opening its result over the Qwen Prompt Editor.
