@@ -212,7 +212,7 @@ const magnifierStart = source.indexOf("    queueVisionAnalysis(image, button) {"
 const magnifierEnd = source.indexOf("\n    enqueueVisionAnalysisAfterMetadata(", magnifierStart);
 assert.ok(magnifierStart >= 0 && magnifierEnd > magnifierStart, "magnifier metadata preflight must remain separate from Vision enqueue");
 const magnifierMethod = source.slice(magnifierStart, magnifierEnd);
-assert.match(magnifierMethod, /inspectPromptMetadata\(/);
+assert.match(magnifierMethod, /inspectPromptMetadataBounded\(/);
 assert.match(magnifierMethod, /showMetadataPromptModal\(inspected\.prompts\)/);
 assert.doesNotMatch(magnifierMethod, /addLocalVisionSubmission\(|armLocalVisionSubmissionTimeout\(|requestVisionPrompt\(|issueVisionSession\(/);
 const enqueueStart = source.indexOf("    enqueueVisionAnalysisAfterMetadata(", magnifierEnd);

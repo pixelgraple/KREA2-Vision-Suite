@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.14.0
+ * @version 0.14.2
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.14.0";
+const PLUGIN_VERSION = "0.14.2";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -42,6 +42,7 @@ const HISTORY_THUMBNAIL_MAX_SIDE = 640;
 const HISTORY_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_METADATA_PROBES = 250;
 const METADATA_PROBE_RETRY_MS = 60 * 1000;
+const METADATA_PREFLIGHT_TIMEOUT_MS = 8 * 1000;
 const MAX_VISION_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_VISION_PROMPT_CHARS = 100000;
 const VISION_TIMEOUT_MS = 60 * 60 * 1000;
@@ -1193,7 +1194,11 @@ const CSS = `
 .krea2-history-utility { min-width: 0; flex: 1; padding: 7px 8px; border: 1px solid var(--krea2-border); border-radius: 8px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); background: var(--krea2-surface-raised); cursor: pointer; font: 650 9.5px/1 system-ui, sans-serif; }
 .krea2-history-utility:hover,
 .krea2-history-utility[data-active="true"] { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); border-color: #4d5870; background: #252b36; }
-.krea2-history-completion { display: block; margin: 0 12px 10px; padding: 9px 10px; border: 1px solid #315c47; border-radius: 8px; color: #b8f2cf; -webkit-text-fill-color: #b8f2cf; background: #14261d; cursor: pointer; font: 600 10px/1.35 system-ui, sans-serif; text-align: left; }
+.krea2-history-completion { display: block; margin: 0 12px 10px; padding: 9px 10px; border: 1px solid #434b5a; border-radius: 8px; color: #e7ebf2; -webkit-text-fill-color: #e7ebf2; background: #1c212a; cursor: pointer; font: 600 10px/1.35 system-ui, sans-serif; text-align: left; }
+.krea2-history-completion[data-status="completed"] { border-color: #315c47; color: #b8f2cf; -webkit-text-fill-color: #b8f2cf; background: #14261d; }
+.krea2-history-completion[data-status="error"],
+.krea2-history-completion[data-status="rejected"] { border-color: #713e46; color: #ffb5bd; -webkit-text-fill-color: #ffb5bd; background: #321a1f; }
+.krea2-history-completion[data-status="cancelled"] { border-color: #756134; color: #ffe0a0; -webkit-text-fill-color: #ffe0a0; background: #302713; }
 .krea2-history-job { position: relative; }
 .krea2-history-job-layout { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 9px; align-items: start; }
 .krea2-history-job-thumb { width: 42px; height: 42px; border: 1px solid var(--krea2-border); border-radius: 8px; object-fit: cover; background: #0d0f13; }
@@ -4830,7 +4835,16 @@ class Krea2DiscordCollector {
         if (completion) {
             const completedJob = this.historyJobs.find(job => job.id === this.lastCompletionJobId);
             completion.hidden = isInterrogate || !completedJob;
-            if (completedJob) completion.textContent = `${completedJob.status === "completed" ? "Prompt ready" : "Vision job finished"}: ${historyJobTitle(completedJob)} — open result`;
+            if (completedJob) {
+                completion.dataset.status = completedJob.status;
+                const resultLabel = completedJob.status === "completed"
+                    ? "Prompt ready"
+                    : completedJob.status === "cancelled"
+                        ? "Vision job cancelled"
+                        : "Vision job failed";
+                completion.textContent = `${resultLabel}: ${historyJobTitle(completedJob)} — open details`;
+            }
+            else delete completion.dataset.status;
         }
 
         if (isInterrogate) {
@@ -7081,34 +7095,59 @@ class Krea2DiscordCollector {
         throw new Error("Discord sign-in timed out. Start Online API again.");
     }
 
-    async remoteCreditStatus(license, signal) {
-        let response;
-        try {
-            response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/balance`, {
-                method: "GET", redirect: "manual", maxRedirects: 0, timeout: 15000, signal,
-                headers: {Accept:"application/json", Authorization:`Krea2License ${license.licenseId}.${license.licenseToken}`}
-            });
+    async remoteCreditStatus(license, signal, purpose = "image") {
+        const fetchStatus = async cacheBust => {
+            let response;
+            try {
+                const suffix = cacheBust ? `?contract=prompt-chat-v1&nonce=${Date.now()}` : "";
+                response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/balance${suffix}`, {
+                    method: "GET", redirect: "manual", maxRedirects: 0, timeout: 15000, signal,
+                    headers: {
+                        Accept: "application/json",
+                        "Cache-Control": "no-cache",
+                        Authorization: `Krea2License ${license.licenseId}.${license.licenseToken}`
+                    }
+                });
+            }
+            catch { throw new Error("The Online API credit service is unavailable. Retry shortly; no credits were charged."); }
+            const text = await readBoundedResponseText(response, 64 * 1024);
+            let status;
+            try { status = JSON.parse(text); }
+            catch { throw new Error("The Online API credit service returned invalid JSON; no credits were charged."); }
+            if (!response.ok) throw new Error(String(status?.detail || `Online API credit check failed with HTTP ${response.status}.`));
+            return status;
+        };
+
+        let status = await fetchStatus(false);
+        const validImageBalance = value => (
+            Number.isInteger(value?.available_credits)
+            && value.available_credits >= 0
+            && Number.isInteger(value?.credits_per_image)
+            && value.credits_per_image === 3
+        );
+        if (!validImageBalance(status)) {
+            throw new Error("The Online API credit service returned an incomplete image balance; retry shortly. No credits were charged.");
         }
-        catch { throw new Error("The Online API credit service is unavailable. Retry shortly."); }
-        const text = await readBoundedResponseText(response, 64 * 1024);
-        let status;
-        try { status = JSON.parse(text); }
-        catch { throw new Error("The Online API credit service returned invalid JSON."); }
-        if (!response.ok) throw new Error(String(status?.detail || `Online API credit check failed with HTTP ${response.status}.`));
-        if (
-            !Number.isInteger(status?.available_credits)
-            || !Number.isInteger(status?.credits_per_image)
-            || status.credits_per_image !== 3
-            || !Number.isInteger(status?.credits_per_prompt_chat)
-            || status.credits_per_prompt_chat !== 1
-        ) throw new Error("The Online API credit balance is invalid.");
+
+        if (purpose === "prompt-chat") {
+            const validPromptBalance = value => (
+                Number.isInteger(value?.credits_per_prompt_chat)
+                && value.credits_per_prompt_chat === 1
+                && Number.isInteger(value?.prompt_chat_turns_available)
+                && value.prompt_chat_turns_available >= 0
+            );
+            if (!validPromptBalance(status)) status = await fetchStatus(true);
+            if (!validImageBalance(status) || !validPromptBalance(status)) {
+                throw new Error("Qwen Prompt Editor credit information is still updating. Retry shortly; no credit was charged.");
+            }
+        }
         return status;
     }
 
     async ensureRemoteCredits(signal, purpose = "image") {
         const license = await this.ensureRemoteLicense(signal);
-        let status = await this.remoteCreditStatus(license, signal);
         const promptChat = purpose === "prompt-chat";
+        let status = await this.remoteCreditStatus(license, signal, purpose);
         const required = promptChat ? status.credits_per_prompt_chat : status.credits_per_image;
         if (status.available_credits >= required) return license;
         if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Retry later.");
@@ -7139,7 +7178,7 @@ class Krea2DiscordCollector {
         while (Date.now() < deadline) {
             if (signal?.aborted) throw new Error("Bitcoin payment wait was cancelled.");
             await new Promise(resolve => setTimeout(resolve, 4000));
-            status = await this.remoteCreditStatus(license, signal);
+            status = await this.remoteCreditStatus(license, signal, purpose);
             if (status.available_credits >= required) {
                 this.toast(`Online API credits added: ${status.available_credits} available.`, "success");
                 return license;
@@ -7741,6 +7780,52 @@ class Krea2DiscordCollector {
         return {...decision, original, embedded, sidecar};
     }
 
+    async inspectPromptMetadataBounded(selection, button, parentSignal) {
+        const controller = new AbortController();
+        const abortFromParent = () => controller.abort();
+        if (parentSignal?.aborted) abortFromParent();
+        else parentSignal?.addEventListener?.("abort", abortFromParent, {once: true});
+        const timeoutMs = Math.max(1, Number(this.metadataPreflightTimeoutMs) || METADATA_PREFLIGHT_TIMEOUT_MS);
+        let timer = null;
+        let timedOut = false;
+        const timeoutResult = {
+            status: "none",
+            classification: "metadata_timeout",
+            prompts: [],
+            original: null,
+            embedded: {classification: "encoded_or_unknown", chunks: []},
+            sidecar: null,
+            timedOut: true
+        };
+        const timeout = new Promise(resolve => {
+            timer = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+                resolve(timeoutResult);
+            }, timeoutMs);
+        });
+        try {
+            const result = await Promise.race([
+                this.inspectPromptMetadata(selection, button, controller.signal),
+                timeout
+            ]);
+            if (parentSignal?.aborted) {
+                const error = new Error("Metadata inspection was cancelled.");
+                error.name = "AbortError";
+                throw error;
+            }
+            return result;
+        }
+        catch (error) {
+            if (timedOut && error?.name === "AbortError") return timeoutResult;
+            throw error;
+        }
+        finally {
+            if (timer) clearTimeout(timer);
+            parentSignal?.removeEventListener?.("abort", abortFromParent);
+        }
+    }
+
     showMetadataPromptModal(promptOrCandidates, source = "source metadata") {
         const candidates = (Array.isArray(promptOrCandidates)
             ? promptOrCandidates
@@ -7868,12 +7953,12 @@ class Krea2DiscordCollector {
         button.dataset.busy = "true";
         this.setButtonState(button, "hashing", "…", "Checking embedded metadata and same-message YAML");
         const queuedGeneration = this.generation;
-        const flow = this.metadataProbeQueue.then(async () => {
+        const flow = (async () => {
             if (!this.running || queuedGeneration !== this.generation || !button.isConnected) return;
             const controller = new AbortController();
             this.controllers.add(controller);
             try {
-                const inspected = await this.inspectPromptMetadata(selection, button, controller.signal);
+                const inspected = await this.inspectPromptMetadataBounded(selection, button, controller.signal);
                 if (inspected.status === "usable") {
                     this.showMetadataPromptModal(inspected.prompts);
                     const sourceSummary = inspected.prompts.length === 1
@@ -7906,7 +7991,7 @@ class Krea2DiscordCollector {
                 this.metadataProbeByKey.delete(key);
                 if (button) button.dataset.busy = "false";
             }
-        });
+        })();
         this.metadataProbeByKey.set(key, flow);
         this.metadataProbeQueue = flow.catch(() => {});
     }
@@ -8226,7 +8311,7 @@ class Krea2DiscordCollector {
         button.dataset.busy = "true";
         this.setButtonState(button, "hashing", "…", "Checking embedded metadata and same-message YAML before Vision");
 
-        const probe = this.metadataProbeQueue.then(async () => {
+        const probe = (async () => {
             if (!this.running || queuedGeneration !== this.generation || !button?.isConnected) {
                 return {status: "cancelled"};
             }
@@ -8234,13 +8319,13 @@ class Krea2DiscordCollector {
             this.controllers.add(controller);
             try {
                 const resolvedSelection = this.resolveQueuedVisionSelection(image, selection);
-                const inspected = await this.inspectPromptMetadata(resolvedSelection, button, controller.signal);
+                const inspected = await this.inspectPromptMetadataBounded(resolvedSelection, button, controller.signal);
                 return {status: "inspected", inspected};
             }
             finally {
                 this.controllers.delete(controller);
             }
-        });
+        })();
         this.metadataProbeQueue = probe.catch(() => {});
 
         const completion = probe.then(result => {
@@ -8264,6 +8349,9 @@ class Krea2DiscordCollector {
                 }
                 button.dataset.busy = "false";
                 return {status: "metadata", prompts: inspected.prompts};
+            }
+            if (inspected.timedOut) {
+                this.toast("Source metadata check reached its 8-second limit; continuing to Vision now.", "warning");
             }
             return this.enqueueVisionAnalysisAfterMetadata(image, button, selection, queuedGeneration);
         }).catch(error => {
@@ -8649,6 +8737,7 @@ class Krea2DiscordCollector {
             duplicate: ["duplicate", "✓", "Krea2 already has this metadata contribution; nothing was saved locally.", "Krea2 already has this contribution.", "success"],
             no_metadata: ["no-metadata", "–", "No embedded or companion prompt metadata was present. No GPU, credits, submission, or save was used.", "No prompt metadata was found.", "info"],
             metadata_no_prompt: ["metadata-no-prompt", "?", "Metadata existed but contained no usable positive prompt. No GPU, credits, submission, or save was used.", "Metadata had no usable positive prompt.", "warning"],
+            metadata_timeout: ["metadata-timeout", "⌛", "Metadata inspection reached its 8-second limit. No GPU, credits, submission, or save was used. Click to retry.", "Metadata inspection timed out safely; click again to retry.", "warning"],
             encoded_or_unknown: ["encoded-or-unknown", "🔒", "Encoded, encrypted, or high-entropy metadata was skipped. No GPU, credits, submission, or save was used.", "Encoded or unknown metadata was skipped.", "warning"],
             structured: ["structured", "🔒", "Structured metadata was unsupported, malformed, or ambiguous, so it was skipped safely. No GPU, credits, submission, or save was used.", "Unsupported or ambiguous structured metadata was skipped.", "warning"],
             non_english: ["non-english", "🔒", "The positive prompt was substantially non-English and was skipped. No GPU, credits, submission, or save was used.", "Substantially non-English metadata was skipped.", "warning"]
@@ -9094,7 +9183,10 @@ class Krea2DiscordCollector {
             const message = job.status === "completed"
                 ? `${historyJobTitle(job)} is ready. Open Prompt History to view it.`
                 : `${historyJobTitle(job)} finished with ${job.status}.`;
-            this.toast(message, job.status === "completed" ? "success" : "warning");
+            this.toast(
+                message,
+                job.status === "completed" ? "success" : job.status === "cancelled" ? "warning" : "error"
+            );
         }
         if (this.settings.completionSound === true) {
             try {

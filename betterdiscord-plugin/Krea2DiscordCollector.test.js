@@ -3,7 +3,12 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const pluginSource = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
 const Plugin = require("./Krea2DiscordCollector.plugin.js");
+
+assert.match(pluginSource, /\.krea2-history-completion\[data-status="error"\]/);
+assert.match(pluginSource, /"Vision job failed"/);
+assert.match(pluginSource, /job\.status === "completed" \? "success" : job\.status === "cancelled" \? "warning" : "error"/);
 const {
     applyPromptPreset,
     buildVisionMultipartBody,
@@ -1023,6 +1028,49 @@ async function testMetadataFirstMagnifierRouting() {
     const fallbackButton = {dataset: {}, isConnected: true};
     assert.deepEqual(await fallbackCollector.queueVisionAnalysis(image, fallbackButton), {status: "vision"});
     assert.equal(fallbackCount, 1);
+
+    const timeoutCollector = makeCollector({status: "none", classification: "no_metadata", prompts: []});
+    timeoutCollector.metadataPreflightTimeoutMs = 5;
+    timeoutCollector.inspectPromptMetadata = async (_selection, _button, signal) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+            const error = new Error("timed out");
+            error.name = "AbortError";
+            reject(error);
+        }, {once: true});
+    });
+    let timeoutFallbackCount = 0;
+    const timeoutToasts = [];
+    timeoutCollector.toast = (message, type) => timeoutToasts.push({message, type});
+    timeoutCollector.enqueueVisionAnalysisAfterMetadata = async (_image, button) => {
+        timeoutFallbackCount += 1;
+        button.dataset.busy = "false";
+        return {status: "vision-after-timeout"};
+    };
+    const timeoutButton = {dataset: {}, isConnected: true};
+    assert.deepEqual(await timeoutCollector.queueVisionAnalysis(image, timeoutButton), {status: "vision-after-timeout"});
+    assert.equal(timeoutFallbackCount, 1);
+    assert.equal(timeoutButton.dataset.busy, "false");
+    assert.ok(timeoutToasts.some(item => item.type === "warning" && /continuing to Vision/i.test(item.message)));
+
+    const parallelCollector = makeCollector({status: "none", classification: "no_metadata", prompts: []});
+    parallelCollector.metadataPreflightTimeoutMs = 250;
+    let inspectionCalls = 0;
+    let releaseFirstInspection;
+    parallelCollector.inspectPromptMetadata = async () => {
+        inspectionCalls += 1;
+        if (inspectionCalls === 1) await new Promise(resolve => { releaseFirstInspection = resolve; });
+        return {status: "none", classification: "no_metadata", prompts: []};
+    };
+    parallelCollector.enqueueVisionAnalysisAfterMetadata = async (_image, button) => {
+        button.dataset.busy = "false";
+        return {status: "vision"};
+    };
+    const parallelFirst = parallelCollector.queueVisionAnalysis(image, {dataset: {}, isConnected: true});
+    const parallelSecond = parallelCollector.queueVisionAnalysis(image, {dataset: {}, isConnected: true});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(inspectionCalls, 2, "one slow metadata read must not block another magnifier click");
+    releaseFirstInspection();
+    await Promise.all([parallelFirst, parallelSecond]);
 
     const partialCollector = new Plugin();
     partialCollector.downloadMetadataOriginal = async () => ({
