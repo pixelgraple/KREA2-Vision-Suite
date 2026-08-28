@@ -6,7 +6,7 @@ const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
 
-assert.match(source, /@version 0\.14\.2/);
+assert.match(source, /@version 0\.14\.4/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /brandPromptEditor\.textContent = "✦ Qwen Prompt Editor"/);
 assert.match(source, /brandPromptEditor\.addEventListener\("click", \(\) => this\.openPromptEditor\("", root\.ownerDocument \|\| document\)\)/);
@@ -25,7 +25,12 @@ assert.match(source, /"X-Krea2-Request-Id": requestId/);
 assert.match(source, /model: "heretic-3\.8-q4-cloud"/);
 assert.match(source, /result\?\.credits_charged !== 1/);
 assert.match(source, /not stored by the KREA2 gateway/);
-assert.match(source, /messages = \[\];[\s\S]*?overlay\.remove\(\)/);
+assert.match(source, /this\.promptEditorDraft = null/);
+assert.match(source, /const restoredDraft = suppliedPrompt \? null : this\.promptEditorDraft/);
+assert.match(source, /promptBox\.addEventListener\("input", syncDraft\)/);
+assert.match(source, /instruction\.addEventListener\("input", syncDraft\)/);
+assert.match(source, /A recovery draft stays only in this running Discord session/);
+assert.doesNotMatch(source, /await this\.refreshHistory\(true\);\s*if \(this\.historyJobs\.some\(job => job\.id === localSubmissionId\)\) void this\.openHistoryDetail/);
 
 const method = source.slice(source.indexOf("    openPromptEditor("), source.indexOf("    openVerifiedExternal("));
 assert.ok(method.length > 5000, "Prompt Editor implementation should be present");

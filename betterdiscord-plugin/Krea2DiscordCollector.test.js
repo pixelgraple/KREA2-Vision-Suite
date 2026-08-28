@@ -384,7 +384,8 @@ async function testInterrogateUploadUsesExistingQueue() {
     assert.equal(request.visionConfig.model, model);
     assert.equal(request.options.model, model);
     assert.match(request.options.jobId, /^[a-f0-9]{32}$/);
-    assert.equal(request.options.jobId, openedJobId);
+    assert.equal(collector.lastCompletionJobId, request.options.jobId);
+    assert.equal(openedJobId, "", "a background completion must not replace an open Qwen editor with a result modal");
     assert.equal(finishedModel, "Heretic — Qwen3-VL 4B Q8_0");
     assert.equal(collector.interrogatePendingCount, 0);
     assert.equal(collector.localVisionSubmissions.size, 0);

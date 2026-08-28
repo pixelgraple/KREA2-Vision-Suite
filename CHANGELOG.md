@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.4 - 2026-08-28
+
+- Prevents a completed background Vision image from auto-opening its result over the Qwen Prompt Editor.
+- Keeps the completion toast, clickable result banner, and Prompt History update without stealing editor focus.
+- Retains the current prompt, pending instruction, and chat turns in memory for the running Discord session so an accidentally dismissed editor can recover its draft.
+- Keeps recovery text off disk and clears it when the plugin reloads.
+- Adds regression coverage for the exact Interrogate-completion modal collision.
+
 ## 0.14.3 - 2026-08-28
 
 - Posts one owner-only Discord webhook message with a downloadable, redacted `.txt` traceback for each unique failed Discord Vision image.

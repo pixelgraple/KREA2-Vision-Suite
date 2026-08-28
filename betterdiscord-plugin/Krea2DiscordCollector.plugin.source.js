@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.14.2
+ * @version 0.14.4
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.14.3";
+const PLUGIN_VERSION = "0.14.4";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -3222,6 +3222,7 @@ class Krea2DiscordCollector {
         this.historyModalCleanup = null;
         this.sourcePromptModalCleanup = null;
         this.promptEditorCleanup = null;
+        this.promptEditorDraft = null;
         this.feedbackModalCleanup = null;
         this.lastPathname = "";
         this.running = false;
@@ -3377,6 +3378,7 @@ class Krea2DiscordCollector {
         this.sourcePromptModalCleanup = null;
         this.promptEditorCleanup?.();
         this.promptEditorCleanup = null;
+        this.promptEditorDraft = null;
         this.feedbackModalCleanup?.();
         this.feedbackModalCleanup = null;
         for (const objectUrl of this.historyThumbnailUrls.values()) this.revokeObjectUrl(objectUrl);
@@ -4562,7 +4564,9 @@ class Krea2DiscordCollector {
                 this.interrogateStatusState = "success";
                 await this.finishVisionPrompt({button: null, model: result.model, promptCount: result.prompt_variants.length});
                 await this.refreshHistory(true);
-                if (this.historyJobs.some(job => job.id === localSubmissionId)) void this.openHistoryDetail(localSubmissionId);
+                // Completion is background activity. Keep the result available in
+                // Prompt History and the clickable completion banner, but never
+                // mount a new result dialog over an editor the user is typing in.
             }
             catch (error) {
                 if (!this.running || queuedGeneration !== this.generation || error?.name === "AbortError") return;
@@ -6768,12 +6772,23 @@ class Krea2DiscordCollector {
     }
 
     openPromptEditor(initialPrompt = "", modalDocument = document) {
+        const suppliedPrompt = String(initialPrompt || "").trim().slice(0, 18000);
         this.promptEditorCleanup?.();
+        const restoredDraft = suppliedPrompt ? null : this.promptEditorDraft;
         modalDocument.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
         const controller = new AbortController();
-        let messages = [];
+        let messages = Array.isArray(restoredDraft?.messages)
+            ? restoredDraft.messages
+                .filter(message => message?.role === "user" || message?.role === "assistant")
+                .map(message => ({role: message.role, content: String(message.content || "").slice(0, 24000)}))
+            : [];
+        let turns = Array.isArray(restoredDraft?.turns)
+            ? restoredDraft.turns
+                .filter(turn => turn?.role === "user" || turn?.role === "assistant")
+                .map(turn => ({role: turn.role, text: String(turn.text || "").slice(0, 24000)}))
+            : [];
         let busy = false;
-        let latestReply = "";
+        let latestReply = String(restoredDraft?.latestReply || "").slice(0, 24000);
 
         const overlay = modalDocument.createElement("div");
         overlay.id = PROMPT_EDITOR_MODAL_ID;
@@ -6800,7 +6815,7 @@ class Krea2DiscordCollector {
         body.className = "krea2-history-dialog-body krea2-prompt-editor-body";
         const explanation = modalDocument.createElement("div");
         explanation.className = "krea2-prompt-editor-explanation";
-        explanation.textContent = "Paste a KREA2 prompt, then describe the change you want—pose, outfit, camera, lighting, setting, wording, or anything else. Qwen preserves details you did not ask to change. Each successful reply costs 1 Online API credit; failures are refunded. This conversation is sent to the private cloud model for inference, is not stored by the KREA2 gateway, and is cleared from Discord when you close this window.";
+        explanation.textContent = "Paste a KREA2 prompt, then describe the change you want—pose, outfit, camera, lighting, setting, wording, or anything else. Qwen preserves details you did not ask to change. Each successful reply costs 1 Online API credit; failures are refunded. This conversation is sent to the private cloud model for inference and is not stored by the KREA2 gateway. A recovery draft stays only in this running Discord session until you choose New chat or reload the plugin.";
 
         const promptField = modalDocument.createElement("div");
         promptField.className = "krea2-prompt-editor-field";
@@ -6810,7 +6825,7 @@ class Krea2DiscordCollector {
         promptBox.className = "krea2-prompt-editor-prompt";
         promptBox.placeholder = "Paste the prompt you want to revise…";
         promptBox.maxLength = 18000;
-        promptBox.value = String(initialPrompt || "").trim().slice(0, 18000);
+        promptBox.value = suppliedPrompt || String(restoredDraft?.prompt || "").slice(0, 18000);
         promptField.append(promptLabel, promptBox);
 
         const transcript = modalDocument.createElement("div");
@@ -6827,6 +6842,7 @@ class Krea2DiscordCollector {
         instruction.className = "krea2-prompt-editor-instruction";
         instruction.placeholder = "Example: Keep everything else, but turn her head toward the camera and make the lighting warmer.";
         instruction.maxLength = 3000;
+        instruction.value = String(restoredDraft?.instruction || "").slice(0, 3000);
         instructionField.append(instructionLabel, instruction);
         const send = modalDocument.createElement("button");
         send.type = "button";
@@ -6835,7 +6851,8 @@ class Krea2DiscordCollector {
         compose.append(instructionField, send);
         const status = modalDocument.createElement("div");
         status.className = "krea2-prompt-editor-status";
-        status.textContent = "Ready · 1 credit is charged only after a successful reply.";
+        status.textContent = String(restoredDraft?.statusText || "Ready · 1 credit is charged only after a successful reply.");
+        status.dataset.state = String(restoredDraft?.statusState || "idle");
         body.append(explanation, promptField, transcript, compose, status);
 
         const actions = modalDocument.createElement("div");
@@ -6858,11 +6875,24 @@ class Krea2DiscordCollector {
         overlay.append(dialog);
         modalDocument.body.append(overlay);
 
+        const syncDraft = () => {
+            this.promptEditorDraft = {
+                prompt: promptBox.value.slice(0, promptBox.maxLength),
+                instruction: instruction.value.slice(0, instruction.maxLength),
+                messages: messages.map(message => ({role: message.role, content: message.content})),
+                turns: turns.map(turn => ({role: turn.role, text: turn.text})),
+                latestReply,
+                statusText: status.textContent,
+                statusState: status.dataset.state || "idle"
+            };
+        };
         const setStatus = (text, state = "idle") => {
             status.textContent = text;
             status.dataset.state = state;
+            syncDraft();
         };
-        const appendTurn = (role, text) => {
+        const appendTurn = (role, text, record = true) => {
+            if (record) turns.push({role, text: String(text)});
             const turn = modalDocument.createElement("div");
             turn.className = "krea2-prompt-editor-turn";
             turn.dataset.role = role;
@@ -6898,11 +6928,14 @@ class Krea2DiscordCollector {
             transcript.scrollTop = transcript.scrollHeight;
         };
         const cleanup = () => {
+            if (busy) {
+                status.textContent = "The in-flight edit was cancelled; your prompt and typed instruction were recovered.";
+                status.dataset.state = "idle";
+            }
+            syncDraft();
             controller.abort();
             modalDocument.removeEventListener("keydown", onKey, true);
             overlay.remove();
-            messages = [];
-            latestReply = "";
             if (this.promptEditorCleanup === cleanup) this.promptEditorCleanup = null;
         };
         const onKey = event => {
@@ -6923,12 +6956,15 @@ class Krea2DiscordCollector {
         overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
         clear.addEventListener("click", () => {
             messages = [];
+            turns = [];
             latestReply = "";
             transcript.replaceChildren();
             instruction.value = "";
             setStatus("New session started. The current prompt is still available above.");
             instruction.focus();
         });
+        promptBox.addEventListener("input", syncDraft);
+        instruction.addEventListener("input", syncDraft);
         copyPrompt.addEventListener("click", async () => {
             const value = promptBox.value.trim() || latestReply;
             if (!value) return setStatus("Paste or generate a prompt first.", "error");
@@ -6948,6 +6984,7 @@ class Krea2DiscordCollector {
             if (request.length < 2) return setStatus("Describe the change you want Qwen to make.", "error");
             if (messages.length >= 14) {
                 messages = [];
+                turns = [];
                 transcript.replaceChildren();
                 setStatus("The long chat was compacted around the current prompt.");
             }
@@ -7006,6 +7043,8 @@ class Krea2DiscordCollector {
             }
         };
         send.addEventListener("click", () => void submit());
+        for (const turn of turns.slice()) appendTurn(turn.role, turn.text, false);
+        syncDraft();
         (promptBox.value ? instruction : promptBox).focus();
     }
 
