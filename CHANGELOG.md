@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0 - 2026-08-28
+
+- Adds a Discord-native **Qwen Prompt Editor** popup backed by the pinned `heretic-3.8-q4-cloud` Vast model.
+- Opens the editor from the Krea2 Vision header, generated prompt results, Prompt History, and locally extracted metadata/YAML prompts.
+- Lets users paste a complete KREA2 prompt, request conversational changes, adopt the latest revision as the current prompt, and copy it without leaving Discord.
+- Charges exactly one Online API credit only after each valid Qwen reply; provider, timeout, cancellation, invalid-output, and settlement failures refund the reservation automatically.
+- Keeps editor conversations session-only in Discord and stores only bounded request/accounting metadata in the KREA2 gateway, never prompt or reply content.
+- Rejects reused request IDs, cross-license ownership, unsupported roles, oversized conversations, and unverified model responses before returning a result.
+- Preserves the existing three-credit image-interrogation contract, Bitcoin credit checkout, local Vision paths, Forge/KreaForge FIFO, and scale-to-zero Qwen worker behavior.
+
 ## 0.13.26 - 2026-08-26
 
 - Fixes Online API Discord sign-in launch on current Discord Stable builds by removing the missing private `openExternal` Webpack lookup.

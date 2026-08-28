@@ -8,6 +8,7 @@ const Plugin = require("./Krea2DiscordCollector.plugin.js");
 const {
     evaluatePromptValue,
     extractMetadataDocumentPrompt,
+    selectMetadataPromptCandidates,
     selectCompanionMetadataAttachment
 } = Plugin.helpers;
 
@@ -24,6 +25,37 @@ assert.equal(evaluatePromptValue("scene:\n  subject: woman\n  lighting: soft").c
 assert.equal(evaluatePromptValue('{"prompt":{"nodes":[]}}').classification, "structured");
 assert.equal(evaluatePromptValue(`base64:${"A".repeat(128)}`).classification, "encoded_or_unknown");
 assert.equal(evaluatePromptValue("美しい女性の肖像、柔らかな光").classification, "non_english");
+
+const sourcePrompt = "A realistic portrait with a precise seated pose, a red tailored outfit, side lighting, and a long cast shadow.";
+assert.deepEqual(selectMetadataPromptCandidates(
+    {classification: "usable", prompt: sourcePrompt},
+    null,
+    "none"
+), {
+    status: "usable",
+    classification: "usable",
+    prompts: [{prompt: sourcePrompt, source: "embedded image metadata"}]
+});
+assert.deepEqual(selectMetadataPromptCandidates(
+    {classification: "usable", prompt: sourcePrompt},
+    {classification: "usable", prompt: `  ${sourcePrompt.replace(/ /g, "  ")}  `, source: "parameters.yaml"},
+    "found"
+).prompts, [{prompt: sourcePrompt, source: "embedded image metadata"}]);
+assert.deepEqual(selectMetadataPromptCandidates(
+    {classification: "usable", prompt: sourcePrompt},
+    {classification: "usable", prompt: `${sourcePrompt} A second source adds warm backlight.`, source: "parameters.yaml"},
+    "found"
+).prompts.map(item => item.source), ["embedded image metadata", "parameters.yaml"]);
+assert.deepEqual(selectMetadataPromptCandidates(
+    {classification: "encoded_or_unknown"},
+    {classification: "non_english"},
+    "found"
+), {status: "none", classification: "non_english", prompts: []});
+assert.equal(selectMetadataPromptCandidates(
+    {classification: "no_metadata"},
+    null,
+    "ambiguous"
+).classification, "structured");
 
 const comfyGraphDocument = `prompt:
 {
@@ -175,5 +207,17 @@ assert.ok(metadataStart >= 0 && metadataEnd > metadataStart, "metadata-only + me
 const metadataMethod = source.slice(metadataStart, metadataEnd);
 assert.doesNotMatch(metadataMethod, /\b(?:requestVisionPrompt|queueVisionAnalysis|runSavedImageModel|collectImage|saveOriginalAndSidecar|finishVisionPrompt)\s*\(/);
 assert.doesNotMatch(metadataMethod, /\/api\/discord-describe|shareDatasetContributions|dataset_guidance/);
+
+const magnifierStart = source.indexOf("    queueVisionAnalysis(image, button) {");
+const magnifierEnd = source.indexOf("\n    enqueueVisionAnalysisAfterMetadata(", magnifierStart);
+assert.ok(magnifierStart >= 0 && magnifierEnd > magnifierStart, "magnifier metadata preflight must remain separate from Vision enqueue");
+const magnifierMethod = source.slice(magnifierStart, magnifierEnd);
+assert.match(magnifierMethod, /inspectPromptMetadata\(/);
+assert.match(magnifierMethod, /showMetadataPromptModal\(inspected\.prompts\)/);
+assert.doesNotMatch(magnifierMethod, /addLocalVisionSubmission\(|armLocalVisionSubmissionTimeout\(|requestVisionPrompt\(|issueVisionSession\(/);
+const enqueueStart = source.indexOf("    enqueueVisionAnalysisAfterMetadata(", magnifierEnd);
+const enqueueEnd = source.indexOf("\n    async analyzeWithVision(", enqueueStart);
+assert.ok(enqueueStart >= 0 && enqueueEnd > enqueueStart, "Vision enqueue helper must remain present");
+assert.match(source.slice(enqueueStart, enqueueEnd), /addLocalVisionSubmission\(/);
 
 console.log("BetterDiscord flat parameters, ComfyUI YAML, and attachment-pairing tests passed.");

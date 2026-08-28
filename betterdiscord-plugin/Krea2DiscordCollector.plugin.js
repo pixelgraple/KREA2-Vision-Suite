@@ -1,8 +1,8 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.34
- * @description Local or online Discord Vision with one grounded V2 prompt by default and optional three-prompt output.
+ * @version 0.14.0
+ * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
 "use strict";
@@ -11,10 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const {createHash, randomBytes} = require("crypto");
 
-const {
-    parsePngPromptMetadata: parseHardenedPngPromptMetadata,
-    extractPromptFromMetadataDocument: extractMetadataDocumentPrompt
-} = (() => {
+const {parsePngPromptMetadata: parseHardenedPngPromptMetadata, extractPromptFromMetadataDocument: extractMetadataDocumentPrompt} = (() => {
     const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const SUPPORTED_KEYS = new Set(["parameters", "prompt"]);
     const STATUS_PRIORITY = Object.freeze([
@@ -977,17 +974,12 @@ const {
         return result(selected.status, null, selected.sourceKey, selected.reason, diagnostics, selected);
     }
 
-    return Object.freeze({
-        DEFAULT_LIMITS,
-        extractComfyPositivePrompt,
-        extractPromptFromMetadataDocument,
-        parsePngPromptMetadata
-    });
+    return Object.freeze({DEFAULT_LIMITS, extractComfyPositivePrompt, extractPromptFromMetadataDocument, parsePngPromptMetadata});
 
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.34";
+const PLUGIN_VERSION = "0.14.0";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1034,7 +1026,7 @@ function isCurrentPrivacyReceipt(receipt) {
     );
 }
 const VISUAL_EMBEDDING_SIZE = 8;
-const VISION_PIPELINE_ID = "discord-faithful-v10-fast-default";
+const VISION_PIPELINE_ID = "discord-faithful-v11-remote-v2-single-call";
 const KREA2_CONTRIBUTION_TERMS_VERSION = "seedframe-krea2-vision-2026-08-25";
 const KREA2_DIAGNOSTIC_TERMS_VERSION = "seedframe-krea2-vision-diagnostics-2026-08-25";
 const KREA2_OPERATIONAL_ERROR_SCHEMA = "seedframe.krea2-vision-operational-error.v1";
@@ -1102,6 +1094,8 @@ const VISION_SIDECAR_SCHEMA_VERSION = 3;
 const KREA2_GUIDANCE_SAMPLE_COUNT = 8;
 const HISTORY_ROOT_ID = "krea2-discord-history-root";
 const HISTORY_MODAL_ID = "krea2-discord-history-modal";
+const SOURCE_PROMPT_MODAL_ID = "krea2-discord-source-prompt-modal";
+const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal";
 const PRODUCT_MODAL_ID = "krea2-discord-product-modal";
 const ONBOARDING_MODAL_ID = "krea2-discord-onboarding-modal";
 const ONBOARDING_VERSION = 9;
@@ -1301,8 +1295,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     visionEndpoint: "http://127.0.0.1:7870/api/discord-describe",
     visionToken: "",
     visionExecutionMode: "local",
-    visionAnalysisProfile: "fast",
-    visionAnalysisProfileVersion: 2,
+    visionAnalysisProfile: "v2",
+    visionAnalysisProfileVersion: 3,
     v2ThreePromptVariations: false,
     visionModel: "llamacpp::heretic-8b-q8_0",
     remoteLicense: null,
@@ -1745,7 +1739,11 @@ const CSS = `
 
 #${HISTORY_ROOT_ID} button,
 #${HISTORY_MODAL_ID} button,
-#${HISTORY_MODAL_ID} textarea {
+#${HISTORY_MODAL_ID} textarea,
+#${SOURCE_PROMPT_MODAL_ID} button,
+#${SOURCE_PROMPT_MODAL_ID} textarea,
+#${PROMPT_EDITOR_MODAL_ID} button,
+#${PROMPT_EDITOR_MODAL_ID} textarea {
     color: inherit;
     -webkit-text-fill-color: currentColor;
 }
@@ -1770,6 +1768,64 @@ const CSS = `
 #${HISTORY_ROOT_ID}[data-collapsed="true"] .krea2-history-expanded { display: none !important; }
 #${HISTORY_ROOT_ID}:not([data-collapsed="true"]) .krea2-history-collapsed { display: none !important; }
 
+#${HISTORY_ROOT_ID}[data-overlay="true"] {
+    z-index: 9990;
+    inset: 0;
+    width: 100vw;
+    min-width: 0;
+    max-width: none;
+    height: 100vh;
+    padding: clamp(10px, 1.8vw, 28px);
+    overscroll-behavior: contain;
+    background:
+        radial-gradient(circle at 18% 0%, rgba(207, 109, 48, .10), transparent 31%),
+        radial-gradient(circle at 86% 100%, rgba(88, 101, 242, .09), transparent 34%),
+        #090a0c;
+    border: 0;
+    box-shadow: none;
+}
+
+#${HISTORY_ROOT_ID}[data-overlay="true"] > .krea2-history-resizer,
+#${HISTORY_ROOT_ID}[data-overlay="true"] > .krea2-history-collapsed { display: none !important; }
+
+#${HISTORY_ROOT_ID}[data-overlay="true"] > .krea2-history-workspace {
+    display: grid !important;
+    grid-template-columns: minmax(0, 2.2fr) minmax(260px, .8fr);
+    grid-template-rows: auto auto auto auto auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "brand brand"
+        "header header"
+        "summary summary"
+        "average scheduler"
+        "tabs tabs"
+        "tools tools"
+        "completion completion"
+        "content content"
+        "pagination pagination";
+    width: min(1480px, 100%);
+    min-height: 0;
+    margin: 0 auto;
+    overflow: hidden;
+    border: 1px solid #302d2a;
+    border-radius: 18px;
+    background: linear-gradient(145deg, #111214 0%, #0d0f12 100%);
+    box-shadow: 0 28px 90px rgba(0, 0, 0, .62);
+}
+
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-brand-bar { grid-area: brand; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-header { grid-area: header; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-summary { grid-area: summary; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-average-queue { grid-area: average; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-scheduler { grid-area: scheduler; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-tabs { grid-area: tabs; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-library-tools { grid-area: tools; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-completion { grid-area: completion; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-interrogate-panel,
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-list { grid-area: content; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-pagination { grid-area: pagination; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-interrogate-panel[hidden],
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-list[hidden] { display: none !important; }
+
 .krea2-history-resizer {
     position: absolute;
     z-index: 2;
@@ -1779,6 +1835,40 @@ const CSS = `
     width: 7px;
     cursor: ew-resize;
 }
+
+.krea2-history-brand-bar {
+    flex: none;
+    display: flex;
+    height: 34px;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 12px;
+    border-bottom: 1px solid #202329;
+    color: #f7f8fa;
+    -webkit-text-fill-color: #f7f8fa;
+    background: #070809;
+    font: 700 12px/1 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: .01em;
+}
+.krea2-history-brand-mark {
+    position: relative;
+    width: 13px;
+    height: 13px;
+    flex: none;
+    border-radius: 4px;
+    background: conic-gradient(from 215deg, #2ac8c5, #6372ec, #e78142, #2ac8c5);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 0 10px rgba(67,167,192,.16);
+}
+.krea2-history-brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border-radius: 2px;
+    background: #070809;
+}
+.krea2-history-brand-title { white-space: nowrap; }
 
 .krea2-history-header {
     display: flex;
@@ -1793,6 +1883,40 @@ const CSS = `
 .krea2-history-title { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); font-size: 15px; font-weight: 700; letter-spacing: -.012em; }
 .krea2-history-subtitle { margin-top: 2px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .krea2-history-actions { display: flex; gap: 4px; }
+
+.krea2-history-expand,
+.krea2-history-hide-overlay {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 9px;
+    border: 1px solid #3b424e;
+    border-radius: 8px;
+    color: var(--krea2-text);
+    -webkit-text-fill-color: var(--krea2-text);
+    background: #20242c;
+    cursor: pointer;
+    font: 700 9.5px/1 system-ui, sans-serif;
+    white-space: nowrap;
+}
+.krea2-history-expand:hover { border-color: #6570dc; background: #292f46; }
+.krea2-history-hide-overlay {
+    display: none;
+    min-height: 38px;
+    padding: 0 15px;
+    border-color: #e58a4b;
+    color: #fff;
+    -webkit-text-fill-color: #fff;
+    background: linear-gradient(135deg, #c86428, #df7a38);
+    box-shadow: 0 7px 22px rgba(202, 99, 39, .25);
+    font-size: 11px;
+}
+.krea2-history-hide-overlay:hover { background: linear-gradient(135deg, #d56e2f, #ec8946); }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-expand,
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-rail-close { display: none !important; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-hide-overlay { display: inline-flex; }
 
 .krea2-history-icon,
 .krea2-history-collapse-launcher {
@@ -1813,6 +1937,25 @@ const CSS = `
 .krea2-history-icon:hover,
 .krea2-history-collapse-launcher:hover { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); border-color: var(--krea2-border); background: var(--krea2-surface-raised); }
 .krea2-history-collapse-launcher { margin: 10px auto; writing-mode: vertical-rl; height: auto; min-height: 118px; justify-content: start; gap: 9px; color: var(--krea2-muted); font-size: 10px; letter-spacing: .08em; }
+
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-header {
+    position: sticky;
+    z-index: 3;
+    top: 0;
+    min-height: 78px;
+    padding: 0 22px 0 26px;
+    background: rgba(17, 18, 20, .96);
+    backdrop-filter: blur(14px);
+}
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-brand-bar {
+    height: 36px;
+    min-height: 36px;
+    border-radius: 17px 17px 0 0;
+    font-size: 12.5px;
+}
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-title { font-size: clamp(20px, 2vw, 30px); font-weight: 760; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-subtitle { margin-top: 4px; font-size: 11px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-actions { align-items: center; gap: 8px; }
 
 .krea2-history-summary {
     display: grid;
@@ -1835,18 +1978,35 @@ const CSS = `
 .krea2-history-stat strong { display: block; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); font-size: 14px; font-weight: 700; }
 .krea2-history-stat span { color: var(--krea2-subtle); -webkit-text-fill-color: var(--krea2-subtle); font-size: 8px; font-weight: 650; text-transform: uppercase; letter-spacing: .055em; }
 
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-summary { gap: 12px; padding: 16px 22px 10px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-stat { padding: 13px 10px; border-radius: 11px; text-align: left; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-stat strong { font-size: 21px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-stat span { font-size: 9px; }
+
 .krea2-history-scheduler { margin: 10px 12px; padding: 9px 10px; border: 1px solid var(--krea2-border); border-radius: 8px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); background: var(--krea2-surface-raised); font-size: 9.5px; line-height: 1.45; }
 .krea2-history-scheduler strong { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); font-weight: 650; }
+
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-average-queue { margin: 0 6px 10px 22px; padding: 10px 12px; border: 1px solid var(--krea2-border); border-radius: 9px; text-align: left; background: var(--krea2-surface-raised); }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-scheduler { margin: 0 22px 10px 6px; padding: 10px 12px; }
 
 .krea2-history-tabs { display: flex; gap: 3px; margin: 0 12px 10px; padding: 3px; border: 1px solid var(--krea2-border); border-radius: 9px; background: #0d0f13; }
 .krea2-history-tab { flex: 1; min-width: 0; padding: 7px 3px; border: 0; border-radius: 6px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); background: transparent; cursor: pointer; font: 650 9.5px/1 system-ui, sans-serif; }
 .krea2-history-tab:hover { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: var(--krea2-surface-hover); }
 .krea2-history-tab[aria-selected="true"] { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: #2a303a; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
-.krea2-history-tab[data-filter="v2"] { color: #bfc5ff; -webkit-text-fill-color: #bfc5ff; border: 1px solid rgba(124,135,255,.3); }
-.krea2-history-tab[data-filter="v2"][data-profile-active="true"] { color: #eef0ff; -webkit-text-fill-color: #eef0ff; background: rgba(92,103,218,.2); box-shadow: inset 0 0 0 1px rgba(124,135,255,.22); }
-.krea2-history-tab[data-filter="v2"][aria-selected="true"] { color: #fff; -webkit-text-fill-color: #fff; background: linear-gradient(135deg,#5865f2,#7c57d9); box-shadow: 0 2px 8px rgba(88,101,242,.34); }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-tabs { margin: 0 22px 12px; padding: 4px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-tab { min-height: 38px; padding: 9px 10px; font-size: 10.5px; }
 
 .krea2-history-list { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    align-content: start;
+    gap: 12px;
+    padding: 4px 22px 22px;
+}
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-job { height: 100%; margin: 0; padding: 14px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-job-layout { grid-template-columns: 58px minmax(0, 1fr); gap: 12px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-job-thumb { width: 58px; height: 58px; }
 .krea2-history-pagination { display: flex; align-items: center; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--krea2-border); }
 .krea2-history-pagination[hidden] { display: none !important; }
 .krea2-history-page-label { min-width: 0; flex: 1; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); font-size: 9px; text-align: center; }
@@ -1857,10 +2017,8 @@ const CSS = `
 .krea2-history-empty { padding: 32px 18px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); text-align: center; font-size: 11px; }
 .krea2-interrogate-panel { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 14px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
 .krea2-interrogate-card { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--krea2-border); border-radius: 11px; background: var(--krea2-surface-raised); }
-.krea2-v2-mode { display: grid; gap: 4px; padding: 10px 11px; border: 1px solid rgba(124,135,255,.55); border-radius: 9px; color: #f2f3ff; -webkit-text-fill-color: #f2f3ff; background: linear-gradient(135deg,rgba(88,101,242,.28),rgba(124,87,217,.18)); }
-.krea2-v2-mode[hidden] { display: none !important; }
-.krea2-v2-mode strong { font-size: 11px; letter-spacing: .02em; }
-.krea2-v2-mode span { color: #c7cbf8; -webkit-text-fill-color: #c7cbf8; font-size: 9.5px; line-height: 1.45; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-interrogate-panel { padding: 8px 22px 22px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-interrogate-card { width: min(920px, 100%); box-sizing: border-box; margin: 0 auto; padding: 22px; }
 .krea2-interrogate-title { color: var(--krea2-text); font-size: 14px; font-weight: 750; letter-spacing: -.01em; }
 .krea2-interrogate-copy { margin-top: -5px; color: var(--krea2-muted); font-size: 10px; line-height: 1.5; }
 .krea2-interrogate-drop { display: grid; place-items: center; min-height: 142px; padding: 12px; overflow: hidden; border: 1px dashed #485161; border-radius: 10px; color: var(--krea2-muted); background: #101216; text-align: center; cursor: pointer; }
@@ -1903,8 +2061,38 @@ const CSS = `
 .krea2-history-job-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .krea2-history-job-preview { margin-top: 7px; display: -webkit-box; overflow: hidden; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); font-size: 9.5px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
-#${HISTORY_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
+#${HISTORY_MODAL_ID},
+#${SOURCE_PROMPT_MODAL_ID},
+#${PROMPT_EDITOR_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
 .krea2-history-dialog { width: min(760px, 92vw); max-height: min(760px, 88vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #343a45; border-radius: 14px; color: var(--krea2-text); background: #17191f; box-shadow: 0 28px 90px rgba(0,0,0,.62); }
+.krea2-history-dialog[data-source-prompt="true"] { width: min(900px, 94vw); }
+.krea2-history-dialog[data-prompt-editor="true"] { width: min(920px, 94vw); max-height: min(860px, 92vh); }
+.krea2-prompt-editor-body { display: grid; min-height: 0; gap: 12px; overflow: auto; }
+.krea2-prompt-editor-explanation { padding: 11px 13px; border: 1px solid #313949; border-radius: 9px; color: #c8d1df; background: #171d28; font-size: 11px; line-height: 1.55; }
+.krea2-prompt-editor-field { display: grid; gap: 6px; }
+.krea2-prompt-editor-field > label { color: #a8b0bd; font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.krea2-prompt-editor-prompt,
+.krea2-prompt-editor-instruction { box-sizing: border-box; width: 100%; resize: vertical; border: 1px solid #343b48; border-radius: 9px; color: #f3f5f7; -webkit-text-fill-color: #f3f5f7; background: #0f1217; font: 500 11px/1.55 system-ui,sans-serif; }
+.krea2-prompt-editor-prompt { min-height: 150px; padding: 12px; }
+.krea2-prompt-editor-instruction { min-height: 74px; padding: 10px 12px; }
+.krea2-prompt-editor-transcript { display: grid; max-height: 250px; gap: 8px; overflow: auto; padding: 2px; }
+.krea2-prompt-editor-turn { padding: 10px 12px; border: 1px solid #303744; border-radius: 10px; color: #dfe4ec; background: #1a1e25; font-size: 11px; line-height: 1.52; white-space: pre-wrap; }
+.krea2-prompt-editor-turn[data-role="user"] { margin-left: 12%; border-color: #3e4978; background: #202641; }
+.krea2-prompt-editor-turn[data-role="assistant"] { margin-right: 6%; border-color: #315c47; background: #14261d; }
+.krea2-prompt-editor-turn-actions { display: flex; gap: 7px; margin-top: 8px; }
+.krea2-prompt-editor-turn-actions button { min-height: 28px; padding: 5px 9px; border: 1px solid #3a4352; border-radius: 7px; color: #e9edf3; background: #20252d; cursor: pointer; font-size: 9px; font-weight: 700; }
+.krea2-prompt-editor-compose { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: end; }
+.krea2-prompt-editor-send { min-height: 74px; padding: 9px 15px; border: 1px solid #6977f4; border-radius: 9px; color: #fff; background: #5865f2; cursor: pointer; font-weight: 750; }
+.krea2-prompt-editor-send:disabled { cursor: wait; opacity: .55; }
+.krea2-prompt-editor-status { min-height: 18px; color: #a8b0bd; font-size: 10px; line-height: 1.45; }
+.krea2-prompt-editor-status[data-state="error"] { color: #ffb4b8; }
+.krea2-prompt-editor-status[data-state="success"] { color: #a9edc1; }
+.krea2-history-brand-editor { margin-left: auto; min-height: 24px; padding: 3px 8px; border: 1px solid #394252; border-radius: 7px; color: #dfe6f0; background: #171b22; cursor: pointer; font: 700 9px/1 system-ui,sans-serif; }
+.krea2-history-brand-editor:hover { border-color: #6977f4; background: #20263a; }
+.krea2-source-prompt-body { display: grid; gap: 14px; }
+.krea2-source-prompt-explanation { margin: 0; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); font-size: 11px; line-height: 1.55; }
+#${SOURCE_PROMPT_MODAL_ID} .krea2-product-tabs { padding: 0; border: 1px solid #2c313a; border-radius: 9px 9px 0 0; }
+#${SOURCE_PROMPT_MODAL_ID} .krea2-history-prompt { min-height: 260px; max-height: 55vh; }
 .krea2-history-dialog-head { display: flex; align-items: center; gap: 12px; padding: 17px 20px; border-bottom: 1px solid #2c313a; }
 .krea2-history-dialog-head h2 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
 .krea2-history-dialog-body { overflow: auto; padding: 20px; }
@@ -1948,6 +2136,9 @@ const CSS = `
 .krea2-history-action:disabled { opacity: .45; cursor: not-allowed; }
 
 .krea2-history-library-tools { display: grid; grid-template-columns: minmax(0, 1fr) 104px; gap: 6px; margin: 0 12px 10px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-library-tools { grid-template-columns: minmax(0, 1fr) minmax(180px, 260px); gap: 10px; margin: 0 22px 12px; }
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-search,
+#${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-model-filter { min-height: 40px; font-size: 11px; }
 .krea2-history-search,
 .krea2-history-model-filter,
 .krea2-workshop-select { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 9px; border: 1px solid var(--krea2-border, #343a45); border-radius: 8px; color: var(--krea2-text, #f3f5f7); -webkit-text-fill-color: var(--krea2-text, #f3f5f7); background: #0d0f13; font: 550 10px/1.2 system-ui, sans-serif; }
@@ -2055,17 +2246,28 @@ const CSS = `
 .krea2-onboarding-action[data-primary="true"] { border-color: #7289ff; color: #fff; -webkit-text-fill-color: #fff; background: #5865f2; }
 
 @media (max-width: 1120px) {
-    #${HISTORY_ROOT_ID}:not([data-collapsed="true"]) { --krea2-history-width: 292px !important; min-width: 268px; }
+    #${HISTORY_ROOT_ID}:not([data-collapsed="true"]):not([data-overlay="true"]) { --krea2-history-width: 292px !important; min-width: 268px; }
 }
 @media (max-width: 920px) {
-    #${HISTORY_ROOT_ID} { width: 44px !important; min-width: 44px !important; max-width: 44px !important; }
-    #${HISTORY_ROOT_ID} .krea2-history-expanded { display: none !important; }
-    #${HISTORY_ROOT_ID} .krea2-history-collapsed { display: flex !important; }
+    #${HISTORY_ROOT_ID}:not([data-overlay="true"]) { width: 44px !important; min-width: 44px !important; max-width: 44px !important; }
+    #${HISTORY_ROOT_ID}:not([data-overlay="true"]) .krea2-history-expanded { display: none !important; }
+    #${HISTORY_ROOT_ID}:not([data-overlay="true"]) .krea2-history-collapsed { display: flex !important; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] { width: 100vw !important; min-width: 0 !important; max-width: none !important; padding: 8px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] > .krea2-history-workspace { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto auto auto auto auto minmax(0, 1fr) auto; grid-template-areas: "brand" "header" "summary" "average" "scheduler" "tabs" "tools" "completion" "content" "pagination"; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-average-queue,
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-scheduler { margin: 0 14px 8px; }
     .krea2-history-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .krea2-history-result { grid-template-columns: 132px minmax(0, 1fr); }
     .krea2-onboarding-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px 14px 8px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-header { padding: 0 12px 0 15px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-hide-overlay { padding: 0 10px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-tabs { margin: 0 14px 10px; overflow-x: auto; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-tab { flex: 0 0 auto; min-width: 92px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-list { grid-template-columns: 1fr; padding: 4px 14px 16px; }
+    #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-library-tools { grid-template-columns: 1fr; margin: 0 14px 10px; }
     .krea2-onboarding-execution { grid-template-columns: 1fr; }
     .krea2-history-result { grid-template-columns: 1fr; }
     .krea2-history-source-frame { max-width: 220px; }
@@ -3013,6 +3215,36 @@ function classifyPromptMetadata(metadata) {
     return {classification: priority.find(value => rejected.includes(value)) || "metadata_no_prompt", chunks: metadata.chunks};
 }
 
+function selectMetadataPromptCandidates(embedded = {}, sidecar = null, companionStatus = "none") {
+    const candidates = [];
+    if (embedded?.classification === "usable" && embedded.prompt) {
+        candidates.push({prompt: embedded.prompt, source: "embedded image metadata"});
+    }
+    if (sidecar?.classification === "usable" && sidecar.prompt) {
+        candidates.push({prompt: sidecar.prompt, source: sidecar.source || "same-message YAML"});
+    }
+
+    const unique = new Map();
+    for (const candidate of candidates) {
+        const prompt = String(candidate.prompt || "").replace(/\s+/g, " ").trim();
+        if (!prompt || unique.has(prompt)) continue;
+        unique.set(prompt, Object.freeze({prompt: String(candidate.prompt).trim(), source: String(candidate.source)}));
+    }
+    if (unique.size) {
+        return Object.freeze({
+            status: "usable",
+            classification: "usable",
+            prompts: Object.freeze([...unique.values()])
+        });
+    }
+
+    const classifications = [embedded?.classification, sidecar?.classification];
+    if (companionStatus === "ambiguous") classifications.push("structured");
+    const classification = ["non_english", "structured", "encoded_or_unknown", "metadata_no_prompt", "no_metadata"]
+        .find(value => classifications.includes(value)) || "no_metadata";
+    return Object.freeze({status: "none", classification, prompts: Object.freeze([])});
+}
+
 async function extractConfidentPrompt(bytes, format) {
     if (format.kind === "png" && parseHardenedPngPromptMetadata) {
         const hardened = await parseHardenedPngPromptMetadata(bytes, {
@@ -3198,6 +3430,25 @@ function normalizeVisionPromptVariants(raw, {requireThree = true, fallbackPrompt
         throw new Error("Vision Prompt Studio returned duplicate or invalid prompt variations.");
     }
     return prompts;
+}
+
+function visibleHistoryPromptVariants(job, settings = {}) {
+    const storedVariants = Array.isArray(job?.prompt_variants) && job.prompt_variants.length
+        ? job.prompt_variants
+        : job?.prompt
+            ? [job.prompt]
+            : [];
+    if (!storedVariants.length) return [];
+    const variants = normalizeVisionPromptVariants(storedVariants, {
+        requireThree: false,
+        fallbackPrompt: job?.prompt || ""
+    });
+    const analysisProfile = String(job?.reproducibility?.analysis_profile || "").trim().toLowerCase();
+    const isV2Result = analysisProfile === "v2" || /V2 Direct Fidelity/i.test(String(job?.model || ""));
+    if (!isV2Result) return variants;
+    return settings?.v2ThreePromptVariations === true && variants.length === 3
+        ? variants
+        : [variants[0]];
 }
 
 function parseVisionPromptResponse(rawText, {expectedPromptCount = null, expectedDatasetGuidance = null, expectedFeedbackDigest = null} = {}) {
@@ -3870,6 +4121,10 @@ class Krea2DiscordCollector {
         this.historyRequestController = null;
         this.historySearchTimer = null;
         this.historyRoot = null;
+        this.historyOverlayOpen = false;
+        this.historyOverlayReturnFocus = null;
+        this.historyOverlayDocument = null;
+        this.historyOverlayKeyHandler = event => this.handleHistoryOverlayKeydown(event);
         this.historyJobs = [];
         this.historySummary = null;
         this.historyScheduler = null;
@@ -3913,6 +4168,9 @@ class Krea2DiscordCollector {
         this.contextTargetHandler = null;
         this.historyResizeCleanup = null;
         this.historyModalCleanup = null;
+        this.sourcePromptModalCleanup = null;
+        this.promptEditorCleanup = null;
+        this.feedbackModalCleanup = null;
         this.lastPathname = "";
         this.running = false;
         this.generation = 0;
@@ -3925,7 +4183,7 @@ class Krea2DiscordCollector {
         this.api = new BdApi(PLUGIN_NAME);
         const storedSettings = this.api.Data.load("settings") || {};
         this.settings = {...DEFAULT_SETTINGS, ...storedSettings};
-        const migrateV2Profile = Math.trunc(Number(storedSettings.visionAnalysisProfileVersion) || 0) < 2;
+        const migrateV2Profile = Math.trunc(Number(storedSettings.visionAnalysisProfileVersion) || 0) < 3;
         // Releases before 0.13.4 exposed an obsolete direct-upload endpoint and
         // token. Contributions now pass only through the authenticated loopback
         // Vision broker, so never retain or reuse those legacy values.
@@ -3934,7 +4192,7 @@ class Krea2DiscordCollector {
         this.settings.visionExecutionMode = normalizeVisionExecutionMode(this.settings.visionExecutionMode);
         this.settings.visionAnalysisProfile = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
         if (migrateV2Profile) this.settings.visionAnalysisProfile = "v2";
-        this.settings.visionAnalysisProfileVersion = 2;
+        this.settings.visionAnalysisProfileVersion = 3;
         // The magnifier is prompt-only. Metadata collection remains on the
         // separate + action; a stale legacy opt-in must never make Vision
         // prompts or source images into dataset contributions.
@@ -4003,7 +4261,7 @@ class Krea2DiscordCollector {
         this.ensureHistoryRail();
         void this.refreshHistory();
         this.historyPollTimer = setInterval(() => {
-            if (this.historyRoot?.isConnected && this.settings.historyCollapsed !== true) void this.refreshHistory();
+            if (this.historyRoot?.isConnected && (this.historyOverlayOpen || this.settings.historyCollapsed !== true)) void this.refreshHistory();
         }, HISTORY_POLL_MS);
         this.observer = new MutationObserver(mutations => {
             const hasPotentialMessageImage = mutations.some(mutation => {
@@ -4063,6 +4321,12 @@ class Krea2DiscordCollector {
         this.historyResizeCleanup = null;
         this.historyModalCleanup?.();
         this.historyModalCleanup = null;
+        this.sourcePromptModalCleanup?.();
+        this.sourcePromptModalCleanup = null;
+        this.promptEditorCleanup?.();
+        this.promptEditorCleanup = null;
+        this.feedbackModalCleanup?.();
+        this.feedbackModalCleanup = null;
         for (const objectUrl of this.historyThumbnailUrls.values()) this.revokeObjectUrl(objectUrl);
         this.historyOriginalPaths.clear();
         this.historyThumbnailUrls.clear();
@@ -4080,10 +4344,14 @@ class Krea2DiscordCollector {
         this.visualEmbeddingCache.clear();
         this.batchSelected.clear();
         this.batchItems = [];
+        this.setHistoryOverlay(false, {restoreFocus: false});
         this.historyRoot?.remove();
         this.historyRoot = null;
+        this.historyOverlayReturnFocus = null;
         document.getElementById(HISTORY_ROOT_ID)?.remove();
         document.getElementById(HISTORY_MODAL_ID)?.remove();
+        document.getElementById(SOURCE_PROMPT_MODAL_ID)?.remove();
+        document.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
         document.getElementById(PRODUCT_MODAL_ID)?.remove();
         document.getElementById(ONBOARDING_MODAL_ID)?.remove();
         for (const controller of this.controllers) controller.abort();
@@ -4126,7 +4394,7 @@ class Krea2DiscordCollector {
                     this.enhanceImage(image);
                     const visionButton = this.visionButtonByImage.get(image);
                     const items = [
-                        {label: "Describe image", action: () => visionButton && this.queueVisionAnalysis(image, visionButton)},
+                        {label: "Get prompt (metadata first)", action: () => visionButton && this.queueVisionAnalysis(image, visionButton)},
                         {label: "Open Prompt History", action: () => this.setHistoryCollapsed(false)}
                     ];
                     const item = menu.buildItem({type: "submenu", label: "KREA2 Vision", items});
@@ -4589,6 +4857,7 @@ class Krea2DiscordCollector {
         const root = document.createElement("aside");
         root.id = HISTORY_ROOT_ID;
         root.dataset.collapsed = this.settings.historyCollapsed ? "true" : "false";
+        root.dataset.overlay = this.historyOverlayOpen ? "true" : "false";
         root.dataset.floating = "true";
         root.style.setProperty("--krea2-history-width", `${this.settings.historyWidth}px`);
         root.setAttribute("aria-label", "KREA2 prompt history");
@@ -4596,14 +4865,36 @@ class Krea2DiscordCollector {
         const collapsed = document.createElement("button");
         collapsed.type = "button";
         collapsed.className = "krea2-history-collapse-launcher krea2-history-collapsed";
-        collapsed.title = "Open KREA2 prompt history";
+        collapsed.title = "Open KREA2 prompt history or the full Vision Inbox";
         collapsed.setAttribute("aria-label", collapsed.title);
         collapsed.append(document.createTextNode("◀"), document.createTextNode("PROMPT HISTORY"));
-        collapsed.addEventListener("click", () => this.setHistoryCollapsed(false));
+        collapsed.addEventListener("click", () => {
+            const view = root.ownerDocument?.defaultView || window;
+            if (view.matchMedia?.("(max-width: 920px)")?.matches) this.setHistoryOverlay(true);
+            else this.setHistoryCollapsed(false);
+        });
 
         const expanded = document.createElement("div");
-        expanded.className = "krea2-history-expanded";
+        expanded.className = "krea2-history-expanded krea2-history-workspace";
         expanded.style.cssText = "display:flex;min-height:0;flex:1;flex-direction:column";
+
+        const brandBar = document.createElement("div");
+        brandBar.className = "krea2-history-brand-bar";
+        brandBar.setAttribute("aria-label", "Krea2 Vision");
+        const brandMark = document.createElement("span");
+        brandMark.className = "krea2-history-brand-mark";
+        brandMark.setAttribute("aria-hidden", "true");
+        const brandTitle = document.createElement("span");
+        brandTitle.className = "krea2-history-brand-title";
+        brandTitle.textContent = "Krea2 Vision";
+        const brandPromptEditor = document.createElement("button");
+        brandPromptEditor.type = "button";
+        brandPromptEditor.className = "krea2-history-brand-editor";
+        brandPromptEditor.textContent = "✦ Qwen Prompt Editor";
+        brandPromptEditor.title = "Paste or open a KREA2 prompt and ask Qwen 3.8 Cloud to revise it";
+        brandPromptEditor.setAttribute("aria-label", "Open Qwen Prompt Editor");
+        brandPromptEditor.addEventListener("click", () => this.openPromptEditor("", root.ownerDocument || document));
+        brandBar.append(brandMark, brandTitle, brandPromptEditor);
 
         const header = document.createElement("header");
         header.className = "krea2-history-header";
@@ -4618,6 +4909,16 @@ class Krea2DiscordCollector {
         heading.append(title, subtitle);
         const actions = document.createElement("div");
         actions.className = "krea2-history-actions";
+        const expandOverlay = document.createElement("button");
+        expandOverlay.type = "button";
+        expandOverlay.className = "krea2-history-expand";
+        expandOverlay.dataset.action = "expand-overlay";
+        expandOverlay.textContent = "⛶ Expand";
+        expandOverlay.title = "Expand Discord Vision Inbox over Discord";
+        expandOverlay.setAttribute("aria-label", "Expand Discord Vision Inbox");
+        expandOverlay.setAttribute("aria-controls", HISTORY_ROOT_ID);
+        expandOverlay.setAttribute("aria-expanded", "false");
+        expandOverlay.addEventListener("click", () => this.setHistoryOverlay(true));
         const refresh = document.createElement("button");
         refresh.type = "button";
         refresh.className = "krea2-history-icon";
@@ -4627,14 +4928,24 @@ class Krea2DiscordCollector {
         refresh.addEventListener("click", () => void this.refreshHistory(true));
         const close = document.createElement("button");
         close.type = "button";
-        close.className = "krea2-history-icon";
+        close.className = "krea2-history-icon krea2-history-rail-close";
         close.textContent = "×";
         close.title = "Collapse Prompt History";
         close.setAttribute("aria-label", close.title);
         close.addEventListener("click", () => {
             this.setHistoryCollapsed(true);
         });
-        actions.append(refresh, close);
+        const hideOverlay = document.createElement("button");
+        hideOverlay.type = "button";
+        hideOverlay.className = "krea2-history-hide-overlay";
+        hideOverlay.dataset.action = "hide-overlay";
+        hideOverlay.textContent = "↘ Hide overlay";
+        hideOverlay.title = "Hide Discord Vision Inbox and return to Discord";
+        hideOverlay.setAttribute("aria-label", "Hide Discord Vision Inbox overlay");
+        hideOverlay.setAttribute("aria-controls", HISTORY_ROOT_ID);
+        hideOverlay.hidden = true;
+        hideOverlay.addEventListener("click", () => this.setHistoryOverlay(false));
+        actions.append(expandOverlay, refresh, hideOverlay, close);
         header.append(heading, actions);
 
         const summary = document.createElement("div");
@@ -4651,7 +4962,7 @@ class Krea2DiscordCollector {
         const tabs = document.createElement("div");
         tabs.className = "krea2-history-tabs";
         tabs.setAttribute("role", "tablist");
-        for (const [label, filter] of [["Interrogate", "interrogate"], ["V2", "v2"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Errors", "errors"]]) {
+        for (const [label, filter] of [["Interrogate", "interrogate"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Errors", "errors"]]) {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "krea2-history-tab";
@@ -4660,15 +4971,10 @@ class Krea2DiscordCollector {
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", filter === this.historyFilter ? "true" : "false");
             button.addEventListener("click", () => {
-                if (filter === "v2") {
-                    this.settings.visionAnalysisProfile = "v2";
-                    this.settings.visionAnalysisProfileVersion = 2;
-                    this.api.Data.save("settings", this.settings);
-                }
                 this.historyFilter = filter;
                 this.historyPage = 1;
                 this.renderHistoryRail();
-                if (filter !== "interrogate" && filter !== "v2") void this.refreshHistory(true);
+                if (filter !== "interrogate") void this.refreshHistory(true);
             });
             tabs.append(button);
         }
@@ -4731,7 +5037,7 @@ class Krea2DiscordCollector {
         interrogate.dataset.role = "interrogate";
         interrogate.setAttribute("role", "tabpanel");
         this.buildInterrogatePanel(interrogate);
-        expanded.append(header, summary, averageQueue, scheduler, tabs, libraryTools, completion, interrogate, list, pagination);
+        expanded.append(brandBar, header, summary, averageQueue, scheduler, tabs, libraryTools, completion, interrogate, list, pagination);
 
         const resizer = document.createElement("div");
         resizer.className = "krea2-history-resizer krea2-history-expanded";
@@ -4746,16 +5052,6 @@ class Krea2DiscordCollector {
         panel.replaceChildren();
         const card = document.createElement("section");
         card.className = "krea2-interrogate-card";
-
-        const v2Mode = document.createElement("div");
-        v2Mode.className = "krea2-v2-mode";
-        v2Mode.dataset.role = "v2-mode";
-        v2Mode.hidden = true;
-        const v2ModeTitle = document.createElement("strong");
-        v2ModeTitle.textContent = "V2 DIRECT FIDELITY — ACTIVE";
-        const v2ModeCopy = document.createElement("span");
-        v2ModeCopy.textContent = "Every magnifier and upload now uses the one-pass V2 system for closer pose, action, contact, camera angle, and framing.";
-        v2Mode.append(v2ModeTitle, v2ModeCopy);
 
         const title = document.createElement("div");
         title.className = "krea2-interrogate-title";
@@ -4931,7 +5227,7 @@ class Krea2DiscordCollector {
         refresh.addEventListener("click", () => void this.refreshInterrogateModels(true));
         start.addEventListener("click", () => void this.queueInterrogateSelection());
 
-        card.append(v2Mode, title, copy, input, drop, fileRow, field, profileField, noteField, actions, status, queue);
+        card.append(title, copy, input, drop, fileRow, field, profileField, noteField, actions, status, queue);
         panel.append(card);
         this.renderInterrogatePanel(panel);
         if (!this.interrogateModels.length) void this.refreshInterrogateModels();
@@ -4947,7 +5243,6 @@ class Krea2DiscordCollector {
         const profile = panel.querySelector('[data-role="interrogate-profile"]');
         const title = panel.querySelector('[data-role="interrogate-title"]');
         const copy = panel.querySelector('[data-role="interrogate-copy"]');
-        const v2Mode = panel.querySelector('[data-role="v2-mode"]');
         const note = panel.querySelector('[data-role="interrogate-identity-note"]');
         const start = panel.querySelector('[data-role="interrogate-start"]');
         const refresh = panel.querySelector('[data-role="interrogate-refresh"]');
@@ -4988,15 +5283,11 @@ class Krea2DiscordCollector {
         }
         if (this.interrogateSelectedModel && expectedOptions.includes(this.interrogateSelectedModel)) model.value = this.interrogateSelectedModel;
         model.disabled = this.interrogateModelsLoading || !this.interrogateModels.length || this.interrogatePreparing;
-        const isV2Tab = this.historyFilter === "v2";
-        if (v2Mode) v2Mode.hidden = !isV2Tab;
-        if (title) title.textContent = isV2Tab ? "V2 image interrogation" : "Interrogate an image";
-        if (copy) copy.textContent = isV2Tab
-            ? "Upload an image here or use the magnifier on any Discord image. V2 prioritizes visible pose, action, contact, camera angle, and framing in one direct observation pass."
-            : "Upload one image, choose the exact Vision model, and add it to the same authenticated shared queue used by Discord image magnifiers. Files remain in session memory.";
-        profile.value = isV2Tab ? "v2" : normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
-        profile.disabled = isV2Tab || this.interrogatePreparing;
-        start.textContent = isV2Tab ? "Start V2 interrogation" : "Start interrogation";
+        if (title) title.textContent = "Interrogate an image";
+        if (copy) copy.textContent = "Upload one image, choose the exact Vision model, and add it to the same authenticated shared queue used by Discord image magnifiers. Files remain in session memory.";
+        profile.value = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
+        profile.disabled = this.interrogatePreparing;
+        start.textContent = "Start interrogation";
         if (note.value !== this.interrogateIdentityNote) note.value = this.interrogateIdentityNote;
         note.disabled = this.interrogatePreparing;
         refresh.disabled = this.interrogateModelsLoading || this.interrogatePreparing;
@@ -5248,6 +5539,98 @@ class Krea2DiscordCollector {
         if (!this.settings.historyCollapsed) void this.refreshHistory(true);
     }
 
+    setHistoryOverlay(open, {restoreFocus = true} = {}) {
+        const root = this.historyRoot;
+        if (!root) {
+            this.historyOverlayDocument?.removeEventListener?.("keydown", this.historyOverlayKeyHandler, true);
+            this.historyOverlayDocument = null;
+            this.historyOverlayOpen = false;
+            this.historyOverlayReturnFocus = null;
+            return false;
+        }
+        const next = open === true;
+        if (next === this.historyOverlayOpen && root.dataset.overlay === (next ? "true" : "false")) return false;
+        const modalDocument = root.ownerDocument || document;
+        if (next) {
+            const activeElement = modalDocument.activeElement;
+            this.historyOverlayReturnFocus = activeElement && typeof activeElement.focus === "function" ? activeElement : null;
+            this.historyOverlayOpen = true;
+            root.dataset.overlay = "true";
+            root.setAttribute("role", "dialog");
+            root.setAttribute("aria-modal", "true");
+            root.setAttribute("aria-label", "Discord Vision Inbox overlay");
+            this.historyOverlayDocument = modalDocument;
+            modalDocument.addEventListener("keydown", this.historyOverlayKeyHandler, true);
+            this.renderHistoryRail(root);
+            const hideButton = root.querySelector('[data-action="hide-overlay"]');
+            try { hideButton?.focus({preventScroll: true}); }
+            catch { hideButton?.focus(); }
+            return true;
+        }
+
+        const returnFocus = this.historyOverlayReturnFocus;
+        this.historyOverlayDocument?.removeEventListener?.("keydown", this.historyOverlayKeyHandler, true);
+        this.historyOverlayDocument = null;
+        this.historyOverlayOpen = false;
+        this.historyOverlayReturnFocus = null;
+        root.dataset.overlay = "false";
+        root.removeAttribute("role");
+        root.removeAttribute("aria-modal");
+        root.setAttribute("aria-label", "KREA2 prompt history");
+        this.renderHistoryRail(root);
+        if (restoreFocus) {
+            const fallback = this.settings.historyCollapsed
+                ? root.querySelector(".krea2-history-collapse-launcher")
+                : root.querySelector('[data-action="expand-overlay"]');
+            const focusTarget = this.settings.historyCollapsed ? fallback : (returnFocus || fallback);
+            if (focusTarget && focusTarget.isConnected !== false && typeof focusTarget.focus === "function") {
+                try { focusTarget.focus({preventScroll: true}); }
+                catch { focusTarget.focus(); }
+            }
+        }
+        return true;
+    }
+
+    handleHistoryOverlayKeydown(event) {
+        const root = this.historyRoot;
+        if (!this.historyOverlayOpen || !root || root.dataset.overlay !== "true") return false;
+        const modalDocument = root.ownerDocument || document;
+        const blockingModal = [...modalDocument.querySelectorAll('[aria-modal="true"]')]
+            .some(element => element !== root && !root.contains(element));
+        if (blockingModal) return false;
+        if (event.key === "Escape") {
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            this.setHistoryOverlay(false);
+            return true;
+        }
+        if (event.key !== "Tab") return false;
+        const focusable = [...root.querySelectorAll([
+            "button:not([disabled]):not([hidden])",
+            "input:not([disabled]):not([hidden])",
+            "select:not([disabled]):not([hidden])",
+            "textarea:not([disabled]):not([hidden])",
+            "a[href]:not([hidden])",
+            '[tabindex]:not([tabindex="-1"]):not([hidden])'
+        ].join(","))].filter(element => {
+            if (element.hidden || element.getAttribute?.("aria-hidden") === "true") return false;
+            return typeof element.getClientRects !== "function" || element.getClientRects().length > 0;
+        });
+        if (!focusable.length) return false;
+        const active = modalDocument.activeElement;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const moveTo = event.shiftKey
+            ? (active === first || !root.contains(active) ? last : null)
+            : (active === last || !root.contains(active) ? first : null);
+        if (!moveTo) return false;
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        try { moveTo.focus({preventScroll: true}); }
+        catch { moveTo.focus(); }
+        return true;
+    }
+
     beginHistoryResize(event) {
         if (event.button !== 0 || !this.historyRoot) return;
         event.preventDefault();
@@ -5283,7 +5666,7 @@ class Krea2DiscordCollector {
             const requestUrl = new URL(`${baseUrl}/api/discord-jobs`);
             requestUrl.searchParams.set("page", String(this.historyPage));
             requestUrl.searchParams.set("page_size", String(HISTORY_PAGE_SIZE));
-            requestUrl.searchParams.set("view", this.historyFilter === "interrogate" || this.historyFilter === "v2" ? "recent" : this.historyFilter);
+            requestUrl.searchParams.set("view", this.historyFilter === "interrogate" ? "recent" : this.historyFilter);
             if (this.historySearch.trim()) requestUrl.searchParams.set("q", this.historySearch.trim().slice(0, 200));
             if (this.historyModelFilter !== "all") requestUrl.searchParams.set("model", this.historyModelFilter);
             const expectedUrl = requestUrl.toString();
@@ -5326,8 +5709,12 @@ class Krea2DiscordCollector {
 
     renderHistoryRail(root = this.historyRoot) {
         if (!root) return;
+        root.dataset.overlay = this.historyOverlayOpen ? "true" : "false";
         const heading = root?.querySelector(".krea2-history-title");
         const subtitle = root?.querySelector(".krea2-history-subtitle");
+        const expandOverlay = root?.querySelector('[data-action="expand-overlay"]');
+        const hideOverlay = root?.querySelector('[data-action="hide-overlay"]');
+        const railClose = root?.querySelector(".krea2-history-rail-close");
         const summaryNode = root?.querySelector('[data-role="summary"]');
         const averageQueueNode = root?.querySelector('[data-role="average-queue"]');
         const schedulerNode = root?.querySelector('[data-role="scheduler"]');
@@ -5340,10 +5727,18 @@ class Krea2DiscordCollector {
         const completion = root?.querySelector('[data-role="completion"]');
         if (!summaryNode || !averageQueueNode || !schedulerNode || !interrogateNode || !listNode || !paginationNode) return;
 
-        const isV2 = this.historyFilter === "v2";
-        const isInterrogate = this.historyFilter === "interrogate" || isV2;
-        if (heading) heading.textContent = isV2 ? "V2 Direct Fidelity" : isInterrogate ? "Interrogate" : "Prompt History";
-        if (subtitle) subtitle.textContent = isV2 ? "Active · one pass · closer composition" : isInterrogate ? "Upload · choose model · queue" : "All local Vision jobs";
+        const isInterrogate = this.historyFilter === "interrogate";
+        const overlayOpen = this.historyOverlayOpen === true;
+        if (heading) heading.textContent = overlayOpen ? "Discord Vision Inbox" : isInterrogate ? "Interrogate" : "Prompt History";
+        if (subtitle) subtitle.textContent = overlayOpen
+            ? (isInterrogate ? "Interrogate images · choose model · shared queue" : "Review prompts, queue state, and completed Vision jobs")
+            : isInterrogate ? "Upload · choose model · queue" : "All local Vision jobs";
+        if (expandOverlay) {
+            expandOverlay.hidden = overlayOpen;
+            expandOverlay.setAttribute("aria-expanded", overlayOpen ? "true" : "false");
+        }
+        if (hideOverlay) hideOverlay.hidden = !overlayOpen;
+        if (railClose) railClose.hidden = overlayOpen;
         if (libraryTools) libraryTools.hidden = isInterrogate;
         interrogateNode.hidden = !isInterrogate;
         listNode.hidden = isInterrogate;
@@ -5351,12 +5746,6 @@ class Krea2DiscordCollector {
 
         for (const tab of root.querySelectorAll(".krea2-history-tab")) {
             tab.setAttribute("aria-selected", tab.dataset.filter === this.historyFilter ? "true" : "false");
-            if (tab.dataset.filter === "v2") {
-                const active = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile) === "v2";
-                tab.dataset.profileActive = active ? "true" : "false";
-                tab.textContent = active ? "V2 ON" : "V2";
-                tab.setAttribute("aria-label", active ? "V2 Direct Fidelity is the active magnifier prompt system" : "Activate V2 Direct Fidelity");
-            }
         }
         this.renderInterrogatePanel(interrogateNode);
 
@@ -5982,6 +6371,11 @@ class Krea2DiscordCollector {
         copy.dataset.primary = "true";
         copy.textContent = "Copy prompt";
         copy.disabled = true;
+        const editWithQwen = modalDocument.createElement("button");
+        editWithQwen.type = "button";
+        editWithQwen.className = "krea2-history-action";
+        editWithQwen.textContent = "✦ Edit with Qwen";
+        editWithQwen.disabled = true;
         const cancelJob = modalDocument.createElement("button");
         cancelJob.type = "button";
         cancelJob.className = "krea2-history-action";
@@ -5992,7 +6386,7 @@ class Krea2DiscordCollector {
         done.className = "krea2-history-action";
         done.textContent = "Close";
         done.addEventListener("click", cleanup);
-        actions.append(cancelJob, retry, copy, done);
+        actions.append(cancelJob, retry, editWithQwen, copy, done);
 
         const renderCurrentJob = async () => {
             if (!currentJob || controller.signal.aborted) return;
@@ -6016,6 +6410,7 @@ class Krea2DiscordCollector {
                     ? "Run the locally saved original through the selected Vision model again"
                     : "Unavailable because the original image is not in the configured local save folder";
             copy.disabled = !currentJob.prompt;
+            editWithQwen.disabled = !currentJob.prompt;
             if (!active && detailPollTimer !== null) {
                 clearInterval(detailPollTimer);
                 detailPollTimer = null;
@@ -6097,6 +6492,9 @@ class Krea2DiscordCollector {
                 setTimeout(() => { if (copy.isConnected) copy.textContent = "Copy prompt"; }, 1400);
             }
             catch { this.toast("Discord could not copy the prompt to the clipboard.", "error"); }
+        });
+        editWithQwen.addEventListener("click", () => {
+            if (currentJob?.prompt) this.openPromptEditor(currentJob.prompt, modalDocument);
         });
 
         const refreshOpenJob = async () => {
@@ -6199,12 +6597,7 @@ class Krea2DiscordCollector {
         const output = modalDocument.createElement("div");
         output.className = "krea2-history-output";
         if (job.prompt) {
-            const storedVariants = Array.isArray(job.prompt_variants) && job.prompt_variants.length
-                ? job.prompt_variants
-                : [job.prompt];
-            const isV2Result = /V2 Direct Fidelity/i.test(String(job.model || ""));
-            const requestedVariantCount = Number(job.reproducibility?.prompt_variant_count || 0);
-            const variants = isV2Result && requestedVariantCount !== 3 ? [storedVariants[0]] : storedVariants;
+            const variants = visibleHistoryPromptVariants(job, this.settings);
             const label = modalDocument.createElement("div");
             label.className = "krea2-history-prompt-label";
             label.textContent = variants.length === 3 ? "Generated prompt variations" : "Generated prompt";
@@ -6217,6 +6610,10 @@ class Krea2DiscordCollector {
             copyVariant.type = "button";
             copyVariant.className = "krea2-history-action";
             copyVariant.dataset.primary = "true";
+            const editVariant = modalDocument.createElement("button");
+            editVariant.type = "button";
+            editVariant.className = "krea2-history-action";
+            editVariant.textContent = "✦ Edit this prompt with Qwen";
             const feedback = modalDocument.createElement("div");
             feedback.className = "krea2-prompt-feedback";
             const feedbackButtons = modalDocument.createElement("div");
@@ -6232,7 +6629,9 @@ class Krea2DiscordCollector {
             const feedbackStatus = modalDocument.createElement("div");
             feedbackStatus.className = "krea2-prompt-feedback-status";
             let selectedVariant = 0;
-            const variantLabels = ["Prompt 1 · Balanced", "Prompt 2 · Subject & pose", "Prompt 3 · Scene & light"];
+            const variantLabels = variants.length === 1
+                ? ["Prompt"]
+                : ["Prompt 1 · Balanced", "Prompt 2 · Subject & pose", "Prompt 3 · Scene & light"];
             const refreshFeedback = () => {
                 const selected = this.getPromptFeedback(variants[selectedVariant]);
                 like.dataset.active = selected?.vote === "liked" ? "true" : "false";
@@ -6272,6 +6671,7 @@ class Krea2DiscordCollector {
                 }
                 catch { this.toast("Discord could not copy the selected prompt.", "error"); }
             });
+            editVariant.addEventListener("click", () => this.openPromptEditor(variants[selectedVariant], modalDocument));
             like.addEventListener("click", () => {
                 try {
                     this.savePromptFeedback(variants[selectedVariant], "liked", "", job);
@@ -6294,8 +6694,7 @@ class Krea2DiscordCollector {
             feedback.append(feedbackButtons, feedbackStatus);
             selectVariant(0);
             output.append(label);
-            if (variants.length > 1) output.append(variantTabs);
-            output.append(prompt, feedback, copyVariant);
+            output.append(variantTabs, prompt, feedback, editVariant, copyVariant);
         }
         else {
             const message = modalDocument.createElement("div");
@@ -7307,6 +7706,248 @@ class Krea2DiscordCollector {
         return JSON.parse(await readBoundedResponseText(response, HISTORY_MAX_RESPONSE_BYTES));
     }
 
+    openPromptEditor(initialPrompt = "", modalDocument = document) {
+        this.promptEditorCleanup?.();
+        modalDocument.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
+        const controller = new AbortController();
+        let messages = [];
+        let busy = false;
+        let latestReply = "";
+
+        const overlay = modalDocument.createElement("div");
+        overlay.id = PROMPT_EDITOR_MODAL_ID;
+        overlay.setAttribute("role", "presentation");
+        const dialog = modalDocument.createElement("section");
+        dialog.className = "krea2-history-dialog";
+        dialog.dataset.promptEditor = "true";
+        dialog.setAttribute("role", "dialog");
+        dialog.setAttribute("aria-modal", "true");
+        dialog.setAttribute("aria-label", "Qwen Prompt Editor");
+
+        const head = modalDocument.createElement("div");
+        head.className = "krea2-history-dialog-head";
+        const heading = modalDocument.createElement("h2");
+        heading.textContent = "Qwen 3.8 Cloud · Prompt Editor";
+        const close = modalDocument.createElement("button");
+        close.type = "button";
+        close.className = "krea2-history-icon";
+        close.textContent = "×";
+        close.setAttribute("aria-label", "Close Qwen Prompt Editor");
+        head.append(heading, close);
+
+        const body = modalDocument.createElement("div");
+        body.className = "krea2-history-dialog-body krea2-prompt-editor-body";
+        const explanation = modalDocument.createElement("div");
+        explanation.className = "krea2-prompt-editor-explanation";
+        explanation.textContent = "Paste a KREA2 prompt, then describe the change you want—pose, outfit, camera, lighting, setting, wording, or anything else. Qwen preserves details you did not ask to change. Each successful reply costs 1 Online API credit; failures are refunded. This conversation is sent to the private cloud model for inference, is not stored by the KREA2 gateway, and is cleared from Discord when you close this window.";
+
+        const promptField = modalDocument.createElement("div");
+        promptField.className = "krea2-prompt-editor-field";
+        const promptLabel = modalDocument.createElement("label");
+        promptLabel.textContent = "Current KREA2 prompt";
+        const promptBox = modalDocument.createElement("textarea");
+        promptBox.className = "krea2-prompt-editor-prompt";
+        promptBox.placeholder = "Paste the prompt you want to revise…";
+        promptBox.maxLength = 18000;
+        promptBox.value = String(initialPrompt || "").trim().slice(0, 18000);
+        promptField.append(promptLabel, promptBox);
+
+        const transcript = modalDocument.createElement("div");
+        transcript.className = "krea2-prompt-editor-transcript";
+        transcript.setAttribute("aria-live", "polite");
+
+        const compose = modalDocument.createElement("div");
+        compose.className = "krea2-prompt-editor-compose";
+        const instructionField = modalDocument.createElement("div");
+        instructionField.className = "krea2-prompt-editor-field";
+        const instructionLabel = modalDocument.createElement("label");
+        instructionLabel.textContent = "What should Qwen change?";
+        const instruction = modalDocument.createElement("textarea");
+        instruction.className = "krea2-prompt-editor-instruction";
+        instruction.placeholder = "Example: Keep everything else, but turn her head toward the camera and make the lighting warmer.";
+        instruction.maxLength = 3000;
+        instructionField.append(instructionLabel, instruction);
+        const send = modalDocument.createElement("button");
+        send.type = "button";
+        send.className = "krea2-prompt-editor-send";
+        send.textContent = "Send to Qwen";
+        compose.append(instructionField, send);
+        const status = modalDocument.createElement("div");
+        status.className = "krea2-prompt-editor-status";
+        status.textContent = "Ready · 1 credit is charged only after a successful reply.";
+        body.append(explanation, promptField, transcript, compose, status);
+
+        const actions = modalDocument.createElement("div");
+        actions.className = "krea2-history-dialog-actions";
+        const clear = modalDocument.createElement("button");
+        clear.type = "button";
+        clear.className = "krea2-history-action";
+        clear.textContent = "New chat";
+        const copyPrompt = modalDocument.createElement("button");
+        copyPrompt.type = "button";
+        copyPrompt.className = "krea2-history-action";
+        copyPrompt.dataset.primary = "true";
+        copyPrompt.textContent = "Copy current prompt";
+        const done = modalDocument.createElement("button");
+        done.type = "button";
+        done.className = "krea2-history-action";
+        done.textContent = "Close";
+        actions.append(clear, copyPrompt, done);
+        dialog.append(head, body, actions);
+        overlay.append(dialog);
+        modalDocument.body.append(overlay);
+
+        const setStatus = (text, state = "idle") => {
+            status.textContent = text;
+            status.dataset.state = state;
+        };
+        const appendTurn = (role, text) => {
+            const turn = modalDocument.createElement("div");
+            turn.className = "krea2-prompt-editor-turn";
+            turn.dataset.role = role;
+            const copy = modalDocument.createElement("div");
+            copy.textContent = text;
+            turn.append(copy);
+            if (role === "assistant") {
+                const turnActions = modalDocument.createElement("div");
+                turnActions.className = "krea2-prompt-editor-turn-actions";
+                const use = modalDocument.createElement("button");
+                use.type = "button";
+                use.textContent = "Use as current prompt";
+                use.addEventListener("click", () => {
+                    promptBox.value = text.slice(0, promptBox.maxLength);
+                    latestReply = text;
+                    setStatus("Qwen reply is now the current prompt.", "success");
+                });
+                const copyReply = modalDocument.createElement("button");
+                copyReply.type = "button";
+                copyReply.textContent = "Copy reply";
+                copyReply.addEventListener("click", async () => {
+                    try {
+                        await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(text);
+                        copyReply.textContent = "Copied";
+                        setTimeout(() => { if (copyReply.isConnected) copyReply.textContent = "Copy reply"; }, 1200);
+                    }
+                    catch { this.toast("Discord could not copy the Qwen reply.", "error"); }
+                });
+                turnActions.append(use, copyReply);
+                turn.append(turnActions);
+            }
+            transcript.append(turn);
+            transcript.scrollTop = transcript.scrollHeight;
+        };
+        const cleanup = () => {
+            controller.abort();
+            modalDocument.removeEventListener("keydown", onKey, true);
+            overlay.remove();
+            messages = [];
+            latestReply = "";
+            if (this.promptEditorCleanup === cleanup) this.promptEditorCleanup = null;
+        };
+        const onKey = event => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopImmediatePropagation?.();
+                cleanup();
+            }
+            else if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !busy) {
+                event.preventDefault();
+                void submit();
+            }
+        };
+        this.promptEditorCleanup = cleanup;
+        modalDocument.addEventListener("keydown", onKey, true);
+        close.addEventListener("click", cleanup);
+        done.addEventListener("click", cleanup);
+        overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
+        clear.addEventListener("click", () => {
+            messages = [];
+            latestReply = "";
+            transcript.replaceChildren();
+            instruction.value = "";
+            setStatus("New session started. The current prompt is still available above.");
+            instruction.focus();
+        });
+        copyPrompt.addEventListener("click", async () => {
+            const value = promptBox.value.trim() || latestReply;
+            if (!value) return setStatus("Paste or generate a prompt first.", "error");
+            try {
+                await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(value);
+                copyPrompt.textContent = "Copied";
+                setTimeout(() => { if (copyPrompt.isConnected) copyPrompt.textContent = "Copy current prompt"; }, 1200);
+            }
+            catch { this.toast("Discord could not copy the current prompt.", "error"); }
+        });
+
+        const submit = async () => {
+            if (busy) return;
+            const currentPrompt = promptBox.value.trim();
+            const request = instruction.value.trim();
+            if (currentPrompt.length < 20) return setStatus("Paste a complete KREA2 prompt first.", "error");
+            if (request.length < 2) return setStatus("Describe the change you want Qwen to make.", "error");
+            if (messages.length >= 14) {
+                messages = [];
+                transcript.replaceChildren();
+                setStatus("The long chat was compacted around the current prompt.");
+            }
+            const userContent = messages.length
+                ? request
+                : `Current KREA2 prompt:\n\n${currentPrompt}\n\nRequested revision:\n${request}`;
+            messages.push({role: "user", content: userContent});
+            appendTurn("user", request);
+            instruction.value = "";
+            busy = true;
+            send.disabled = true;
+            clear.disabled = true;
+            send.textContent = "Qwen is working…";
+            setStatus("Connecting to Qwen 3.8 Cloud. A cold worker may take a little longer…");
+            try {
+                const license = await this.ensureRemoteCredits(controller.signal, "prompt-chat");
+                const requestId = createHash("sha256").update(randomBytes(48)).digest("hex");
+                const response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/prompt-chat/completions`, {
+                    method: "POST",
+                    redirect: "manual",
+                    maxRedirects: 0,
+                    timeout: 8 * 60 * 1000,
+                    signal: controller.signal,
+                    headers: {
+                        Accept: "application/json",
+                        "Content-Type": "application/json",
+                        Authorization: `Krea2License ${license.licenseId}.${license.licenseToken}`,
+                        "X-Krea2-Request-Id": requestId,
+                        "X-Krea2-Collector-Version": PLUGIN_VERSION
+                    },
+                    body: JSON.stringify({model: "heretic-3.8-q4-cloud", messages, temperature: 0.35, max_tokens: 1536, stream: false})
+                });
+                const responseText = await readBoundedResponseText(response, 128 * 1024);
+                let result;
+                try { result = JSON.parse(responseText); }
+                catch { throw new Error("Qwen Prompt Editor returned invalid JSON."); }
+                if (!response.ok) throw new Error(String(result?.detail || `Qwen Prompt Editor failed with HTTP ${response.status}.`));
+                const reply = String(result?.reply || "").trim();
+                if (!reply || reply.length > 24000 || result?.model !== "heretic-3.8-q4-cloud" || result?.credits_charged !== 1) {
+                    throw new Error("Qwen Prompt Editor returned an invalid reply.");
+                }
+                messages.push({role: "assistant", content: reply});
+                latestReply = reply;
+                appendTurn("assistant", reply);
+                setStatus(`Reply complete · 1 credit used · ${Number(result.available_credits)} credits remaining.`, "success");
+            }
+            catch (error) {
+                messages.pop();
+                if (error?.name !== "AbortError") setStatus(error instanceof Error ? error.message : String(error), "error");
+            }
+            finally {
+                busy = false;
+                send.disabled = false;
+                clear.disabled = false;
+                send.textContent = "Send to Qwen";
+            }
+        };
+        send.addEventListener("click", () => void submit());
+        (promptBox.value ? instruction : promptBox).focus();
+    }
+
     openVerifiedExternal(rawUrl, purpose) {
         const checked = filterExternalUrl(rawUrl, purpose);
         if (!checked.ok) throw new Error(checked.error);
@@ -7407,17 +8048,25 @@ class Krea2DiscordCollector {
         try { status = JSON.parse(text); }
         catch { throw new Error("The Online API credit service returned invalid JSON."); }
         if (!response.ok) throw new Error(String(status?.detail || `Online API credit check failed with HTTP ${response.status}.`));
-        if (!Number.isInteger(status?.available_credits) || !Number.isInteger(status?.credits_per_image) || status.credits_per_image !== 3) throw new Error("The Online API credit balance is invalid.");
+        if (
+            !Number.isInteger(status?.available_credits)
+            || !Number.isInteger(status?.credits_per_image)
+            || status.credits_per_image !== 3
+            || !Number.isInteger(status?.credits_per_prompt_chat)
+            || status.credits_per_prompt_chat !== 1
+        ) throw new Error("The Online API credit balance is invalid.");
         return status;
     }
 
-    async ensureRemoteCredits(signal) {
+    async ensureRemoteCredits(signal, purpose = "image") {
         const license = await this.ensureRemoteLicense(signal);
         let status = await this.remoteCreditStatus(license, signal);
-        if (status.available_credits >= status.credits_per_image) return license;
-        if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Select Local GPU or retry later.");
-        const accepted = await this.confirmCreditPurchase(status);
-        if (!accepted) throw new Error("Online API credits are required. Select Local GPU or purchase credits to continue.");
+        const promptChat = purpose === "prompt-chat";
+        const required = promptChat ? status.credits_per_prompt_chat : status.credits_per_image;
+        if (status.available_credits >= required) return license;
+        if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Retry later.");
+        const accepted = await this.confirmCreditPurchase(status, purpose);
+        if (!accepted) throw new Error("Online API credits are required. Purchase credits to continue.");
         let invoiceResponse;
         try {
             invoiceResponse = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/purchase`, {
@@ -7444,7 +8093,7 @@ class Krea2DiscordCollector {
             if (signal?.aborted) throw new Error("Bitcoin payment wait was cancelled.");
             await new Promise(resolve => setTimeout(resolve, 4000));
             status = await this.remoteCreditStatus(license, signal);
-            if (status.available_credits >= status.credits_per_image) {
+            if (status.available_credits >= required) {
                 this.toast(`Online API credits added: ${status.available_credits} available.`, "success");
                 return license;
             }
@@ -7452,14 +8101,19 @@ class Krea2DiscordCollector {
         throw new Error("Bitcoin payment is still awaiting settlement. Credits will appear automatically after the invoice settles.");
     }
 
-    confirmCreditPurchase(status) {
+    confirmCreditPurchase(status, purpose = "image") {
         return new Promise(resolve => {
             const content = document.createElement("div");
             content.style.cssText = "line-height:1.55;color:var(--text-normal)";
             const lead = document.createElement("p");
-            lead.textContent = `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
+            const promptChat = purpose === "prompt-chat";
+            lead.textContent = promptChat
+                ? `Qwen Prompt Editor needs 1 credit per successful reply. You have ${status.available_credits} credits remaining.`
+                : `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
             const detail = document.createElement("p");
-            detail.textContent = "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
+            detail.textContent = promptChat
+                ? "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 1,200 successful Prompt Editor replies; a failed reply is automatically refunded."
+                : "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
             content.append(lead, detail);
             this.api.UI.showConfirmationModal("Purchase Online API credits", content, {
                 confirmText: "Open Bitcoin checkout", cancelText: "Use Local GPU", danger: false,
@@ -7892,7 +8546,7 @@ class Krea2DiscordCollector {
             visionButton.textContent = "🔍";
             visionButton.dataset.state = "idle";
             visionButton.dataset.sourceKey = provenance?.path || "";
-            visionButton.title = "Describe this image with KREA2 Vision without saving it to disk";
+            visionButton.title = "Get the source prompt from metadata, or describe with KREA2 Vision only when no usable prompt exists";
             visionButton.setAttribute("aria-label", visionButton.title);
             visionButton.__krea2Image = image;
             visionButton.addEventListener("pointerdown", blockNavigation);
@@ -7912,7 +8566,7 @@ class Krea2DiscordCollector {
     metadataCompanionForMessage(messageRoot, imageProvenance, route) {
         const messageId = messageIdFromRoot(messageRoot);
         if (!messageId || !route?.channelId) return {status: "none", reason: "message_identity_unavailable"};
-        this.messageStore ||= this.api.Webpack.getStore("MessageStore") || null;
+        this.messageStore ||= this.api?.Webpack?.getStore?.("MessageStore") || null;
         let message = null;
         try { message = this.messageStore?.getMessage?.(route.channelId, messageId) || null; }
         catch { message = null; }
@@ -7958,7 +8612,8 @@ class Krea2DiscordCollector {
         const cached = this.getCachedOriginal(selection.provenance);
         if (cached) return cached;
         this.setButtonState(button, "downloading", "…", "Reading the original image metadata locally");
-        const response = await this.api.Net.fetch(selection.sourceUrlAtClick, {
+        const sourceUrl = selection.sourceUrl || selection.sourceUrlAtClick;
+        const response = await this.api.Net.fetch(sourceUrl, {
             method: "GET",
             headers: {Accept: "image/*,application/octet-stream;q=0.8"},
             redirect: "follow",
@@ -7966,7 +8621,7 @@ class Krea2DiscordCollector {
             timeout: 60000
         });
         if (!response.ok) throw new Error(`Image metadata download failed with HTTP ${response.status}.`);
-        const finalProvenance = extractMediaProvenance(response.url || selection.sourceUrlAtClick);
+        const finalProvenance = extractMediaProvenance(response.url || sourceUrl);
         if (!sameMediaProvenance(finalProvenance, selection.provenance)) {
             throw new Error("The image redirect changed attachment identity; metadata was not inspected.");
         }
@@ -8009,24 +8664,146 @@ class Krea2DiscordCollector {
         return {...evaluatePromptValue(text), source: attachment.filename};
     }
 
-    showMetadataPromptModal(prompt, source) {
-        const content = document.createElement("div");
-        content.style.cssText = "display:grid;gap:10px;line-height:1.5;color:var(--text-normal)";
-        const explanation = document.createElement("p");
-        explanation.style.margin = "0";
-        explanation.textContent = `Exact positive prompt extracted from ${source}. No Vision model ran, no credits were used, and nothing was submitted or saved.`;
-        const textarea = document.createElement("textarea");
+    async inspectPromptMetadata(selection, button, signal) {
+        let original = null;
+        let embedded = {classification: "no_metadata", chunks: []};
+        try {
+            original = await this.downloadMetadataOriginal(selection, button, signal);
+            try { embedded = await extractConfidentPrompt(original.bytes, original.format); }
+            catch { embedded = {classification: "encoded_or_unknown", chunks: []}; }
+        }
+        catch (error) {
+            if (error?.name === "AbortError") throw error;
+            embedded = {classification: "encoded_or_unknown", chunks: []};
+        }
+
+        let sidecar = null;
+        try { sidecar = await this.downloadCompanionMetadata(selection, signal); }
+        catch (error) {
+            if (error?.name === "AbortError") throw error;
+            sidecar = {
+                classification: "encoded_or_unknown",
+                source: selection.companion?.attachment?.filename || "same-message YAML"
+            };
+        }
+        const decision = selectMetadataPromptCandidates(
+            embedded,
+            sidecar,
+            selection.companion?.status || "none"
+        );
+        return {...decision, original, embedded, sidecar};
+    }
+
+    showMetadataPromptModal(promptOrCandidates, source = "source metadata") {
+        const candidates = (Array.isArray(promptOrCandidates)
+            ? promptOrCandidates
+            : [{prompt: promptOrCandidates, source}]
+        ).map(candidate => ({
+            prompt: String(candidate?.prompt || "").trim(),
+            source: String(candidate?.source || source || "source metadata").trim()
+        })).filter(candidate => candidate.prompt);
+        if (!candidates.length) return;
+
+        this.sourcePromptModalCleanup?.();
+        const modalDocument = this.historyRoot?.ownerDocument || document;
+        modalDocument.getElementById(SOURCE_PROMPT_MODAL_ID)?.remove();
+        const overlay = modalDocument.createElement("div");
+        overlay.id = SOURCE_PROMPT_MODAL_ID;
+        overlay.setAttribute("role", "presentation");
+        const dialog = modalDocument.createElement("section");
+        dialog.className = "krea2-history-dialog";
+        dialog.dataset.sourcePrompt = "true";
+        dialog.setAttribute("role", "dialog");
+        dialog.setAttribute("aria-modal", "true");
+        dialog.setAttribute("aria-label", "Source prompt found");
+        const head = modalDocument.createElement("div");
+        head.className = "krea2-history-dialog-head";
+        const heading = modalDocument.createElement("h2");
+        heading.textContent = "Source prompt found";
+        const closeIcon = modalDocument.createElement("button");
+        closeIcon.type = "button";
+        closeIcon.className = "krea2-history-icon";
+        closeIcon.textContent = "×";
+        closeIcon.setAttribute("aria-label", "Close source prompt");
+        head.append(heading, closeIcon);
+        const content = modalDocument.createElement("div");
+        content.className = "krea2-history-dialog-body krea2-source-prompt-body";
+        const explanation = modalDocument.createElement("p");
+        explanation.className = "krea2-source-prompt-explanation";
+        explanation.textContent = candidates.length === 1
+            ? `Exact positive prompt extracted from ${candidates[0].source}. No Vision model ran, no credits were used, and nothing was submitted or saved.`
+            : "Multiple distinct source prompts were found. They are shown separately instead of guessing. No Vision model ran, no credits were used, and nothing was submitted or saved.";
+        const tabs = modalDocument.createElement("div");
+        tabs.className = "krea2-product-tabs";
+        tabs.setAttribute("role", "tablist");
+        const textarea = modalDocument.createElement("textarea");
+        textarea.className = "krea2-history-prompt";
         textarea.readOnly = true;
-        textarea.value = prompt;
-        textarea.rows = Math.min(18, Math.max(8, Math.ceil(prompt.length / 90)));
-        textarea.style.cssText = "width:100%;box-sizing:border-box;resize:vertical;padding:12px;border:1px solid var(--background-modifier-accent);border-radius:8px;background:var(--background-secondary);color:var(--text-normal);font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace";
-        content.append(explanation, textarea);
-        this.api.UI.showConfirmationModal("Source prompt found", content, {
-            confirmText: "Copy prompt",
-            cancelText: "Close",
-            danger: false,
-            onConfirm: () => void this.copyProductText(prompt)
+        textarea.setAttribute("aria-label", "Extracted source prompt");
+        const actions = modalDocument.createElement("div");
+        actions.className = "krea2-history-dialog-actions";
+        const close = modalDocument.createElement("button");
+        close.type = "button";
+        close.className = "krea2-history-action";
+        close.textContent = "Close";
+        const copy = modalDocument.createElement("button");
+        copy.type = "button";
+        copy.className = "krea2-history-action";
+        copy.dataset.primary = "true";
+        const edit = modalDocument.createElement("button");
+        edit.type = "button";
+        edit.className = "krea2-history-action";
+        edit.textContent = "✦ Edit with Qwen";
+        let selectedIndex = 0;
+        const selectPrompt = index => {
+            selectedIndex = index;
+            textarea.value = candidates[index].prompt;
+            textarea.rows = Math.min(18, Math.max(8, Math.ceil(textarea.value.length / 90)));
+            copy.textContent = candidates.length === 1 ? "Copy prompt" : `Copy prompt ${index + 1}`;
+            for (const [buttonIndex, tab] of [...tabs.children].entries()) {
+                tab.setAttribute("aria-selected", buttonIndex === index ? "true" : "false");
+            }
+        };
+        candidates.forEach((candidate, index) => {
+            const tab = modalDocument.createElement("button");
+            tab.type = "button";
+            tab.className = "krea2-product-tab";
+            tab.setAttribute("role", "tab");
+            tab.textContent = candidates.length === 1
+                ? "Prompt"
+                : `Prompt ${index + 1} · ${candidate.source === "embedded image metadata" ? "Embedded" : candidate.source.slice(0, 42)}`;
+            tab.addEventListener("click", () => selectPrompt(index));
+            tabs.append(tab);
         });
+        selectPrompt(0);
+        content.append(explanation);
+        if (candidates.length > 1) content.append(tabs);
+        content.append(textarea);
+        actions.append(close, edit, copy);
+        dialog.append(head, content, actions);
+        overlay.append(dialog);
+        modalDocument.body.append(overlay);
+        const cleanup = () => {
+            modalDocument.removeEventListener("keydown", onKey);
+            overlay.remove();
+            if (this.sourcePromptModalCleanup === cleanup) this.sourcePromptModalCleanup = null;
+        };
+        const onKey = event => { if (event.key === "Escape") cleanup(); };
+        this.sourcePromptModalCleanup = cleanup;
+        closeIcon.addEventListener("click", cleanup);
+        close.addEventListener("click", cleanup);
+        overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
+        copy.addEventListener("click", async () => {
+            await this.copyProductText(candidates[selectedIndex].prompt, modalDocument);
+            copy.textContent = "Copied";
+            setTimeout(() => {
+                if (copy.isConnected) copy.textContent = candidates.length === 1 ? "Copy prompt" : `Copy prompt ${selectedIndex + 1}`;
+            }, 1400);
+        });
+        edit.addEventListener("click", () => this.openPromptEditor(candidates[selectedIndex].prompt, modalDocument));
+        modalDocument.addEventListener("keydown", onKey);
+        closeIcon.focus();
+        return overlay;
     }
 
     queueMetadataProbe(image, button) {
@@ -8049,43 +8826,26 @@ class Krea2DiscordCollector {
             const controller = new AbortController();
             this.controllers.add(controller);
             try {
-                const original = await this.downloadMetadataOriginal(selection, button, controller.signal);
-                const embedded = await extractConfidentPrompt(original.bytes, original.format);
-                const sidecar = await this.downloadCompanionMetadata(selection, controller.signal);
-                const found = [];
-                if (embedded.classification === "usable" && embedded.prompt) {
-                    found.push({prompt: embedded.prompt, source: "embedded image metadata"});
-                }
-                if (sidecar?.classification === "usable" && sidecar.prompt) {
-                    found.push({prompt: sidecar.prompt, source: sidecar.source || "same-message YAML"});
-                }
-                const unique = new Map();
-                for (const item of found) {
-                    const normalized = item.prompt.replace(/\s+/g, " ").trim();
-                    if (!unique.has(normalized)) unique.set(normalized, item);
-                }
-                if (unique.size === 1) {
-                    const result = [...unique.values()][0];
-                    this.showMetadataPromptModal(result.prompt, result.source);
-                    this.setButtonState(button, "done", "✓", `Prompt extracted from ${result.source}; no GPU, credits, submission, or automatic save. Click again to reopen.`);
+                const inspected = await this.inspectPromptMetadata(selection, button, controller.signal);
+                if (inspected.status === "usable") {
+                    this.showMetadataPromptModal(inspected.prompts);
+                    const sourceSummary = inspected.prompts.length === 1
+                        ? inspected.prompts[0].source
+                        : `${inspected.prompts.length} source metadata records`;
+                    this.setButtonState(button, "done", "✓", `Prompt extracted from ${sourceSummary}; no GPU, credits, submission, or automatic save. Click again to reopen.`);
                     this.toast("Source prompt extracted locally. No GPU or credits were used.", "success");
-                    this.recordDiagnosticSummary(original.sha256, "usable", [
-                        ...(embedded.chunks || []),
-                        ...(sidecar ? [{name: "YAML", size: selection.companion?.attachment?.size || 0}] : [])
-                    ]);
+                    if (inspected.original?.sha256) {
+                        this.recordDiagnosticSummary(inspected.original.sha256, "usable", [
+                            ...(inspected.embedded.chunks || []),
+                            ...(inspected.sidecar ? [{name: "YAML", size: selection.companion?.attachment?.size || 0}] : [])
+                        ]);
+                    }
                     return;
                 }
-                if (unique.size > 1) {
-                    this.setButtonState(button, "metadata-no-prompt", "?", "Embedded metadata and same-message YAML contained different prompts; nothing was selected or submitted.");
-                    this.toast("Embedded metadata and YAML prompts differed, so the plugin did not guess.", "warning");
-                    return;
+                this.showClassification(button, inspected.classification);
+                if (inspected.original?.sha256) {
+                    this.recordDiagnosticSummary(inspected.original.sha256, inspected.classification, inspected.embedded.chunks || []);
                 }
-                const classifications = [embedded.classification, sidecar?.classification];
-                if (selection.companion?.status === "ambiguous") classifications.push("structured");
-                const classification = ["non_english", "structured", "encoded_or_unknown", "metadata_no_prompt", "no_metadata"]
-                    .find(value => classifications.includes(value)) || "no_metadata";
-                this.showClassification(button, classification);
-                this.recordDiagnosticSummary(original.sha256, classification, embedded.chunks || []);
             }
             catch (error) {
                 if (!this.running || queuedGeneration !== this.generation || error?.name === "AbortError") return;
@@ -8347,10 +9107,13 @@ class Krea2DiscordCollector {
         if (!provenance || !this.attachmentBelongsToGuild(provenance, config.guildId)) {
             throw new Error("The image attachment could not be verified in the allowlisted Discord server.");
         }
+        const messageRoot = findMessageRoot(image);
+        const companion = this.metadataCompanionForMessage(messageRoot, provenance, config);
         return Object.freeze({
             sourceUrlAtClick,
             provenance: Object.freeze({...provenance}),
-            messageId: messageIdFromRoot(findMessageRoot(image)),
+            messageId: messageIdFromRoot(messageRoot),
+            companion: Object.freeze({...companion}),
             config: Object.freeze({...config})
         });
     }
@@ -8387,6 +9150,7 @@ class Krea2DiscordCollector {
             sourceUrlAtClick: selection.sourceUrlAtClick,
             provenance: selection.provenance,
             messageId: selection.messageId,
+            companion: selection.companion,
             config: selection.config
         });
     }
@@ -8412,10 +9176,65 @@ class Krea2DiscordCollector {
             return;
         }
         const queuedGeneration = this.generation;
+        button.dataset.busy = "true";
+        this.setButtonState(button, "hashing", "…", "Checking embedded metadata and same-message YAML before Vision");
+
+        const probe = this.metadataProbeQueue.then(async () => {
+            if (!this.running || queuedGeneration !== this.generation || !button?.isConnected) {
+                return {status: "cancelled"};
+            }
+            const controller = new AbortController();
+            this.controllers.add(controller);
+            try {
+                const resolvedSelection = this.resolveQueuedVisionSelection(image, selection);
+                const inspected = await this.inspectPromptMetadata(resolvedSelection, button, controller.signal);
+                return {status: "inspected", inspected};
+            }
+            finally {
+                this.controllers.delete(controller);
+            }
+        });
+        this.metadataProbeQueue = probe.catch(() => {});
+
+        const completion = probe.then(result => {
+            if (result.status === "cancelled") {
+                if (button) button.dataset.busy = "false";
+                return result;
+            }
+            const inspected = result.inspected;
+            if (inspected.status === "usable") {
+                this.showMetadataPromptModal(inspected.prompts);
+                const sourceSummary = inspected.prompts.length === 1
+                    ? inspected.prompts[0].source
+                    : `${inspected.prompts.length} source metadata records`;
+                this.setButtonState(button, "done", "✓", `Prompt extracted from ${sourceSummary}; Vision was not queued and no credits were used. Click again to reopen.`);
+                this.toast("Source prompt found locally. Vision was skipped and no credits were used.", "success");
+                if (inspected.original?.sha256) {
+                    this.recordDiagnosticSummary(inspected.original.sha256, "usable", [
+                        ...(inspected.embedded.chunks || []),
+                        ...(inspected.sidecar ? [{name: "YAML", size: selection.companion?.attachment?.size || 0}] : [])
+                    ]);
+                }
+                button.dataset.busy = "false";
+                return {status: "metadata", prompts: inspected.prompts};
+            }
+            return this.enqueueVisionAnalysisAfterMetadata(image, button, selection, queuedGeneration);
+        }).catch(error => {
+            if (!this.running || queuedGeneration !== this.generation || error?.name === "AbortError") return;
+            const message = error instanceof Error ? error.message : String(error);
+            this.setButtonState(button, "error", "!", `${message} Vision was not queued and no credits were used. Click to retry.`);
+            this.toast(message, "error");
+            this.log("error", message);
+            if (button) button.dataset.busy = "false";
+        });
+        return completion;
+    }
+
+    enqueueVisionAnalysisAfterMetadata(image, button, selection, queuedGeneration = this.generation) {
         const localSubmissionId = this.addLocalVisionSubmission(selection);
         this.armLocalVisionSubmissionTimeout(localSubmissionId, button, selection.config.visionModel);
         button.dataset.busy = "true";
-        this.setButtonState(button, "vision-queued", "Q", "Queued locally; it will appear in Discord Jobs as soon as Vision Studio receives it");
+        this.setButtonState(button, "vision-queued", "Q", "No usable source prompt was found; queued locally for KREA2 Vision");
         const flow = this.visionFlowQueue.then(async () => {
             const localState = this.localVisionSubmissions.get(localSubmissionId);
             if (localState?.timed_out || localState?.status === "error") return;
@@ -8461,6 +9280,7 @@ class Krea2DiscordCollector {
             }
         });
         this.visionFlowQueue = flow.catch(() => {});
+        return flow;
     }
 
     async analyzeWithVision(selection, button, queuedGeneration = this.generation, onOriginalSaved = null, jobId = "") {
@@ -8842,6 +9662,8 @@ class Krea2DiscordCollector {
     }
 
     requestDislikeReason(prompt, modalDocument = document) {
+        this.feedbackModalCleanup?.();
+        this.feedbackModalCleanup = null;
         const existing = this.getPromptFeedback(prompt);
         return new Promise(resolve => {
             const overlay = modalDocument.createElement("div");
@@ -8871,11 +9693,17 @@ class Krea2DiscordCollector {
             save.className = "krea2-history-action";
             save.dataset.primary = "true";
             save.textContent = "Save feedback";
+            let settled = false;
+            let cleanup = null;
             const finish = value => {
+                if (settled) return;
+                settled = true;
                 modalDocument.removeEventListener("keydown", onKey);
                 overlay.remove();
+                if (this.feedbackModalCleanup === cleanup) this.feedbackModalCleanup = null;
                 resolve(value);
             };
+            cleanup = () => finish(null);
             const onKey = event => {
                 if (event.key === "Escape") finish(null);
                 if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && textarea.value.trim().length >= 3) finish(textarea.value.trim());
@@ -8896,6 +9724,7 @@ class Krea2DiscordCollector {
             dialog.append(title, note, textarea, actions);
             overlay.append(dialog);
             modalDocument.body.append(overlay);
+            this.feedbackModalCleanup = cleanup;
             textarea.focus();
             textarea.select();
         });
@@ -9046,6 +9875,7 @@ class Krea2DiscordCollector {
             });
             wrapper.append(input, copy);
             panel.append(wrapper);
+            return input;
         };
 
         addField({
@@ -9092,17 +9922,58 @@ class Krea2DiscordCollector {
             key: "visionExecutionMode",
             options: VISION_EXECUTION_OPTIONS
         });
-        addSelect({
-            label: "Discord interrogation depth",
-            note: "Fast is the quickest one-pass prompt. V2 Direct Fidelity focuses on matching the visible pose, action, contact and framing. Maximum detail keeps the older multi-pass audits and can take several minutes.",
-            key: "visionAnalysisProfile",
-            options: VISION_ANALYSIS_OPTIONS
-        });
-        addCheckbox({
+        const v2Section = document.createElement("section");
+        v2Section.dataset.setting = "v2-direct-fidelity";
+        v2Section.style.cssText = "margin:18px 0;padding:14px 15px;border:1px solid var(--input-border);border-radius:10px;background:var(--background-secondary)";
+        const v2Label = document.createElement("label");
+        v2Label.style.cssText = "display:flex;align-items:flex-start;gap:11px;cursor:pointer";
+        const v2Toggle = document.createElement("input");
+        v2Toggle.type = "checkbox";
+        v2Toggle.setAttribute("role", "switch");
+        v2Toggle.setAttribute("aria-label", "Use V2 Direct Fidelity for Discord image magnifiers");
+        v2Toggle.checked = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile) === "v2";
+        v2Toggle.style.cssText = "margin-top:3px;width:18px;height:18px;accent-color:#5865f2";
+        const v2Copy = document.createElement("div");
+        v2Copy.style.cssText = "min-width:0;flex:1";
+        const v2TitleRow = document.createElement("div");
+        v2TitleRow.style.cssText = "display:flex;align-items:center;gap:8px";
+        const v2Title = document.createElement("div");
+        v2Title.textContent = "Use V2 Direct Fidelity";
+        v2Title.style.fontWeight = "700";
+        const v2Status = document.createElement("span");
+        v2Status.style.cssText = "padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:.04em";
+        v2TitleRow.append(v2Title, v2Status);
+        const v2Description = document.createElement("div");
+        v2Description.textContent = "On by default. V2 prioritizes the visible pose, action, contact, camera angle, framing, lighting, shadows, and outfit detail. Turn it off to use the faster direct one-pass prompt. Manual Interrogate uploads can still choose Maximum detail.";
+        v2Description.style.cssText = "font-size:12px;color:var(--text-muted);margin-top:4px";
+        v2Copy.append(v2TitleRow, v2Description);
+        v2Label.append(v2Toggle, v2Copy);
+        v2Section.append(v2Label);
+        panel.append(v2Section);
+
+        const v2VariationsToggle = addCheckbox({
             label: "Generate three V2 prompt variations",
-            note: "Off by default: V2 returns one canonical prompt with no redundant tabs. Turn this on to ask the same one-pass image inference for three genuine variations: Balanced, Subject & pose, and Scene & light. It remains one queued image and one Online API image charge, but the longer output may take more time.",
+            note: "Off by default: V2 returns one canonical prompt shown in one Prompt tab. Turn this on to ask the same one-pass image inference for three genuine tabs: Balanced, Subject & pose, and Scene & light. It remains one queued image and one Online API image charge, but the longer output may take more time.",
             key: "v2ThreePromptVariations"
         });
+        const syncV2Toggle = () => {
+            const active = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile) === "v2";
+            v2Toggle.checked = active;
+            v2Section.dataset.enabled = active ? "true" : "false";
+            v2Status.textContent = active ? "ON" : "OFF";
+            v2Status.style.color = active ? "#a9efc2" : "var(--text-muted)";
+            v2Status.style.background = active ? "#173226" : "var(--background-modifier-accent)";
+            v2VariationsToggle.disabled = !active;
+            v2VariationsToggle.parentElement.style.opacity = active ? "1" : ".5";
+            v2VariationsToggle.parentElement.title = active ? "" : "Enable V2 Direct Fidelity to configure V2 prompt variations.";
+        };
+        v2Toggle.addEventListener("change", () => {
+            this.settings.visionAnalysisProfile = v2Toggle.checked ? "v2" : "fast";
+            this.settings.visionAnalysisProfileVersion = 3;
+            this.saveSettings();
+            syncV2Toggle();
+        });
+        syncV2Toggle();
         const modelSelect = addSelect({
             label: "Local GPU Vision model",
             note: "The 8B Heretic model is preferred after live testing. Its 13,312 MiB estimate exceeds the 12 GiB allocation target, so Vision Studio still performs the authoritative post-Forge-unload admission check before every run.",
@@ -9291,11 +10162,13 @@ Krea2DiscordCollector.helpers = Object.freeze({
     sanitizePromptFeedbackRecord,
     sanitizeOperationalErrorText,
     sanitizeFilename,
+    selectMetadataPromptCandidates,
     sha256Hex,
     submissionKey,
     validateSaveFolder,
     validateEndpoint,
     validateVisionLoopbackEndpoint,
+    visibleHistoryPromptVariants,
     visionCacheProfileDigest,
     visionModelDisplayName,
     visionPromptSidecarPath,

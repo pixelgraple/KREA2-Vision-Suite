@@ -235,32 +235,45 @@ assert.equal(applyPromptPreset("One plain sentence. Another sentence about light
 assert.deepEqual(promptDiffSummary("red dress soft light", "blue dress soft sunlight"), {added: ["blue", "sunlight"], removed: ["red", "light"]});
 assert.equal(safeModelFilePart("llamacpp::heretic-8b-q8_0"), "llamacpp-heretic-8b-q8-0");
 const builtPluginSource = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.js"), "utf8");
-const artifactManifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "vision-studio", "scripts", "heretic_llamacpp_artifacts.json"), "utf8"));
-const suiteInstallerSource = fs.readFileSync(path.join(__dirname, "..", "installer", "Install-Krea2VisionSuite.ps1"), "utf8");
-const suiteLauncherSource = fs.readFileSync(path.join(__dirname, "..", "installer", "Start-Krea2VisionSuite.ps1"), "utf8");
-const rootInstallerSource = fs.readFileSync(path.join(__dirname, "..", "START HERE - INSTALL.bat"), "utf8");
-assert.equal(artifactManifest.model_installation.mode, "recommended_auto_optional");
-assert.equal(artifactManifest.model_installation.default_download, "8B");
-assert.equal(artifactManifest.models.length, 10);
-assert.deepEqual(artifactManifest.models.map(model => Number.parseInt(model.parameter_size, 10)), [2, 4, 8, 9, 12, 12, 26, 30, 31, 32]);
-for (const model of artifactManifest.models) {
-    assert.match(model.model.url, /^https:\/\/huggingface\.co\/.+\/resolve\/[0-9a-f]{40}\/.+\?download=true$/);
-    assert.match(model.mmproj[0].url, /^https:\/\/huggingface\.co\/.+\/resolve\/[0-9a-f]{40}\/.+\?download=true$/);
+const suiteRoot = process.env.KREA2_VISION_SUITE_ROOT || path.join(__dirname, "..");
+const artifactManifestPath = path.join(suiteRoot, "vision-studio", "scripts", "heretic_llamacpp_artifacts.json");
+const suiteInstallerPath = path.join(suiteRoot, "installer", "Install-Krea2VisionSuite.ps1");
+const suiteLauncherPath = path.join(suiteRoot, "installer", "Start-Krea2VisionSuite.ps1");
+const rootInstallerPath = path.join(suiteRoot, "START HERE - INSTALL.bat");
+const suitePackagingPaths = [artifactManifestPath, suiteInstallerPath, suiteLauncherPath, rootInstallerPath];
+const presentSuitePackagingPaths = suitePackagingPaths.filter(candidate => fs.existsSync(candidate));
+assert.ok(
+    presentSuitePackagingPaths.length === 0 || presentSuitePackagingPaths.length === suitePackagingPaths.length,
+    "Vision Suite packaging fixtures must be either fully present or fully absent."
+);
+if (presentSuitePackagingPaths.length === suitePackagingPaths.length) {
+    const artifactManifest = JSON.parse(fs.readFileSync(artifactManifestPath, "utf8"));
+    const suiteInstallerSource = fs.readFileSync(suiteInstallerPath, "utf8");
+    const suiteLauncherSource = fs.readFileSync(suiteLauncherPath, "utf8");
+    const rootInstallerSource = fs.readFileSync(rootInstallerPath, "utf8");
+    assert.equal(artifactManifest.model_installation.mode, "recommended_auto_optional");
+    assert.equal(artifactManifest.model_installation.default_download, "8B");
+    assert.equal(artifactManifest.models.length, 10);
+    assert.deepEqual(artifactManifest.models.map(model => Number.parseInt(model.parameter_size, 10)), [2, 4, 8, 9, 12, 12, 26, 30, 31, 32]);
+    for (const model of artifactManifest.models) {
+        assert.match(model.model.url, /^https:\/\/huggingface\.co\/.+\/resolve\/[0-9a-f]{40}\/.+\?download=true$/);
+        assert.match(model.mmproj[0].url, /^https:\/\/huggingface\.co\/.+\/resolve\/[0-9a-f]{40}\/.+\?download=true$/);
+    }
+    assert.match(suiteInstallerSource, /\[string\] \$Model = '8B'/);
+    assert.match(suiteInstallerSource, /\$runtimeArguments\+=@\('-DownloadModels',\$Model\)/);
+    for (const packageId of ["Python.Python.3.12", "Ollama.Ollama", "Discord.Discord", "betterdiscord.cli"]) {
+        assert.match(suiteInstallerSource, new RegExp(packageId.replaceAll(".", "\\.")));
+    }
+    assert.match(suiteInstallerSource, /Krea2DiscordCollector\.config\.json/);
+    assert.match(suiteInstallerSource, /babegen-prompter:9b-q5/);
+    assert.match(suiteInstallerSource, /KREA2_DISCORD_VISION_TOKEN/);
+    assert.match(suiteInstallerSource, /KREA2 Vision Suite\.lnk/);
+    assert.match(suiteInstallerSource, /Stop-OwnedSuiteProcesses/);
+    assert.match(suiteLauncherSource, /127\.0\.0\.1:11434\/api\/version/);
+    assert.match(suiteLauncherSource, /127\.0\.0\.1:7870\/health/);
+    assert.doesNotMatch(suiteLauncherSource, /127\.0\.0\.1:8795/);
+    assert.match(rootInstallerSource, /-Mode Install -Model 8B/);
 }
-assert.match(suiteInstallerSource, /\[string\] \$Model = '8B'/);
-assert.match(suiteInstallerSource, /\$runtimeArguments\+=@\('-DownloadModels',\$Model\)/);
-for (const packageId of ["Python.Python.3.12", "Ollama.Ollama", "Discord.Discord", "betterdiscord.cli"]) {
-    assert.match(suiteInstallerSource, new RegExp(packageId.replaceAll(".", "\\.")));
-}
-assert.match(suiteInstallerSource, /Krea2DiscordCollector\.config\.json/);
-assert.match(suiteInstallerSource, /babegen-prompter:9b-q5/);
-assert.match(suiteInstallerSource, /KREA2_DISCORD_VISION_TOKEN/);
-assert.match(suiteInstallerSource, /KREA2 Vision Suite\.lnk/);
-assert.match(suiteInstallerSource, /Stop-OwnedSuiteProcesses/);
-assert.match(suiteLauncherSource, /127\.0\.0\.1:11434\/api\/version/);
-assert.match(suiteLauncherSource, /127\.0\.0\.1:7870\/health/);
-assert.doesNotMatch(suiteLauncherSource, /127\.0\.0\.1:8795/);
-assert.match(rootInstallerSource, /-Mode Install -Model 8B/);
 assert.doesNotMatch(builtPluginSource, /krea2history:\/\//);
 assert.match(builtPluginSource, /openVerifiedExternal\(rawUrl, purpose\)[\s\S]*?filterExternalUrl\(rawUrl, purpose\)/);
 assert.match(builtPluginSource, /root\.dataset\.detached = "true"/);
@@ -288,10 +301,14 @@ assert.match(builtPluginSource, /Repair KREA2 Vision Suite shortcut/);
 assert.match(builtPluginSource, /Model that actually described this image/);
 assert.match(builtPluginSource, /Exact model ID:/);
 assert.match(builtPluginSource, /\["Interrogate", "interrogate"\]/);
-assert.match(builtPluginSource, /\["V2", "v2"\]/);
-assert.match(builtPluginSource, /V2 DIRECT FIDELITY — ACTIVE/);
-assert.match(builtPluginSource, /tab\.textContent = active \? "V2 ON" : "V2"/);
-assert.match(builtPluginSource, /this\.settings\.visionAnalysisProfile = "v2"/);
+assert.doesNotMatch(builtPluginSource, /\["V2", "v2"\]/);
+assert.doesNotMatch(builtPluginSource, /V2 DIRECT FIDELITY — ACTIVE/);
+assert.doesNotMatch(builtPluginSource, /tab\.textContent = active \? "V2 ON" : "V2"/);
+assert.equal(DEFAULT_SETTINGS.visionAnalysisProfile, "v2");
+assert.match(builtPluginSource, /v2Section\.dataset\.setting = "v2-direct-fidelity"/);
+assert.match(builtPluginSource, /v2Title\.textContent = "Use V2 Direct Fidelity"/);
+assert.match(builtPluginSource, /v2Toggle\.checked = normalizeVisionAnalysisProfile\(this\.settings\.visionAnalysisProfile\) === "v2"/);
+assert.match(builtPluginSource, /this\.settings\.visionAnalysisProfile = v2Toggle\.checked \? "v2" : "fast"/);
 assert.match(builtPluginSource, /buildInterrogatePanel\(panel\)/);
 assert.match(builtPluginSource, /queueInterrogateSelection\(\)/);
 assert.match(builtPluginSource, /input\.accept = "image\/png,image\/jpeg,image\/webp/);
@@ -746,7 +763,11 @@ async function testVisionRequestContract() {
         dataset_guidance: disabledDatasetGuidance
     }), "utf8");
     const captured = [];
-    collector.settings = {...DEFAULT_SETTINGS, shareDatasetContributions: true};
+    collector.settings = {
+        ...DEFAULT_SETTINGS,
+        visionAnalysisProfile: "fast",
+        shareDatasetContributions: true
+    };
     collector.api = {Data: {load: key => key === "onboardingState" ? {
         version: 9,
         contributionTermsVersion: Plugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION
@@ -925,6 +946,152 @@ async function testVisionJobDedupeAndSerialization() {
 
 await testVisionJobDedupeAndSerialization();
 
+async function testMetadataFirstMagnifierRouting() {
+    const prompt = "A realistic source prompt with an exact seated pose, tailored red clothing, side lighting, cast shadows, and a low camera angle.";
+    const makeCollector = inspected => {
+        const collector = new Plugin();
+        collector.running = true;
+        collector.generation = 17;
+        collector.settings = {...DEFAULT_SETTINGS, visionAnalysisProfile: "v2"};
+        collector.validateLocalCollectionSettings = () => ({guildId: "123456", channelId: "654321"});
+        collector.captureVisionSelection = () => Object.freeze({
+            sourceUrlAtClick: "https://cdn.discordapp.com/attachments/654321/777777/image.png",
+            provenance: Object.freeze({kind: "attachment", attachmentChannelId: "654321", attachmentId: "777777", path: "/attachments/654321/777777/image.png"}),
+            messageId: "888888",
+            companion: Object.freeze({status: "none"}),
+            config: Object.freeze({guildId: "123456", channelId: "654321", visionModel: "vast::test", visionAnalysisProfile: "v2", visionPromptCount: 1})
+        });
+        collector.resolveQueuedVisionSelection = (_image, selection) => Object.freeze({...selection, sourceUrl: selection.sourceUrlAtClick});
+        collector.inspectPromptMetadata = async () => inspected;
+        collector.setButtonState = (button, state, _text, title) => { button.state = state; button.title = title; };
+        collector.toast = () => {};
+        collector.log = () => {};
+        collector.recordDiagnosticSummary = () => {};
+        return collector;
+    };
+    const image = {isConnected: true};
+
+    const metadataCollector = makeCollector({
+        status: "usable",
+        classification: "usable",
+        prompts: [{prompt, source: "embedded image metadata"}],
+        original: {sha256: "d".repeat(64)},
+        embedded: {chunks: [{name: "tEXt", size: 512}]},
+        sidecar: null
+    });
+    let shown = null;
+    metadataCollector.showMetadataPromptModal = prompts => { shown = prompts; };
+    metadataCollector.addLocalVisionSubmission = () => { throw new Error("metadata hit must not create a Vision job"); };
+    metadataCollector.enqueueVisionAnalysisAfterMetadata = () => { throw new Error("metadata hit must not enter the Vision queue"); };
+    metadataCollector.issueVisionSession = () => { throw new Error("metadata hit must not issue an online session or reserve credits"); };
+    metadataCollector.requestVisionPrompt = () => { throw new Error("metadata hit must not call the Vision endpoint"); };
+    const metadataButton = {dataset: {}, isConnected: true};
+    const metadataResult = await metadataCollector.queueVisionAnalysis(image, metadataButton);
+    assert.equal(metadataResult.status, "metadata");
+    assert.deepEqual(shown, [{prompt, source: "embedded image metadata"}]);
+    assert.equal(metadataButton.state, "done");
+    assert.equal(metadataButton.dataset.busy, "false");
+    assert.equal(metadataCollector.localVisionSubmissions.size, 0);
+
+    const distinctPrompts = [
+        {prompt, source: "embedded image metadata"},
+        {prompt: `${prompt} Warm rim light.`, source: "parameters.yaml"}
+    ];
+    const multiCollector = makeCollector({
+        status: "usable",
+        classification: "usable",
+        prompts: distinctPrompts,
+        original: {sha256: "e".repeat(64)},
+        embedded: {chunks: []},
+        sidecar: {classification: "usable"}
+    });
+    let shownMultiple = null;
+    multiCollector.showMetadataPromptModal = prompts => { shownMultiple = prompts; };
+    multiCollector.enqueueVisionAnalysisAfterMetadata = () => { throw new Error("distinct source prompts must be shown, not sent to Vision"); };
+    const multiButton = {dataset: {}, isConnected: true};
+    assert.equal((await multiCollector.queueVisionAnalysis(image, multiButton)).status, "metadata");
+    assert.deepEqual(shownMultiple, distinctPrompts);
+
+    const fallbackCollector = makeCollector({status: "none", classification: "encoded_or_unknown", prompts: []});
+    let fallbackCount = 0;
+    fallbackCollector.showMetadataPromptModal = () => { throw new Error("unusable metadata must not open a source-prompt modal"); };
+    fallbackCollector.enqueueVisionAnalysisAfterMetadata = async (_image, button) => {
+        fallbackCount += 1;
+        button.dataset.busy = "false";
+        return {status: "vision"};
+    };
+    const fallbackButton = {dataset: {}, isConnected: true};
+    assert.deepEqual(await fallbackCollector.queueVisionAnalysis(image, fallbackButton), {status: "vision"});
+    assert.equal(fallbackCount, 1);
+
+    const partialCollector = new Plugin();
+    partialCollector.downloadMetadataOriginal = async () => ({
+        bytes: forgePng,
+        format: forgeFormat,
+        sha256: sha256Hex(forgePng)
+    });
+    partialCollector.downloadCompanionMetadata = async () => { throw new Error("expired optional YAML URL"); };
+    const embeddedSurvivesYamlFailure = await partialCollector.inspectPromptMetadata(
+        {companion: {status: "found", attachment: {filename: "parameters.yaml"}}},
+        {isConnected: true},
+        new AbortController().signal
+    );
+    assert.equal(embeddedSurvivesYamlFailure.status, "usable");
+    assert.deepEqual(embeddedSurvivesYamlFailure.prompts, [
+        {prompt: "beautiful woman, cinematic light", source: "embedded image metadata"}
+    ]);
+
+    const yamlOnlyCollector = new Plugin();
+    yamlOnlyCollector.downloadMetadataOriginal = async () => { throw new Error("temporary image download failure"); };
+    yamlOnlyCollector.downloadCompanionMetadata = async () => ({
+        classification: "usable",
+        prompt,
+        source: "parameters.yaml"
+    });
+    const yamlSurvivesImageFailure = await yamlOnlyCollector.inspectPromptMetadata(
+        {companion: {status: "found", attachment: {filename: "parameters.yaml"}}},
+        {isConnected: true},
+        new AbortController().signal
+    );
+    assert.equal(yamlSurvivesImageFailure.status, "usable");
+    assert.equal(yamlSurvivesImageFailure.original, null);
+    assert.deepEqual(yamlSurvivesImageFailure.prompts, [{prompt, source: "parameters.yaml"}]);
+
+    const yamlRouteCollector = makeCollector(yamlSurvivesImageFailure);
+    let yamlRouteShown = null;
+    yamlRouteCollector.showMetadataPromptModal = prompts => { yamlRouteShown = prompts; };
+    yamlRouteCollector.recordDiagnosticSummary = () => { throw new Error("YAML-only metadata has no image hash to record"); };
+    yamlRouteCollector.enqueueVisionAnalysisAfterMetadata = () => { throw new Error("YAML-only prompt must not enter Vision"); };
+    const yamlRouteButton = {dataset: {}, isConnected: true};
+    assert.equal((await yamlRouteCollector.queueVisionAnalysis(image, yamlRouteButton)).status, "metadata");
+    assert.deepEqual(yamlRouteShown, [{prompt, source: "parameters.yaml"}]);
+    assert.equal(yamlRouteButton.state, "done");
+    assert.equal(yamlRouteButton.dataset.busy, "false");
+
+    const yamlPlusCollector = new Plugin();
+    yamlPlusCollector.running = true;
+    yamlPlusCollector.generation = 18;
+    yamlPlusCollector.captureMetadataSelection = () => ({
+        provenance: {kind: "attachment", attachmentChannelId: "654321", attachmentId: "777777", path: "/attachments/654321/777777/image.png"},
+        companion: {status: "found", attachment: {filename: "parameters.yaml"}}
+    });
+    yamlPlusCollector.inspectPromptMetadata = async () => yamlSurvivesImageFailure;
+    let yamlPlusShown = null;
+    yamlPlusCollector.showMetadataPromptModal = prompts => { yamlPlusShown = prompts; };
+    yamlPlusCollector.setButtonState = (button, state) => { button.state = state; };
+    yamlPlusCollector.toast = () => {};
+    yamlPlusCollector.log = () => {};
+    yamlPlusCollector.recordDiagnosticSummary = () => { throw new Error("YAML-only + result has no image hash to record"); };
+    const yamlPlusButton = {dataset: {}, isConnected: true};
+    yamlPlusCollector.queueMetadataProbe(image, yamlPlusButton);
+    await yamlPlusCollector.metadataProbeQueue;
+    assert.deepEqual(yamlPlusShown, [{prompt, source: "parameters.yaml"}]);
+    assert.equal(yamlPlusButton.state, "done");
+    assert.equal(yamlPlusButton.dataset.busy, "false");
+}
+
+await testMetadataFirstMagnifierRouting();
+
 async function testEntireVisionFlowSerialization() {
     const collector = new Plugin();
     collector.running = true;
@@ -933,6 +1100,7 @@ async function testEntireVisionFlowSerialization() {
     collector.attachmentBelongsToGuild = () => true;
     collector.setButtonState = (button, state) => { button.state = state; };
     collector.toast = () => {};
+    collector.inspectPromptMetadata = async () => ({status: "none", classification: "no_metadata", prompts: []});
 
     let activeDownloads = 0;
     let maxActiveDownloads = 0;
@@ -953,6 +1121,7 @@ async function testEntireVisionFlowSerialization() {
         button.dataset.busy = "false";
     };
 
+    const completions = [];
     for (let index = 1; index <= 12; index += 1) {
         const image = {
             isConnected: true,
@@ -961,10 +1130,10 @@ async function testEntireVisionFlowSerialization() {
             dataset: {}
         };
         const button = {dataset: {}, isConnected: true, id: index};
-        collector.queueVisionAnalysis(image, button);
-        assert.equal(button.state, "vision-queued");
+        completions.push(collector.queueVisionAnalysis(image, button));
+        assert.equal(button.state, "hashing");
     }
-    await collector.visionFlowQueue;
+    await Promise.all(completions);
     assert.equal(completed, 12);
     assert.equal(maxActiveDownloads, 1);
     assert.equal(maxLiveBodyBytes, 4096);
@@ -1005,6 +1174,7 @@ async function runQueuedVisionDomMutation({nextUrl, nextMessageRoot}) {
     };
     collector.toast = () => {};
     collector.log = () => {};
+    collector.inspectPromptMetadata = async () => ({status: "none", classification: "no_metadata", prompts: []});
 
     let releaseEarlierFlow;
     collector.visionFlowQueue = new Promise(resolve => { releaseEarlierFlow = resolve; });
@@ -1024,13 +1194,13 @@ async function runQueuedVisionDomMutation({nextUrl, nextMessageRoot}) {
         button.dataset.busy = "false";
     };
 
-    collector.queueVisionAnalysis(image, button);
-    assert.equal(button.state, "vision-queued");
+    const completion = collector.queueVisionAnalysis(image, button);
+    assert.equal(button.state, "hashing");
     assert.equal(button.dataset.busy, "true");
     image.currentSrc = nextUrl;
     root.id = nextMessageRoot;
     releaseEarlierFlow();
-    await collector.visionFlowQueue;
+    await completion;
 
     return {button, clickedUrl, downstreamSelections};
 }

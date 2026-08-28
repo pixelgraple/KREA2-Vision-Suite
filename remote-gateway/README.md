@@ -13,6 +13,12 @@ after the final prompt audit succeeds and is automatically refunded if the
 image fails or is cancelled. Local GPU mode does not contact this service or
 require a Discord account or credits.
 
+The same verified license can use the separate Qwen Prompt Editor route. Each
+successful Qwen reply costs one credit; a failed, cancelled, timed-out, invalid,
+or unsettled request is refunded automatically. The gateway stores only its
+request digest and credit state, not the prompt, instructions, conversation, or
+reply text.
+
 The gateway stores a bounded audit record for completed remote jobs only:
 license ID, claimed Discord ID/display name, selected model, request ID, optional
 Discord CDN attachment reference, and the three generated prompt variants. It
@@ -24,7 +30,9 @@ Create `/data/krea2-vision-gateway/gateway.env` outside the repository:
 
 ```ini
 KREA2_GATEWAY_VAST_ENDPOINT=your-vast-endpoint
+KREA2_GATEWAY_QWEN_ENDPOINT=your-qwen-prompt-editor-endpoint
 KREA2_GATEWAY_VAST_API_KEY=private-vast-key
+KREA2_GATEWAY_QWEN_TIMEOUT_SECONDS=300
 KREA2_GATEWAY_AUDIT_WEBHOOK_URL=private-discord-webhook-url
 KREA2_GATEWAY_ADMIN_KEY=generate-a-random-32-byte-or-longer-secret
 KREA2_GATEWAY_DB=/data/krea2-vision-gateway/krea2-vision.sqlite3

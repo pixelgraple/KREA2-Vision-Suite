@@ -11,6 +11,7 @@ const {
     buildVisionMultipartBody,
     effectiveVisionPromptCount,
     parseVisionPromptResponse,
+    visibleHistoryPromptVariants,
     visionRequestCacheKey
 } = Plugin.helpers;
 
@@ -37,6 +38,8 @@ const response = variants => JSON.stringify({
 });
 
 assert.equal(DEFAULT_SETTINGS.v2ThreePromptVariations, false);
+assert.equal(DEFAULT_SETTINGS.visionAnalysisProfile, "v2");
+assert.equal(DEFAULT_SETTINGS.visionAnalysisProfileVersion, 3);
 assert.equal(effectiveVisionPromptCount(DEFAULT_SETTINGS, "v2"), 1);
 assert.equal(effectiveVisionPromptCount({...DEFAULT_SETTINGS, v2ThreePromptVariations: true}, "v2"), 3);
 assert.equal(effectiveVisionPromptCount(DEFAULT_SETTINGS, "fast"), 3);
@@ -66,9 +69,30 @@ assert.equal(parseVisionPromptResponse(response(three), {expectedPromptCount: 3}
 assert.throws(() => parseVisionPromptResponse(response(one), {expectedPromptCount: 3}), /exactly three|when 3 were requested/);
 assert.throws(() => parseVisionPromptResponse(response(three.slice(0, 2)), {expectedPromptCount: 1}), /when 1 were requested/);
 
+const v2ThreePromptJob = {
+    prompt: three[0],
+    prompt_variants: three,
+    model: "Remote Serverless — V2 Direct Fidelity",
+    reproducibility: {analysis_profile: "v2", prompt_variant_count: 3}
+};
+assert.deepEqual(visibleHistoryPromptVariants(v2ThreePromptJob, {v2ThreePromptVariations: false}), [three[0]]);
+assert.deepEqual(visibleHistoryPromptVariants(v2ThreePromptJob, {v2ThreePromptVariations: true}), three);
+assert.deepEqual(
+    visibleHistoryPromptVariants({...v2ThreePromptJob, prompt: one[0], prompt_variants: one}, {v2ThreePromptVariations: true}),
+    one
+);
+assert.deepEqual(
+    visibleHistoryPromptVariants({...v2ThreePromptJob, model: "Maximum detail", reproducibility: {analysis_profile: "maximum"}}, {v2ThreePromptVariations: false}),
+    three
+);
+
 const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.js"), "utf8");
-assert.match(source, /\["V2", "v2"\]/);
-assert.match(source, /if \(variants\.length > 1\) output\.append\(variantTabs\)/);
+assert.doesNotMatch(source, /\["V2", "v2"\]/);
+assert.match(source, /v2Toggle\.setAttribute\("role", "switch"\)/);
+assert.match(source, /Use V2 Direct Fidelity/);
+assert.match(source, /storedSettings\.visionAnalysisProfileVersion\) \|\| 0\) < 3/);
+assert.match(source, /output\.append\(variantTabs, prompt, feedback, editVariant, copyVariant\)/);
+assert.match(source, /variants\.length === 1\s*\? \["Prompt"\]/);
 assert.match(source, /Generate three V2 prompt variations/);
 
 console.log("BetterDiscord V2 single/three-output tests passed.");

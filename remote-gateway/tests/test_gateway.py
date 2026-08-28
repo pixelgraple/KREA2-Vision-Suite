@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -99,8 +100,9 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
         now = __import__("time").time_ns() // 1_000_000_000
         with gateway.connection() as db:
-            gateway._reserve_image_credits(db, row, "d" * 64, now)
-            gateway._reserve_image_credits(db, row, "d" * 64, now + 1)
+            gateway._reserve_image_credits(db, row, "d" * 64, "e" * 64, now)
+            with self.assertRaisesRegex(Exception, "already in progress or completed"):
+                gateway._reserve_image_credits(db, row, "d" * 64, "e" * 64, now + 1)
         self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
         gateway.fail_audit(row, "d" * 64)
         self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
@@ -117,13 +119,32 @@ class GatewayTests(unittest.TestCase):
             gateway.config.discord_redirect_uri, gateway.config.license_signing_key,
         )
 
+        sleeping = {
+            "workergroup_attached": True, "controller_verified": True,
+            "unhealthy_workers": 0, "disallowed_workers": 0,
+            "ready_workers": 0, "controller_ready_workers": 0,
+            "inactive_workers": 1, "starting_workers": 0,
+            "worker_count": 1, "cold_start_eligible": True,
+        }
+        routed = {
+            **sleeping, "ready_workers": 1, "controller_ready_workers": 1,
+            "inactive_workers": 0, "worker_count": 1,
+            "cold_start_eligible": False,
+        }
+        readiness_calls = 0
+
+        async def remote_readiness():
+            nonlocal readiness_calls
+            readiness_calls += 1
+            return routed if readiness_calls >= 3 else sleeping
+
+        async def routed_request(_client, _endpoint, _payload, _deadline, *, before_send, **_kwargs):
+            await before_send()
+            return {"ok": True, "response": {"choices": [{"message": {"content": "cold-start-ok"}}]}}
+
         class EmptyEndpoint:
             id = 123
-            request_calls = 0
             async def get_workers(self): return []
-            async def request(self, *_args, **_kwargs):
-                type(self).request_calls += 1
-                return {"id": "cold-start-ok", "choices": []}
 
         class EmptyClient:
             async def __aenter__(self): return self
@@ -133,6 +154,11 @@ class GatewayTests(unittest.TestCase):
 
         original = gateway_module.CoroutineServerless
         gateway_module.CoroutineServerless = lambda **_kwargs: EmptyClient()
+        gateway.remote_readiness = remote_readiness
+        gateway._prepared_activation_machine_ids = lambda: {123}
+        gateway._set_activation_floor_async = AsyncMock()
+        gateway._restore_activation_floor = AsyncMock()
+        gateway._fast_routed_request = routed_request
         try:
             response = self.client.post(
                 "/v1/chat/completions", headers=self.headers(license, "f" * 64),
@@ -141,7 +167,9 @@ class GatewayTests(unittest.TestCase):
         finally:
             gateway_module.CoroutineServerless = original
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(EmptyEndpoint.request_calls, 1)
+        self.assertGreaterEqual(readiness_calls, 3)
+        gateway._set_activation_floor_async.assert_awaited_once_with(1.0)
+        gateway._restore_activation_floor.assert_awaited_once()
         self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 117)
 
     def test_signed_settlement_webhook_credits_once(self):

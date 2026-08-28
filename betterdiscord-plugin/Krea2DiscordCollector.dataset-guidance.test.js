@@ -255,7 +255,12 @@ test("loopback requests propagate OFF and ON and bind the response receipt to th
     const config = {endpoint, origin: "http://127.0.0.1:7870", token, model: MODEL};
     collector.ensureContributionConsent = async () => collector.settings.shareDatasetContributions === true;
 
-    collector.settings = {...DEFAULT_SETTINGS, useKrea2DatasetGuidance: false, shareDatasetContributions: false};
+    collector.settings = {
+        ...DEFAULT_SETTINGS,
+        visionAnalysisProfile: "fast",
+        useKrea2DatasetGuidance: false,
+        shareDatasetContributions: false
+    };
     const off = await collector.requestVisionPrompt(original, local, config, new AbortController().signal, null, {jobId: JOB_A});
     assert.equal(multipartValue(captures.at(-1).options.body, "dataset_guidance"), "0");
     assert.equal(multipartValue(captures.at(-1).options.body, "contribution_terms"), null);

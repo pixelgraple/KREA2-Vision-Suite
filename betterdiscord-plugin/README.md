@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.13.34
+# Krea2 Discord Vision v0.14.0
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
@@ -6,6 +6,8 @@ This BetterDiscord plugin adds two independent tools to exact Discord image atta
 
 - the top-left **+** reads embedded image metadata and, when present on the same Discord message, a `.yaml` or `.yml` companion. It opens the exact positive prompt locally without running Vision, using credits, submitting to a dataset, or saving anything;
 - the top-right image magnifier holds request bytes in memory, queues one shared-GPU Vision job, and returns one grounded V2 prompt by default or three variations when enabled, without saving the full-resolution image.
+
+The Krea2 Vision header and every usable prompt result also expose **Qwen Prompt Editor**. Paste or open a complete KREA2 prompt, describe the pose, wardrobe, camera, lighting, setting, or wording change you want, and adopt or copy Qwen's revised prompt. Each successful edit reply costs one Online API credit. Opening, closing, copying, or clearing the editor costs nothing, and a failed request is refunded automatically. Editor conversation text exists only for the open Discord popup and is not stored by the KREA2 gateway.
 
 ## Source metadata +
 

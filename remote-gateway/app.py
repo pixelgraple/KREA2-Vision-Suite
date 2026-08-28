@@ -2,32 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 try:
-    from vastai import CoroutineServerless
+    from vastai import CoroutineServerless, VastAI
+    from vastai.serverless.client.connection import _make_request as _vast_make_request
 except ImportError:  # Allows isolated API-contract tests without the Vast SDK.
-    CoroutineServerless = None
+    CoroutineServerless = VastAI = _vast_make_request = None
 
 MODEL_ID = "gemma4-26b-a4b-heretic-q3-k-l"
 PUBLIC_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l"
+PROMPT_CHAT_MODEL_ID = "heretic-3.8-q4-cloud"
 DISCORD_ID_RE = re.compile(r"^[1-9][0-9]{16,21}$")
 LICENSE_ID_RE = re.compile(r"^lic_[A-Za-z0-9_-]{12,64}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -38,9 +43,20 @@ OAUTH_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
 OAUTH_ENROLLMENT_TTL_SECONDS = 10 * 60
 WELCOME_CREDITS = 120
 IMAGE_CREDIT_COST = 3
+PROMPT_CHAT_CREDIT_COST = 1
 CREDIT_PACK_CREDITS = 1200
 CREDIT_PACK_PRICE_USD = "20"
 CREDIT_RESERVATION_TTL_SECONDS = 2 * 60 * 60
+DEFAULT_ALLOWED_GPU_NAMES = ("RTX 3090", "RTX 3090 Ti", "RTX 4090")
+
+
+def configured_allowed_gpu_names(raw: str | None) -> tuple[str, ...]:
+    """Apply the permanent GPU allow-list even when environment data is stale."""
+
+    if raw is None:
+        return DEFAULT_ALLOWED_GPU_NAMES
+    requested = {item.strip() for item in raw.split(",") if item.strip()}
+    return tuple(name for name in DEFAULT_ALLOWED_GPU_NAMES if name in requested)
 
 
 @dataclass(frozen=True)
@@ -61,6 +77,13 @@ class Config:
     btcpay_store_id: str = ""
     btcpay_api_key: str = ""
     btcpay_webhook_secret: str = ""
+    bootstrap_deadline_seconds: float = 600.0
+    activation_deadline_seconds: float = 120.0
+    inference_deadline_seconds: float = 90.0
+    allowed_gpu_names: tuple[str, ...] = DEFAULT_ALLOWED_GPU_NAMES
+    max_worker_hourly_usd: float = 0.30
+    prompt_chat_endpoint: str = ""
+    prompt_chat_timeout_seconds: float = 300.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -71,7 +94,7 @@ class Config:
             audit_webhook_url=os.getenv("KREA2_GATEWAY_AUDIT_WEBHOOK_URL", "").strip(),
             admin_key=os.getenv("KREA2_GATEWAY_ADMIN_KEY", ""),
             request_timeout_seconds=max(30.0, min(float(os.getenv("KREA2_GATEWAY_TIMEOUT_SECONDS", "1200")), 3600.0)),
-            max_request_bytes=max(1_000_000, min(int(os.getenv("KREA2_GATEWAY_MAX_REQUEST_BYTES", str(12 * 1024 * 1024))), 24 * 1024 * 1024)),
+            max_request_bytes=max(1_000_000, min(int(os.getenv("KREA2_GATEWAY_MAX_REQUEST_BYTES", str(32 * 1024 * 1024))), 32 * 1024 * 1024)),
             retention_days=max(1, min(int(os.getenv("KREA2_GATEWAY_AUDIT_RETENTION_DAYS", "30")), 365)),
             discord_client_id=os.getenv("KREA2_GATEWAY_DISCORD_CLIENT_ID", "").strip(),
             discord_client_secret=os.getenv("KREA2_GATEWAY_DISCORD_CLIENT_SECRET", ""),
@@ -81,6 +104,30 @@ class Config:
             btcpay_store_id=os.getenv("KREA2_GATEWAY_BTCPAY_STORE_ID", "").strip(),
             btcpay_api_key=os.getenv("KREA2_GATEWAY_BTCPAY_API_KEY", ""),
             btcpay_webhook_secret=os.getenv("KREA2_GATEWAY_BTCPAY_WEBHOOK_SECRET", ""),
+            bootstrap_deadline_seconds=max(
+                300.0,
+                min(float(os.getenv("KREA2_GATEWAY_BOOTSTRAP_DEADLINE_SECONDS", "600")), 1800.0),
+            ),
+            activation_deadline_seconds=max(
+                30.0,
+                min(float(os.getenv("KREA2_GATEWAY_ACTIVATION_DEADLINE_SECONDS", "120")), 120.0),
+            ),
+            inference_deadline_seconds=max(
+                45.0,
+                min(float(os.getenv("KREA2_GATEWAY_INFERENCE_DEADLINE_SECONDS", "90")), 180.0),
+            ),
+            allowed_gpu_names=configured_allowed_gpu_names(
+                os.getenv("KREA2_GATEWAY_ALLOWED_GPU_NAMES")
+            ),
+            max_worker_hourly_usd=max(
+                0.10,
+                min(float(os.getenv("KREA2_GATEWAY_MAX_WORKER_HOURLY_USD", "0.30")), 0.30),
+            ),
+            prompt_chat_endpoint=os.getenv("KREA2_GATEWAY_QWEN_ENDPOINT", "").strip(),
+            prompt_chat_timeout_seconds=max(
+                60.0,
+                min(float(os.getenv("KREA2_GATEWAY_QWEN_TIMEOUT_SECONDS", "300")), 900.0),
+            ),
         )
 
 
@@ -99,9 +146,22 @@ class ChatRequest(BaseModel):
     response_format: dict[str, Any] | None = None
 
 
+class PromptChatMessage(BaseModel):
+    role: str = Field(min_length=4, max_length=9)
+    content: str = Field(min_length=1, max_length=24000)
+
+
+class PromptChatRequest(BaseModel):
+    model: str = PROMPT_CHAT_MODEL_ID
+    messages: list[PromptChatMessage] = Field(min_length=1, max_length=16)
+    temperature: float = Field(default=0.35, ge=0, le=1)
+    max_tokens: int = Field(default=1536, ge=64, le=4096)
+    stream: bool = False
+
+
 class AuditCompletion(BaseModel):
     model_id: str
-    prompt_variants: list[str] = Field(min_length=3, max_length=3)
+    prompt_variants: list[str] = Field(min_length=1, max_length=3)
     source_url: str = ""
 
 
@@ -149,6 +209,30 @@ def parse_bearer(value: str | None) -> tuple[str, str]:
 class Gateway:
     def __init__(self, config: Config, *, http: Any = requests):
         self.config, self.http = config, http
+        self._instance_readiness_until = 0.0
+        self._instance_readiness: tuple[int, int] = (0, 0)
+        self._instance_ready_ids: set[int] = set()
+        self._instance_inspection_succeeded = False
+        self._instance_health: dict[str, int] = {
+            "starting": 0,
+            "unhealthy": 0,
+            "inactive": 0,
+            "disallowed": 0,
+        }
+        self._recovery_lock = threading.Lock()
+        self._controller_mutation_lock = threading.RLock()
+        self._desired_activation_floor = 0.0
+        self._activation_headroom_target = 0
+        self._activation_evidence_lock = threading.Lock()
+        self._activation_failures: dict[int, dict[str, float]] = {}
+        self._activation_phase = "idle"
+        self._activation_started_at = 0.0
+        self._activation_last_elapsed_seconds = 0.0
+        self._activation_last_outcome = "none"
+        self._recovery_until = 0.0
+        self._recovery_status = "idle"
+        self._activation_lock = asyncio.Lock()
+        self._prompt_chat_lock = asyncio.Lock()
         config.database.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -213,6 +297,15 @@ class Gateway:
                 CREATE TABLE IF NOT EXISTS btcpay_webhook_deliveries (
                     delivery_id TEXT PRIMARY KEY, received_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS prompt_chat_jobs (
+                    request_id TEXT PRIMARY KEY, license_id TEXT NOT NULL,
+                    discord_user_id TEXT NOT NULL, model_id TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    credit_state TEXT NOT NULL CHECK(credit_state IN ('reserved','charged','refunded')),
+                    started_at INTEGER NOT NULL, completed_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS prompt_chat_jobs_retention_idx
+                    ON prompt_chat_jobs(completed_at);
             """)
 
             columns = {row[1] for row in db.execute("PRAGMA table_info(licenses)")}
@@ -221,6 +314,8 @@ class Gateway:
             job_columns = {row[1] for row in db.execute("PRAGMA table_info(remote_jobs)")}
             if "credit_state" not in job_columns:
                 db.execute("ALTER TABLE remote_jobs ADD COLUMN credit_state TEXT NOT NULL DEFAULT 'none'")
+            if "request_digest" not in job_columns:
+                db.execute("ALTER TABLE remote_jobs ADD COLUMN request_digest TEXT")
 
     def oauth_configured(self) -> bool:
         return bool(
@@ -238,6 +333,619 @@ class Gateway:
             and len(self.config.btcpay_webhook_secret) >= 32
         )
 
+    async def _actual_instance_readiness(self, endpoint_id: int) -> tuple[int, int]:
+        """Fallback for Vast's stale Serverless worker-list endpoint."""
+        now = time.monotonic()
+        if now < self._instance_readiness_until:
+            return self._instance_readiness
+        if VastAI is None:
+            self._instance_inspection_succeeded = False
+            self._instance_ready_ids = set()
+            return 0, 0
+
+        def inspect() -> tuple[int, int, int, int, int, int, set[int]]:
+            client = VastAI(api_key=self.config.vast_api_key)
+            prefix = f"{self.config.vast_endpoint}:{endpoint_id}:"
+            group = next(
+                item
+                for item in client.show_workergroups()
+                if int(item.get("endpoint_id") or 0) == endpoint_id
+            )
+            machine_filter = (group.get("search_query") or {}).get("machine_id") or {}
+            excluded_machines = set(int(value) for value in machine_filter.get("notin", []))
+            if "neq" in machine_filter:
+                excluded_machines.add(int(machine_filter["neq"]))
+            instances = [
+                item for item in client.show_instances()
+                if str(item.get("label", "")).startswith(prefix)
+                and str(item.get("actual_status", "")).casefold() in {"loading", "running", "exited"}
+                and str(item.get("cur_state", "")).casefold() in {"running", "stopped"}
+            ]
+            ready = 0
+            ready_ids: set[int] = set()
+            starting = 0
+            unhealthy = 0
+            inactive = 0
+            disallowed = 0
+            allowed_instances = 0
+            wall_now = time.time()
+            for item in instances:
+                # Machines in the workergroup's explicit deny-list have already
+                # been quarantined and are no longer admission candidates. Vast
+                # can retain their stopped Serverless instance rows for hours;
+                # counting those historical rows as live policy violations
+                # makes an otherwise healthy replacement cold pool ineligible.
+                if int(item.get("machine_id") or 0) in excluded_machines:
+                    continue
+                gpu_name = str(item.get("gpu_name") or "").strip()
+                try:
+                    hourly_usd = float(item.get("dph_total") or 0)
+                except (TypeError, ValueError):
+                    hourly_usd = self.config.max_worker_hourly_usd + 1
+                if (
+                    gpu_name not in self.config.allowed_gpu_names
+                    or hourly_usd <= 0
+                    or hourly_usd > self.config.max_worker_hourly_usd
+                ):
+                    disallowed += 1
+                    continue
+                allowed_instances += 1
+                model_ready = False
+                if str(item.get("actual_status", "")).casefold() in {"running", "exited"}:
+                    logs = client.logs(int(item["id"]), tail="2000") or ""
+                    if "KREA2_MODEL_READY" in logs:
+                        model_ready = True
+                if model_ready:
+                    if str(item.get("cur_state", "")).casefold() == "stopped":
+                        inactive += 1
+                    else:
+                        ready += 1
+                        ready_ids.add(int(item.get("id") or 0))
+                    continue
+                start_date = float(item.get("start_date") or wall_now)
+                if wall_now - start_date >= self.config.bootstrap_deadline_seconds:
+                    unhealthy += 1
+                else:
+                    starting += 1
+            ready_ids.discard(0)
+            return allowed_instances, ready, starting, unhealthy, inactive, disallowed, ready_ids
+
+        try:
+            result = await asyncio.to_thread(inspect)
+            self._instance_readiness = result[:2]
+            self._instance_ready_ids = set(result[6])
+            self._instance_inspection_succeeded = True
+            self._instance_health = {
+                "starting": result[2],
+                "unhealthy": result[3],
+                "inactive": result[4],
+                "disallowed": result[5],
+            }
+        except Exception:
+            self._instance_readiness = (0, 0)
+            self._instance_ready_ids = set()
+            self._instance_inspection_succeeded = False
+            self._instance_health = {
+                "starting": 0,
+                "unhealthy": 0,
+                "inactive": 0,
+                "disallowed": 0,
+            }
+        self._instance_readiness_until = time.monotonic() + 15.0
+        return self._instance_readiness
+
+    @staticmethod
+    def _update_workergroup(client: Any, group: dict[str, Any], search_query: dict[str, Any]) -> None:
+        response = client.client.put(
+            f"/autojobs/{int(group['id'])}/",
+            json_data={
+                "client_id": "me",
+                "autojob_id": int(group["id"]),
+                "min_load": float(group.get("min_load") or 0),
+                "target_util": float(group.get("target_util") or 0.9),
+                "cold_mult": float(group.get("cold_mult") or 1),
+                "cold_workers": int(group.get("cold_workers") or 1),
+                "test_workers": group.get("test_workers"),
+                "template_hash": group.get("template_hash"),
+                "template_id": group.get("template_id"),
+                "search_params": search_query,
+                "launch_args": group.get("launch_args") or "",
+                "gpu_ram": float(group.get("gpu_ram") or 24),
+                "endpoint_name": group.get("endpoint_name"),
+                "endpoint_id": int(group["endpoint_id"]),
+            },
+        )
+        response.raise_for_status()
+
+    @staticmethod
+    def _update_endpoint_cold_workers(client: Any, endpoint: dict[str, Any], cold_workers: int) -> None:
+        Gateway._update_endpoint_runtime(
+            client,
+            endpoint,
+            min_load=float(endpoint.get("min_load") or 0),
+            cold_workers=cold_workers,
+            max_workers=int(endpoint.get("max_workers") or 5),
+        )
+
+    @staticmethod
+    def _update_endpoint_runtime(
+        client: Any,
+        endpoint: dict[str, Any],
+        *,
+        min_load: float,
+        cold_workers: int = 1,
+        max_workers: int = 5,
+    ) -> None:
+        response = client.client.put(
+            f"/endptjobs/{int(endpoint['id'])}/",
+            json_data={
+                "client_id": "me",
+                "endptjob_id": int(endpoint["id"]),
+                "min_load": float(min_load),
+                "min_cold_load": float(endpoint.get("min_cold_load") or 0),
+                "target_util": float(endpoint.get("target_util") or 0.9),
+                "cold_mult": float(endpoint.get("cold_mult") or 1),
+                "cold_workers": cold_workers,
+                "max_workers": max_workers,
+                "endpoint_name": endpoint.get("endpoint_name"),
+                "endpoint_state": endpoint.get("endpoint_state") or "active",
+                "max_queue_time": float(endpoint.get("max_queue_time") or 30),
+                "target_queue_time": float(endpoint.get("target_queue_time") or 10),
+                "inactivity_timeout": float(endpoint.get("inactivity_timeout") or 30),
+                "autoscaler_instance": endpoint.get("autoscaler_instance"),
+            },
+        )
+        response.raise_for_status()
+
+    def _set_activation_floor(self, min_load: float) -> None:
+        with self._controller_mutation_lock:
+            self._desired_activation_floor = float(min_load)
+            try:
+                self._set_activation_floor_locked(min_load)
+            except Exception:
+                # If a partial floor-up fails, later health reconciliation must
+                # converge to scale-to-zero rather than preserve a stale 1.0.
+                if float(min_load) > 0:
+                    self._desired_activation_floor = 0.0
+                raise
+
+    def _set_activation_floor_locked(self, min_load: float) -> None:
+        """Temporarily wake one cold worker without leaving a billable floor.
+
+        Vast's scoped Serverless credential cannot start a Serverless-owned
+        instance directly.  A tiny positive endpoint floor is the supported
+        controller signal.  Every call also restores the required one-cold /
+        five-maximum shape, so a single image can never fan out into a fleet.
+        """
+
+        if VastAI is None:
+            raise RuntimeError("Vast SDK unavailable")
+        client = VastAI(api_key=self.config.vast_api_key)
+        endpoint = next(
+            item
+            for item in client.show_endpoints()
+            if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+        )
+        endpoint_id = int(endpoint.get("id") or 0)
+        group = next(
+            item
+            for item in client.show_workergroups()
+            if int(item.get("endpoint_id") or 0) == endpoint_id
+        )
+        runtime_group = dict(group)
+        runtime_group["min_load"] = float(min_load)
+        self._update_workergroup(
+            client,
+            runtime_group,
+            dict(group.get("search_query") or {}),
+        )
+        cold_target = max(1, int(self._activation_headroom_target or 0))
+        self._update_endpoint_runtime(
+            client,
+            endpoint,
+            min_load=min_load,
+            cold_workers=cold_target,
+            max_workers=5,
+        )
+        # A successful PUT is not enough for the safety boundary: confirm that
+        # both controller objects actually expose the requested floor and that
+        # the endpoint still has the required one-cold / five-maximum shape.
+        for attempt in range(3):
+            observed_endpoint = next(
+                item
+                for item in client.show_endpoints()
+                if int(item.get("id") or 0) == endpoint_id
+            )
+            observed_group = next(
+                item
+                for item in client.show_workergroups()
+                if int(item.get("endpoint_id") or 0) == endpoint_id
+            )
+            if (
+                abs(float(observed_endpoint.get("min_load") or 0) - float(min_load)) < 0.001
+                and abs(float(observed_group.get("min_load") or 0) - float(min_load)) < 0.001
+                and int(observed_endpoint.get("cold_workers") or 0) == cold_target
+                and int(observed_endpoint.get("max_workers") or 0) == 5
+            ):
+                return
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError("Vast controller did not confirm the requested activation floor")
+
+    async def _set_activation_floor_async(self, min_load: float) -> None:
+        """Finish the controller mutation even if the HTTP client disconnects."""
+
+        mutation = asyncio.create_task(asyncio.to_thread(self._set_activation_floor, min_load))
+        try:
+            await asyncio.shield(mutation)
+        except asyncio.CancelledError:
+            # Cancelling asyncio.to_thread does not stop its controller PUTs.
+            # Wait for that exact mutation before callers restore the floor so
+            # a late floor-up cannot race and overwrite a successful reset.
+            await mutation
+            raise
+
+    async def _restore_activation_floor(self) -> None:
+        """Boundedly restore and verify scale-to-zero before credit admission."""
+
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                await self._set_activation_floor_async(0.0)
+                return
+            except asyncio.CancelledError:
+                # The shielded reset completed before cancellation propagated.
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.0 + attempt)
+        raise last_error or RuntimeError("Vast activation floor reset failed")
+
+    def _prepared_activation_machine_ids(self) -> set[int]:
+        """Return the exact approved stopped workers eligible for this wake.
+
+        Capture this before raising the load floor.  A worker can transition to
+        running while a route is pending, so selecting failure candidates only
+        after a timeout can either miss the actual standby or quarantine a new
+        replacement that appeared during recovery.
+        """
+
+        if VastAI is None:
+            return set()
+        client = VastAI(api_key=self.config.vast_api_key)
+        endpoint = next(
+            item
+            for item in client.show_endpoints()
+            if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+        )
+        endpoint_id = int(endpoint.get("id") or 0)
+        group = next(
+            item
+            for item in client.show_workergroups()
+            if int(item.get("endpoint_id") or 0) == endpoint_id
+        )
+        prefix = f"{self.config.vast_endpoint}:{endpoint_id}:"
+        machine_filter = (group.get("search_query") or {}).get("machine_id") or {}
+        excluded = set(int(value) for value in machine_filter.get("notin", []))
+        if "neq" in machine_filter:
+            excluded.add(int(machine_filter["neq"]))
+        prepared: set[int] = set()
+        for item in client.show_instances():
+            machine_id = int(item.get("machine_id") or 0)
+            if (
+                not machine_id
+                or machine_id in excluded
+                or not str(item.get("label") or "").startswith(prefix)
+                or str(item.get("cur_state") or "").casefold() != "stopped"
+            ):
+                continue
+            gpu_name = str(item.get("gpu_name") or "").strip()
+            try:
+                hourly_usd = float(item.get("dph_total") or 0)
+            except (TypeError, ValueError):
+                continue
+            if gpu_name not in self.config.allowed_gpu_names or not (0 < hourly_usd <= self.config.max_worker_hourly_usd):
+                continue
+            try:
+                logs = client.logs(int(item["id"]), tail="2000") or ""
+            except Exception:
+                logs = ""
+            if "KREA2_MODEL_READY" in logs:
+                prepared.add(machine_id)
+        return prepared
+
+    def _replace_failed_activation_workers(self, failed_machine_ids: set[int] | None = None) -> set[int]:
+        with self._controller_mutation_lock:
+            return self._replace_failed_activation_workers_locked(failed_machine_ids)
+
+    def _request_activation_recovery_headroom(self, minimum_prepared_workers: int) -> int:
+        """Recruit one extra cold standby without accusing an existing GPU."""
+
+        with self._controller_mutation_lock:
+            if VastAI is None:
+                return 0
+            client = VastAI(api_key=self.config.vast_api_key)
+            endpoint = next(
+                item
+                for item in client.show_endpoints()
+                if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+            )
+            current_cold = max(1, int(endpoint.get("cold_workers") or 0))
+            desired_cold = min(5, max(current_cold + 1, minimum_prepared_workers))
+            self._desired_activation_floor = 0.0
+            self._activation_headroom_target = min(5, max(2, minimum_prepared_workers))
+            self._set_activation_floor_locked(0.0)
+            endpoint = next(
+                item
+                for item in client.show_endpoints()
+                if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+            )
+            self._update_endpoint_runtime(
+                client,
+                endpoint,
+                min_load=0.0,
+                cold_workers=desired_cold,
+                max_workers=5,
+            )
+            observed = next(
+                item
+                for item in client.show_endpoints()
+                if int(item.get("id") or 0) == int(endpoint.get("id") or 0)
+            )
+            if (
+                abs(float(observed.get("min_load") or 0)) >= 0.001
+                or int(observed.get("cold_workers") or 0) != desired_cold
+                or int(observed.get("max_workers") or 0) != 5
+            ):
+                raise RuntimeError("Vast recovery headroom was not confirmed")
+            self._recovery_status = "replacement-recruiting"
+            self._recovery_until = 0.0
+            self._instance_readiness_until = 0.0
+            return desired_cold
+
+    def _cancel_activation_recovery_headroom(self) -> None:
+        with self._controller_mutation_lock:
+            self._activation_headroom_target = 0
+            self._desired_activation_floor = 0.0
+            self._set_activation_floor_locked(0.0)
+
+    @asynccontextmanager
+    async def _activation_headroom_guard(self):
+        """Collapse temporary cold capacity on every return/error/cancel path."""
+
+        try:
+            yield
+        finally:
+            if self._activation_headroom_target:
+                cleanup = asyncio.create_task(
+                    asyncio.to_thread(self._cancel_activation_recovery_headroom)
+                )
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # The controller mutation must finish before cancellation
+                    # escapes or a late cold_workers=1 write can race another
+                    # request's floor transition.
+                    await cleanup
+                    raise
+
+    def _replace_failed_activation_workers_locked(self, failed_machine_ids: set[int] | None = None) -> set[int]:
+        """Exclude one unambiguous standby proven by this failed wake.
+
+        Vast routing does not identify a selected machine before READY.  If
+        several prepared standbys existed, a route timeout cannot prove which
+        one failed, so quarantining the entire pool would be unsafe.
+        """
+
+        if VastAI is None:
+            return set()
+        client = VastAI(api_key=self.config.vast_api_key)
+        endpoint = next(
+            item
+            for item in client.show_endpoints()
+            if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+        )
+        endpoint_id = int(endpoint.get("id") or 0)
+        group = next(
+            item
+            for item in client.show_workergroups()
+            if int(item.get("endpoint_id") or 0) == endpoint_id
+        )
+        failed_ids = set(failed_machine_ids or ())
+        if not failed_ids:
+            failed_ids = self._prepared_activation_machine_ids()
+        if not failed_ids:
+            return set()
+        if len(failed_ids) != 1:
+            self._recovery_status = "activation-retrying"
+            return set()
+
+        query = dict(group.get("search_query") or {})
+        machine_filter = query.get("machine_id") or {}
+        excluded = set(int(value) for value in machine_filter.get("notin", []))
+        if "neq" in machine_filter:
+            excluded.add(int(machine_filter["neq"]))
+        excluded.update(failed_ids)
+        query["machine_id"] = {"notin": sorted(excluded)}
+        query["gpu_name"] = {"in": list(self.config.allowed_gpu_names)}
+        query["dph_total"] = {"lte": str(self.config.max_worker_hourly_usd)}
+        self._update_workergroup(client, group, query)
+        self._update_endpoint_runtime(
+            client,
+            endpoint,
+            min_load=0.0,
+            cold_workers=min(5, max(2, len(failed_ids) + 1)),
+            max_workers=5,
+        )
+        self._recovery_status = "replacement-recruiting"
+        self._activation_headroom_target = 0
+        self._recovery_until = 0.0
+        self._instance_readiness_until = 0.0
+        return failed_ids
+
+    async def _reconcile_unhealthy_workers(self, endpoint_id: int, workergroup_id: int) -> None:
+        """Ask the Vast controller for a replacement without charging an image.
+
+        Serverless-owned instances cannot be destroyed with the gateway's
+        scoped key.  Instead, exclude failed machines and temporarily raise the
+        cold-pool target from one to two.  Once a healthy worker registers, put
+        the target back at one so Vast retires the excess failed bootstrap.
+        """
+
+        if VastAI is None or time.monotonic() < self._recovery_until:
+            return
+        if not self._recovery_lock.acquire(blocking=False):
+            return
+
+        def reconcile_unlocked() -> str:
+            client = VastAI(api_key=self.config.vast_api_key)
+            prefix = f"{self.config.vast_endpoint}:{endpoint_id}:"
+            wall_now = time.time()
+            groups = client.show_workergroups()
+            group = next(item for item in groups if int(item.get("id") or 0) == workergroup_id)
+            endpoints = client.show_endpoints()
+            endpoint = next(item for item in endpoints if int(item.get("id") or 0) == endpoint_id)
+            desired_floor = float(self._desired_activation_floor)
+            query = dict(group.get("search_query") or {})
+            machine_filter = query.get("machine_id") or {}
+            excluded_machines = set(int(value) for value in machine_filter.get("notin", []))
+            if "neq" in machine_filter:
+                excluded_machines.add(int(machine_filter["neq"]))
+            active = [
+                item for item in client.show_instances()
+                if str(item.get("label", "")).startswith(prefix)
+                and str(item.get("cur_state", "")).casefold() in {"running", "stopped"}
+                and str(item.get("actual_status", "")).casefold() in {"loading", "running", "exited"}
+            ]
+            ready = []
+            stale = []
+            disallowed = []
+            for item in active:
+                gpu_name = str(item.get("gpu_name") or "").strip()
+                try:
+                    hourly_usd = float(item.get("dph_total") or 0)
+                except (TypeError, ValueError):
+                    hourly_usd = self.config.max_worker_hourly_usd + 1
+                if (
+                    int(item.get("machine_id") or 0) in excluded_machines
+                    or gpu_name not in self.config.allowed_gpu_names
+                    or hourly_usd <= 0
+                    or hourly_usd > self.config.max_worker_hourly_usd
+                ):
+                    disallowed.append(item)
+                    continue
+                logs = ""
+                if str(item.get("actual_status", "")).casefold() in {"running", "exited"}:
+                    try:
+                        logs = client.logs(int(item["id"]), tail="2000") or ""
+                    except Exception:
+                        logs = ""
+                if "KREA2_MODEL_READY" in logs:
+                    ready.append(item)
+                elif wall_now - float(item.get("start_date") or wall_now) >= self.config.bootstrap_deadline_seconds:
+                    stale.append(item)
+
+            configured_cold = int(endpoint.get("cold_workers") or 0)
+            current_cold = max(1, configured_cold)
+
+            changed = abs(float(group.get("min_load") or 0) - desired_floor) >= 0.001
+            wanted_gpu_filter = {"in": list(self.config.allowed_gpu_names)}
+            if query.get("gpu_name") != wanted_gpu_filter:
+                query["gpu_name"] = wanted_gpu_filter
+                changed = True
+            wanted_price_filter = {"lte": str(self.config.max_worker_hourly_usd)}
+            if query.get("dph_total") != wanted_price_filter:
+                query["dph_total"] = wanted_price_filter
+                changed = True
+
+            bad_instances = [*stale, *disallowed]
+            if bad_instances:
+                excluded: set[int] = set()
+                current_machine_filter = query.get("machine_id")
+                if isinstance(current_machine_filter, dict):
+                    if "neq" in current_machine_filter:
+                        excluded.add(int(current_machine_filter["neq"]))
+                    for value in current_machine_filter.get("notin", []):
+                        excluded.add(int(value))
+                excluded.update(int(item["machine_id"]) for item in bad_instances if item.get("machine_id"))
+                wanted_filter = {"notin": sorted(excluded)}
+                if query.get("machine_id") != wanted_filter:
+                    query["machine_id"] = wanted_filter
+                    changed = True
+
+            if changed:
+                runtime_group = dict(group)
+                runtime_group["min_load"] = desired_floor
+                self._update_workergroup(client, runtime_group, query)
+
+            endpoint_policy_mismatch = (
+                abs(float(endpoint.get("min_load") or 0) - desired_floor) >= 0.001
+                or configured_cold != current_cold
+                or int(endpoint.get("max_workers") or 0) != 5
+            )
+
+            def finish(status: str, cold_workers: int = current_cold) -> str:
+                if endpoint_policy_mismatch or cold_workers != current_cold:
+                    self._update_endpoint_runtime(
+                        client,
+                        endpoint,
+                        min_load=desired_floor,
+                        cold_workers=cold_workers,
+                        max_workers=5,
+                    )
+                observed_group = next(
+                    item
+                    for item in client.show_workergroups()
+                    if int(item.get("id") or 0) == workergroup_id
+                )
+                observed_endpoint = next(
+                    item
+                    for item in client.show_endpoints()
+                    if int(item.get("id") or 0) == endpoint_id
+                )
+                if (
+                    abs(float(observed_group.get("min_load") or 0) - desired_floor) >= 0.001
+                    or abs(float(observed_endpoint.get("min_load") or 0) - desired_floor) >= 0.001
+                    or int(observed_endpoint.get("cold_workers") or 0) != cold_workers
+                    or int(observed_endpoint.get("max_workers") or 0) != 5
+                ):
+                    raise RuntimeError("Vast controller floor reconciliation was not confirmed")
+                return status
+
+            if ready:
+                if (
+                    current_cold > 1
+                    and self._activation_headroom_target
+                ):
+                    return finish("replacement-recruiting")
+                if current_cold > 1:
+                    self._activation_headroom_target = 0
+                    return finish("cold-pool-restored", 1)
+                return finish("healthy")
+
+            if bad_instances or not active:
+                max_workers = int(endpoint.get("max_workers") or 5)
+                desired_cold = min(
+                    max_workers,
+                    max(2, len(bad_instances) + 1),
+                )
+                return finish("replacement-recruiting", max(current_cold, desired_cold))
+
+            return finish("waiting")
+
+        def reconcile() -> str:
+            with self._controller_mutation_lock:
+                return reconcile_unlocked()
+
+        try:
+            self._recovery_status = await asyncio.to_thread(reconcile)
+        except Exception:
+            self._recovery_status = "controller-unavailable"
+        finally:
+            self._recovery_until = time.monotonic() + 30.0
+            self._recovery_lock.release()
+
     async def remote_readiness(self) -> dict[str, Any]:
         """Return a secret-free snapshot of the actual serverless capacity.
 
@@ -250,9 +958,11 @@ class Gateway:
             "configured": configured,
             "sdk_available": CoroutineServerless is not None,
             "workergroup_attached": False,
+            "controller_verified": False,
             "cold_start_eligible": False,
             "worker_count": 0,
             "ready_workers": 0,
+            "controller_ready_workers": 0,
             "reason": "",
         }
         if not configured:
@@ -261,38 +971,631 @@ class Gateway:
         if CoroutineServerless is None:
             snapshot["reason"] = "Remote Vision SDK is unavailable."
             return snapshot
+        endpoint_id = 0
+        workergroup_id = 0
+        workers: list[Any] = []
         try:
             async with CoroutineServerless(api_key=self.config.vast_api_key) as client:
                 endpoint = await client.get_endpoint(self.config.vast_endpoint)
-                workergroup_id = await client.find_workergroup_for_endpoint(int(endpoint.id))
+                endpoint_id = int(endpoint.id)
+                workergroup_id = int(await client.find_workergroup_for_endpoint(endpoint_id) or 0)
                 snapshot["workergroup_attached"] = bool(workergroup_id)
-                # A Serverless worker group is allowed to scale to zero.  An
-                # empty worker list therefore means "asleep", not necessarily
-                # "broken": submitting a request is what wakes a cold worker.
-                snapshot["cold_start_eligible"] = bool(workergroup_id)
                 if not workergroup_id:
                     snapshot["reason"] = "No serverless worker group is attached."
                     return snapshot
                 workers = await endpoint.get_workers()
         except Exception:
-            snapshot["reason"] = "Remote worker status could not be verified."
-            return snapshot
+            # Vast's routing-status API is occasionally unavailable while its
+            # ordinary controller API still has the exact endpoint, group and
+            # instance state.  Fall back without weakening GPU/cost policy.
+            def controller_ids() -> tuple[int, int]:
+                if VastAI is None:
+                    return 0, 0
+                controller = VastAI(api_key=self.config.vast_api_key)
+                endpoint_row = next(
+                    item
+                    for item in controller.show_endpoints()
+                    if str(item.get("endpoint_name") or "") == self.config.vast_endpoint
+                )
+                found_endpoint_id = int(endpoint_row.get("id") or 0)
+                group_row = next(
+                    item
+                    for item in controller.show_workergroups()
+                    if int(item.get("endpoint_id") or 0) == found_endpoint_id
+                )
+                return found_endpoint_id, int(group_row.get("id") or 0)
+
+            try:
+                endpoint_id, workergroup_id = await asyncio.to_thread(controller_ids)
+                snapshot["workergroup_attached"] = bool(workergroup_id)
+            except Exception:
+                snapshot["reason"] = "Remote worker status could not be verified."
+                return snapshot
         snapshot["worker_count"] = len(workers)
         ready_states = {"READY", "IDLE", "LOADED", "RUNNING"}
-        snapshot["ready_workers"] = sum(
-            1 for worker in workers
+        routing_ready_ids = {
+            int(getattr(worker, "id", 0) or 0)
+            for worker in workers
             if str(getattr(worker, "status", "")).upper() in ready_states
+        }
+        routing_ready_ids.discard(0)
+        snapshot["ready_workers"] = len(routing_ready_ids)
+        instance_count, instance_ready = await self._actual_instance_readiness(endpoint_id)
+        snapshot["controller_ready_workers"] = instance_ready
+        if self._instance_inspection_succeeded:
+            snapshot["controller_verified"] = True
+            snapshot["worker_count"] = instance_count
+            # Controller state proves the worker belongs to the allowed pool;
+            # live SDK registration proves a running row is actually serving.
+            # Require both instead of trusting either stale source alone.
+            snapshot["ready_workers"] = len(
+                routing_ready_ids.intersection(self._instance_ready_ids)
+            )
+            snapshot["starting_workers"] = self._instance_health["starting"]
+            snapshot["unhealthy_workers"] = self._instance_health["unhealthy"]
+            snapshot["inactive_workers"] = self._instance_health["inactive"]
+            snapshot["disallowed_workers"] = self._instance_health["disallowed"]
+        else:
+            # The SDK worker list does not carry the controller-side GPU,
+            # hourly-price, label, or deny-list evidence required by policy.
+            # Never admit an SDK-only READY row when that identity cannot be
+            # intersected with a freshly verified allowed instance.
+            snapshot["ready_workers"] = 0
+
+        prepared = bool(snapshot["ready_workers"] or int(snapshot.get("inactive_workers") or 0))
+        policy_clean = bool(snapshot["controller_verified"]) and not bool(
+            int(snapshot.get("unhealthy_workers") or 0)
+            or int(snapshot.get("disallowed_workers") or 0)
         )
-        if not workers:
-            snapshot["reason"] = "Remote GPU is asleep; a cold worker can start on demand."
-        elif not snapshot["ready_workers"]:
+        snapshot["cold_start_eligible"] = bool(workergroup_id and prepared and policy_clean)
+        await self._reconcile_unhealthy_workers(endpoint_id, workergroup_id)
+        snapshot["recovery_status"] = self._recovery_status
+        if not snapshot["controller_verified"]:
+            snapshot["reason"] = "Remote worker identity and cost policy could not be verified."
+        elif snapshot["ready_workers"]:
+            snapshot["reason"] = "Remote GPU ready."
+        elif int(snapshot.get("disallowed_workers") or 0):
+            snapshot["reason"] = "Remote GPU violated the allowed model-cost policy; an approved replacement is being prepared."
+        elif int(snapshot.get("unhealthy_workers") or 0):
+            snapshot["reason"] = "Remote GPU bootstrap exceeded its deadline; a replacement is being recruited."
+        elif int(snapshot.get("inactive_workers") or 0):
+            snapshot["reason"] = "Remote GPU cold worker is prepared and inactive; the next request will reactivate it."
+        elif snapshot["worker_count"]:
             snapshot["reason"] = "Remote GPU worker is still starting."
+        else:
+            snapshot["reason"] = "Remote GPU cold capacity is being prepared; paid requests are temporarily paused."
         return snapshot
+
+    async def _wait_for_remote_ready(self, deadline: float) -> bool:
+        """Wait only through verified, policy-clean controller observations."""
+
+        while time.monotonic() < deadline:
+            # A stopped worker can transition on every poll; never reuse the
+            # 15-second instance snapshot while proving a cold activation.
+            self._instance_readiness_until = 0.0
+            readiness = await self.remote_readiness()
+            if readiness.get("controller_verified") is not True:
+                raise HTTPException(
+                    503,
+                    "Remote GPU identity and cost policy became unverifiable during wake; no credits were reserved.",
+                )
+            if not readiness.get("workergroup_attached"):
+                raise HTTPException(
+                    503,
+                    "Remote GPU worker group detached during wake; no credits were reserved.",
+                )
+            if (
+                int(readiness.get("unhealthy_workers") or 0) > 0
+                or int(readiness.get("disallowed_workers") or 0) > 0
+            ):
+                raise HTTPException(
+                    503,
+                    "Remote GPU pool left the approved health or cost policy during wake; no credits were reserved.",
+                )
+            if int(readiness.get("ready_workers") or 0) > 0:
+                return True
+            await asyncio.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
+        return False
+
+    async def _wait_for_replacement_capacity(
+        self,
+        deadline: float,
+        minimum_prepared_workers: int = 1,
+    ) -> bool:
+        """Wait for the controller-recruited standby without moving credits."""
+
+        while time.monotonic() < deadline:
+            # Controller state changes while a replacement downloads and loads;
+            # bypass the short instance cache so the same user request can move
+            # on as soon as the new model-ready sentinel appears.
+            self._instance_readiness_until = 0.0
+            readiness = await self.remote_readiness()
+            prepared_workers = (
+                int(readiness.get("ready_workers") or 0)
+                + int(readiness.get("inactive_workers") or 0)
+            )
+            if readiness.get("cold_start_eligible") and prepared_workers >= max(
+                1, minimum_prepared_workers
+            ):
+                return True
+            await asyncio.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
+        return False
+
+    @staticmethod
+    def _worker_request_urls(worker_url: str) -> list[str]:
+        """Return a narrowly scoped HTTP fallback for Vast's direct IP ports."""
+
+        urls = [worker_url]
+        parsed = urlsplit(worker_url)
+        try:
+            ipaddress.ip_address(parsed.hostname or "")
+        except ValueError:
+            return urls
+        if parsed.scheme.casefold() == "https" and parsed.port:
+            urls.append(urlunsplit(("http", parsed.netloc, parsed.path, parsed.query, parsed.fragment)))
+        return urls
+
+    async def _fast_routed_request(
+        self,
+        client: Any,
+        managed_endpoint: Any,
+        request_payload: dict[str, Any],
+        deadline: float,
+        *,
+        cost: int = 100,
+        before_send: Any = None,
+        worker_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Poll a Vast route frequently enough to catch a newly ready worker.
+
+        The SDK's general request loop uses exponential route-poll backoff. That
+        is appropriate for long jobs, but it can add tens of seconds after a
+        cold worker is already ready. This path polls once per second and then
+        uses the SDK's authenticated transport.
+        """
+
+        if _vast_make_request is None:
+            raise RuntimeError("Vast request transport unavailable")
+        endpoint = (
+            await managed_endpoint._get_routing_endpoint()
+            if hasattr(managed_endpoint, "_get_routing_endpoint")
+            else managed_endpoint
+        )
+        request_idx = 0
+        route = None
+        zero_index_recovery_used = False
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                # Vast's SDK already applies its own 10-second transport bound
+                # and retry.  Only wrap it with the *overall* activation
+                # deadline; a shorter wrapper used to cancel the SDK mid-retry
+                # before it could return the request index.
+                route = await asyncio.wait_for(
+                    endpoint._route(
+                        cost=cost,
+                        req_idx=request_idx,
+                        timeout=min(60.0, max(1.0, remaining)),
+                    ),
+                    timeout=max(0.1, remaining),
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Remote route did not become ready")
+                continue
+            except RuntimeError as exc:
+                # Endpoint._route wraps transient autoscaler transport failures
+                # in this exact safe prefix.  Keep polling the same admission
+                # request until the overall deadline; do not quarantine a GPU
+                # because one controller status read failed.
+                if not str(exc).startswith("Failed to route endpoint:"):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Remote route did not become ready") from exc
+                if request_idx == 0:
+                    # The first POST may have been accepted even though its
+                    # response (and assigned request index) was lost. Do not
+                    # hammer req_idx=0 and create parallel admission tickets.
+                    # Let the one-worker floor finish its wake, then issue at
+                    # most one fresh route request against the active worker.
+                    if zero_index_recovery_used:
+                        raise TimeoutError("Remote route admission remained indeterminate") from exc
+                    zero_index_recovery_used = True
+                    if not await self._wait_for_remote_ready(deadline):
+                        raise TimeoutError("Remote route did not become ready") from exc
+                    continue
+                await asyncio.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+                continue
+            request_idx = int(route.request_idx or request_idx)
+            if str(route.status or "").upper() == "READY":
+                break
+            await asyncio.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+        else:
+            raise TimeoutError("Remote route did not become ready")
+
+        remaining = deadline - time.monotonic()
+        if route is None or remaining <= 0:
+            raise TimeoutError("Remote route did not become ready")
+        if before_send is not None:
+            await before_send()
+        worker_deadline = (
+            deadline
+            if worker_timeout_seconds is None
+            else time.monotonic() + max(1.0, float(worker_timeout_seconds))
+        )
+        result: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        worker_urls = self._worker_request_urls(str(route.get_url() or ""))
+        for worker_index, worker_url in enumerate(worker_urls):
+            remaining = worker_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Remote worker request deadline expired")
+            # Direct Vast routes sometimes advertise HTTPS for a port serving
+            # plain HTTP.  Never let that first protocol candidate consume the
+            # full inference budget and starve the verified HTTP fallback.
+            attempt_timeout = remaining
+            if worker_index < len(worker_urls) - 1:
+                attempt_timeout = min(12.0, max(1.0, remaining - 1.0))
+            try:
+                result = await asyncio.wait_for(
+                    _vast_make_request(
+                        client=client,
+                        url=worker_url,
+                        route="/v1/chat/completions",
+                        api_key=endpoint.api_key,
+                        body={
+                            "auth_data": route.body,
+                            "session_id": None,
+                            "payload": request_payload,
+                        },
+                        method="POST",
+                        retries=1,
+                        timeout=max(1.0, attempt_timeout),
+                        stream=False,
+                    ),
+                    timeout=max(0.1, attempt_timeout),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                continue
+            if result.get("ok"):
+                break
+            text = str(result.get("text") or "")
+            if "HTTPS traffic on an HTTP port" in text:
+                continue
+            break
+        if result is None:
+            raise last_error or RuntimeError("Remote worker transport failed")
+        return {
+            "response": result.get("json"),
+            "ok": bool(result.get("ok")),
+            "status": result.get("status"),
+            "text": result.get("text"),
+        }
+
+    def _record_activation_success(self, machine_ids: set[int]) -> None:
+        with self._activation_evidence_lock:
+            for machine_id in machine_ids:
+                self._activation_failures.pop(machine_id, None)
+
+    def _clear_activation_failures(self) -> None:
+        with self._activation_evidence_lock:
+            self._activation_failures.clear()
+
+    def _record_activation_failure(self, machine_ids: set[int], request_id: str) -> bool:
+        """Require two distinct failed images before blaming one exact standby."""
+
+        if len(machine_ids) != 1 or not REQUEST_ID_RE.fullmatch(request_id):
+            return False
+        machine_id = next(iter(machine_ids))
+        now = time.monotonic()
+        cutoff = now - 60 * 60
+        with self._activation_evidence_lock:
+            evidence = {
+                key: stamp
+                for key, stamp in self._activation_failures.get(machine_id, {}).items()
+                if stamp >= cutoff
+            }
+            evidence[request_id] = now
+            self._activation_failures[machine_id] = evidence
+            return len(evidence) >= 2
+
+    async def _ensure_remote_active(self, request_id: str = "") -> None:
+        """Prove the production cold route without moving app credits.
+
+        A prepared Vast cold worker remains stopped until a route ticket exists;
+        changing ``min_load`` alone does not reactivate it. Queue one tiny
+        text-only request through the same authenticated route transport used by
+        images, restore scale-to-zero as soon as that route is READY, and verify
+        the worker response. This method is reserved for the authenticated
+        administrative wake proof. Product images create their own single route
+        so they never pay the latency or provider cost of a redundant probe.
+        """
+
+        async with self._activation_lock, self._activation_headroom_guard():
+            started = time.monotonic()
+            outcome = "failed"
+            self._activation_started_at = started
+            self._activation_phase = "checking-policy"
+            try:
+                self._instance_readiness_until = 0.0
+                readiness = await self.remote_readiness()
+                if readiness.get("controller_verified") is False:
+                    raise HTTPException(
+                        503,
+                        "Remote GPU identity and cost policy could not be verified; no credits were reserved.",
+                    )
+                if (
+                    int(readiness.get("unhealthy_workers") or 0) > 0
+                    or int(readiness.get("disallowed_workers") or 0) > 0
+                ):
+                    raise HTTPException(
+                        503,
+                        "Remote GPU pool is being repaired to satisfy the approved GPU and cost policy; no credits were reserved.",
+                    )
+                if int(readiness.get("ready_workers") or 0) > 0:
+                    if self._activation_headroom_target:
+                        # A replacement can become READY between recovery
+                        # attempts.  Collapse temporary cold headroom before
+                        # this early success path returns, otherwise health
+                        # reconciliation deliberately preserves cold_workers=2.
+                        await asyncio.to_thread(
+                            self._cancel_activation_recovery_headroom
+                        )
+                    self._clear_activation_failures()
+                    outcome = "already-ready"
+                    return
+                if not readiness.get("cold_start_eligible"):
+                    raise HTTPException(
+                        503,
+                        "Remote GPU cold capacity is still being prepared; no credits were reserved. Retry shortly or use Local GPU.",
+                    )
+                candidates = await asyncio.to_thread(self._prepared_activation_machine_ids)
+
+                floor_restored = False
+                activation_ready = False
+                activation_cancelled = False
+                activation_error: Exception | None = None
+                try:
+                    self._activation_phase = "raising-floor"
+                    await self._set_activation_floor_async(1.0)
+                    self._activation_phase = "routing-uncharged-proof"
+                    route_deadline = time.monotonic() + self.config.activation_deadline_seconds
+                    async with CoroutineServerless(
+                        api_key=self.config.vast_api_key,
+                        default_request_timeout=max(
+                            self.config.activation_deadline_seconds,
+                            min(30.0, self.config.inference_deadline_seconds),
+                        ),
+                    ) as client:
+                        endpoint = await client.get_endpoint(self.config.vast_endpoint)
+
+                        async def admit_uncharged_probe() -> None:
+                            nonlocal floor_restored
+                            self._activation_phase = "post-route-policy"
+                            self._instance_readiness_until = 0.0
+                            routed_readiness = await self.remote_readiness()
+                            self._require_remote_capacity(
+                                routed_readiness, require_ready=True
+                            )
+                            self._activation_phase = "restoring-scale-to-zero"
+                            await self._restore_activation_floor()
+                            floor_restored = True
+                            self._activation_phase = "running-uncharged-proof"
+
+                        probe_result = await self._fast_routed_request(
+                            client,
+                            endpoint,
+                            {
+                                "model": MODEL_ID,
+                                "messages": [
+                                    {"role": "user", "content": "Reply OK."}
+                                ],
+                                "temperature": 0,
+                                "max_tokens": 2,
+                                "stream": False,
+                            },
+                            route_deadline,
+                            cost=1,
+                            before_send=admit_uncharged_probe,
+                            worker_timeout_seconds=min(
+                                30.0, self.config.inference_deadline_seconds
+                            ),
+                        )
+                    nested = (
+                        probe_result.get("response")
+                        if isinstance(probe_result, dict)
+                        else None
+                    )
+                    if isinstance(nested, str):
+                        try:
+                            nested = json.loads(nested)
+                        except json.JSONDecodeError:
+                            nested = None
+                    choices = nested.get("choices") if isinstance(nested, dict) else None
+                    first_message = (
+                        choices[0].get("message")
+                        if isinstance(choices, list)
+                        and choices
+                        and isinstance(choices[0], dict)
+                        else None
+                    )
+                    probe_content = (
+                        first_message.get("content")
+                        or first_message.get("reasoning_content")
+                        if isinstance(first_message, dict)
+                        else None
+                    )
+                    activation_ready = bool(
+                        isinstance(probe_result, dict)
+                        and probe_result.get("ok") is True
+                        and isinstance(probe_content, str)
+                        and probe_content.strip()
+                    )
+                    if not activation_ready:
+                        raise RuntimeError("Remote uncharged wake proof returned no completion")
+                except asyncio.CancelledError:
+                    activation_cancelled = True
+                except Exception as exc:
+                    activation_error = exc
+                finally:
+                    if not floor_restored:
+                        self._activation_phase = "restoring-scale-to-zero"
+                        for attempt in range(3):
+                            try:
+                                await self._restore_activation_floor()
+                                floor_restored = True
+                                break
+                            except asyncio.CancelledError:
+                                activation_cancelled = True
+                                floor_restored = True
+                                break
+                            except Exception:
+                                if attempt < 2:
+                                    await asyncio.sleep(1.0 + attempt)
+
+                self._instance_readiness_until = 0.0
+                if not floor_restored:
+                    # The reset already switched our desired policy back to
+                    # scale-to-zero before it attempted controller I/O.  Do
+                    # not preserve recovery headroom indefinitely merely
+                    # because that verification failed: the next successful
+                    # health reconciliation must be free to collapse cold
+                    # capacity back to one.
+                    self._activation_headroom_target = 0
+                    raise HTTPException(
+                        503,
+                        "Remote GPU wake safety reset could not be confirmed; no credits were reserved.",
+                    )
+                if activation_cancelled:
+                    raise asyncio.CancelledError()
+                if activation_ready:
+                    self._record_activation_success(candidates)
+                    outcome = "woke-verified-worker"
+                    return
+
+                if isinstance(activation_error, HTTPException):
+                    # Controller identity/policy loss is not evidence that the
+                    # prepared GPU itself failed. Preserve the precise fail-
+                    # closed reason and never add a quarantine strike.
+                    outcome = "controller-verification-failed"
+                    raise activation_error
+
+                repeated_exact_failure = self._record_activation_failure(
+                    candidates, request_id
+                )
+                if repeated_exact_failure:
+                    self._activation_phase = "quarantining-confirmed-failure"
+                    quarantined = await asyncio.to_thread(
+                        self._replace_failed_activation_workers,
+                        candidates,
+                    )
+                    if quarantined:
+                        self._recovery_status = "replacement-recruiting"
+                        outcome = "confirmed-worker-quarantined"
+                        raise HTTPException(
+                            503,
+                            "The failed remote standby was quarantined and an approved replacement is being prepared; no credits were reserved. Retry shortly or use Local GPU.",
+                        )
+                self._recovery_status = "activation-timeout"
+                outcome = "wake-timeout"
+                raise HTTPException(
+                    503,
+                    f"Remote GPU route proof did not complete within the {int(self.config.activation_deadline_seconds)}-second wake limit; no credits were reserved.",
+                ) from activation_error
+            finally:
+                self._activation_last_elapsed_seconds = max(
+                    0.0, time.monotonic() - started
+                )
+                self._activation_last_outcome = outcome
+                self._activation_phase = "idle"
+                self._activation_started_at = 0.0
 
     @staticmethod
     def _account_balance(db: sqlite3.Connection, discord_user_id: str) -> int:
         row = db.execute("SELECT available_credits FROM credit_accounts WHERE discord_user_id=?", (discord_user_id,)).fetchone()
         return int(row["available_credits"]) if row else 0
+
+    @staticmethod
+    def _preflight_credit_balance(
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row | dict[str, Any],
+    ) -> int:
+        """Reject exhausted accounts before any provider-billable wake signal."""
+
+        discord_user_id = str(license_row["discord_user_id"])
+        row = db.execute(
+            "SELECT available_credits FROM credit_accounts WHERE discord_user_id=?",
+            (discord_user_id,),
+        ).fetchone()
+        # A newly enrolled active license deterministically receives the welcome
+        # grant in the reservation transaction. Treat that not-yet-created row
+        # as its pending welcome balance without writing during preflight.
+        balance = int(row["available_credits"]) if row else WELCOME_CREDITS
+        if balance < IMAGE_CREDIT_COST:
+            raise HTTPException(
+                402,
+                "Online API credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin or select Local GPU.",
+            )
+        return balance
+
+    def _require_remote_capacity(
+        self,
+        readiness: dict[str, Any],
+        *,
+        require_ready: bool = False,
+    ) -> None:
+        """Apply the same controller/GPU policy at every admission boundary."""
+
+        if not readiness.get("workergroup_attached"):
+            raise HTTPException(
+                503,
+                "Remote GPU worker group is unavailable; no credits were reserved. Retry shortly or use Local GPU.",
+            )
+        if readiness.get("controller_verified") is not True:
+            raise HTTPException(
+                503,
+                "Remote GPU identity and cost policy could not be verified; no credits were reserved. Retry shortly or use Local GPU.",
+            )
+        if (
+            int(readiness.get("unhealthy_workers") or 0) > 0
+            or int(readiness.get("disallowed_workers") or 0) > 0
+        ):
+            raise HTTPException(
+                503,
+                "Remote GPU pool is being repaired to satisfy the approved GPU and cost policy; no credits were reserved. Retry shortly or use Local GPU.",
+            )
+        if require_ready:
+            # This branch is called only after the exact SDK route object has
+            # returned READY. Vast's separate endpoint.get_workers() list can
+            # lag that route by a minute, so pair the route proof with the fresh
+            # allowed controller/model-ready instance count instead of requiring
+            # a second routing view to agree immediately.
+            unique_controller_route = bool(
+                int(readiness.get("controller_ready_workers") or 0) == 1
+                and int(readiness.get("worker_count") or 0) == 1
+                and int(readiness.get("inactive_workers") or 0) == 0
+                and int(readiness.get("starting_workers") or 0) == 0
+            )
+            if (
+                int(readiness.get("ready_workers") or 0) <= 0
+                and not unique_controller_route
+            ):
+                raise HTTPException(
+                    503,
+                    "The routed remote GPU could not be re-verified before billing; no credits were reserved.",
+                )
+            return
+        if not (
+            int(readiness.get("ready_workers") or 0) > 0
+            or readiness.get("cold_start_eligible") is True
+        ):
+            raise HTTPException(
+                503,
+                "Remote GPU cold capacity is still being prepared; no credits were reserved. Retry shortly or use Local GPU.",
+            )
 
     def _grant_welcome_credits(self, db: sqlite3.Connection, discord_user_id: str, now: int) -> None:
         inserted = db.execute(
@@ -436,19 +1739,26 @@ class Gateway:
             "available_credits": balance,
             "credits_per_image": IMAGE_CREDIT_COST,
             "images_available": balance // IMAGE_CREDIT_COST,
+            "credits_per_prompt_chat": PROMPT_CHAT_CREDIT_COST,
+            "prompt_chat_turns_available": balance // PROMPT_CHAT_CREDIT_COST,
             "pack_credits": CREDIT_PACK_CREDITS,
             "pack_price_usd": CREDIT_PACK_PRICE_USD,
             "payments_configured": self.btcpay_configured(),
         }
 
-    def _reserve_image_credits(self, db: sqlite3.Connection, license_row: sqlite3.Row, request_id: str, now: int) -> None:
-        job = db.execute("SELECT license_id,credit_state FROM remote_jobs WHERE request_id=?", (request_id,)).fetchone()
-        if job:
-            if job["license_id"] != license_row["license_id"]:
-                raise HTTPException(409, "Remote request ownership is invalid.")
-            if job["credit_state"] in {"reserved", "charged"}:
-                db.execute("UPDATE remote_jobs SET calls=calls+1 WHERE request_id=?", (request_id,))
-                return
+    def _reserve_image_credits(
+        self,
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row,
+        request_id: str,
+        request_digest: str,
+        now: int,
+    ) -> bool:
+        """Reserve this image once and report whether this call owns the hold."""
+
+        self._assert_unused_request_id(
+            db, license_row, request_id, request_digest
+        )
         self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
         updated = db.execute(
             "UPDATE credit_accounts SET available_credits=available_credits-?,updated_at=? WHERE discord_user_id=? AND available_credits>=?",
@@ -460,13 +1770,47 @@ class Gateway:
             "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
             (license_row["discord_user_id"], -IMAGE_CREDIT_COST, "image_reservation", request_id, f"reserve:{request_id}", now),
         )
+        db.execute(
+            "INSERT INTO remote_jobs(request_id,license_id,model_id,discord_user_id,discord_username,started_at,calls,credit_state,request_digest) VALUES(?,?,?,?,?,?,1,'reserved',?)",
+            (
+                request_id,
+                license_row["license_id"],
+                PUBLIC_MODEL_ID,
+                license_row["discord_user_id"],
+                license_row["discord_username"],
+                now,
+                request_digest,
+            ),
+        )
+        return True
+
+    @staticmethod
+    def _assert_unused_request_id(
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row | dict[str, Any],
+        request_id: str,
+        request_digest: str,
+    ) -> None:
+        """Reject request replay before either GPU wake or credit mutation."""
+
+        if not re.fullmatch(r"[a-f0-9]{64}", request_digest):
+            raise HTTPException(422, "Remote request content proof is invalid.")
+        job = db.execute(
+            "SELECT license_id,credit_state,request_digest FROM remote_jobs WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
         if job:
-            db.execute("UPDATE remote_jobs SET calls=calls+1,credit_state='reserved' WHERE request_id=?", (request_id,))
-        else:
-            db.execute(
-                "INSERT INTO remote_jobs(request_id,license_id,model_id,discord_user_id,discord_username,started_at,calls,credit_state) VALUES(?,?,?,?,?,?,1,'reserved')",
-                (request_id, license_row["license_id"], PUBLIC_MODEL_ID, license_row["discord_user_id"], license_row["discord_username"], now),
-            )
+            if job["license_id"] != license_row["license_id"]:
+                raise HTTPException(409, "Remote request ownership is invalid.")
+            if not job["request_digest"] or not hmac.compare_digest(
+                str(job["request_digest"]), request_digest
+            ):
+                raise HTTPException(409, "Remote request ID was already bound to different image content.")
+            if job["credit_state"] in {"reserved", "charged"}:
+                raise HTTPException(409, "Remote request ID is already in progress or completed; start a new image job.")
+            if job["credit_state"] == "refunded":
+                raise HTTPException(409, "A refunded remote request ID cannot be reused; start a new image job.")
+            raise HTTPException(409, "Remote request ID was already used; start a new image job.")
 
     def _release_image_credits(self, db: sqlite3.Connection, license_row: sqlite3.Row, request_id: str, now: int) -> bool:
         changed = db.execute(
@@ -498,7 +1842,222 @@ class Gateway:
                 (job["discord_user_id"], IMAGE_CREDIT_COST, "stale_image_refund", job["request_id"], f"refund:{job['request_id']}", now),
             )
             released += 1
+        stale_chat = db.execute(
+            "SELECT request_id,discord_user_id FROM prompt_chat_jobs WHERE credit_state='reserved' AND started_at<?",
+            (now - CREDIT_RESERVATION_TTL_SECONDS,),
+        ).fetchall()
+        for job in stale_chat:
+            if not db.execute(
+                "UPDATE prompt_chat_jobs SET credit_state='refunded' WHERE request_id=? AND credit_state='reserved'",
+                (job["request_id"],),
+            ).rowcount:
+                continue
+            db.execute(
+                "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
+                (PROMPT_CHAT_CREDIT_COST, now, job["discord_user_id"]),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+                (job["discord_user_id"], PROMPT_CHAT_CREDIT_COST, "prompt_chat_refund", job["request_id"], f"prompt-chat-refund:{job['request_id']}", now),
+            )
+            released += 1
         return released
+
+    @staticmethod
+    def _prompt_chat_content(payload: PromptChatRequest) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        total_chars = 0
+        for item in payload.messages:
+            role = item.role.strip().casefold()
+            content = item.content.strip()
+            if role not in {"user", "assistant"}:
+                raise HTTPException(422, "Prompt Editor accepts only user and assistant turns.")
+            if not content:
+                raise HTTPException(422, "Prompt Editor messages cannot be empty.")
+            total_chars += len(content)
+            messages.append({"role": role, "content": content})
+        if messages[-1]["role"] != "user":
+            raise HTTPException(422, "Prompt Editor conversations must end with a user request.")
+        if total_chars > 48000:
+            raise HTTPException(413, "The Prompt Editor conversation is too large. Start a new chat.")
+        return messages
+
+    @staticmethod
+    def _prompt_chat_reply(result: Any) -> str:
+        if not isinstance(result, dict) or result.get("ok") is False:
+            raise RuntimeError("Qwen Prompt Editor returned an unusable response.")
+        nested = result.get("response", result)
+        if isinstance(nested, str):
+            nested = json.loads(nested)
+        choices = nested.get("choices") if isinstance(nested, dict) else None
+        message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("Qwen Prompt Editor returned an empty response.")
+        cleaned = re.sub(r"<think\b[^>]*>.*?</think\s*>", "", content, flags=re.I | re.S).strip()
+        if "</think>" in cleaned.casefold():
+            cleaned = re.split(r"</think\s*>", cleaned, flags=re.I)[-1].strip()
+        if not cleaned or len(cleaned) > 24000:
+            raise RuntimeError("Qwen Prompt Editor returned invalid text.")
+        return cleaned
+
+    def _assert_unused_prompt_chat_request(
+        self,
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row,
+        request_id: str,
+        request_digest: str,
+    ) -> None:
+        row = db.execute(
+            "SELECT license_id,request_digest,credit_state FROM prompt_chat_jobs WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if not row:
+            return
+        if row["license_id"] != license_row["license_id"]:
+            raise HTTPException(409, "Prompt Editor request ownership is invalid.")
+        if not hmac.compare_digest(str(row["request_digest"]), request_digest):
+            raise HTTPException(409, "Prompt Editor request ID was already bound to different content.")
+        raise HTTPException(409, "Prompt Editor request ID was already used. Send the message again.")
+
+    def _reserve_prompt_chat_credit(
+        self,
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row,
+        request_id: str,
+        request_digest: str,
+        now: int,
+    ) -> None:
+        self._assert_unused_prompt_chat_request(db, license_row, request_id, request_digest)
+        self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
+        changed = db.execute(
+            "UPDATE credit_accounts SET available_credits=available_credits-?,updated_at=? WHERE discord_user_id=? AND available_credits>=?",
+            (PROMPT_CHAT_CREDIT_COST, now, license_row["discord_user_id"], PROMPT_CHAT_CREDIT_COST),
+        ).rowcount
+        if not changed:
+            raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+        db.execute(
+            "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+            (license_row["discord_user_id"], -PROMPT_CHAT_CREDIT_COST, "prompt_chat_reservation", request_id, f"prompt-chat-reserve:{request_id}", now),
+        )
+        db.execute(
+            "INSERT INTO prompt_chat_jobs(request_id,license_id,discord_user_id,model_id,request_digest,credit_state,started_at) VALUES(?,?,?,?,?,'reserved',?)",
+            (request_id, license_row["license_id"], license_row["discord_user_id"], PROMPT_CHAT_MODEL_ID, request_digest, now),
+        )
+
+    def _refund_prompt_chat_credit(
+        self,
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row,
+        request_id: str,
+        now: int,
+    ) -> None:
+        changed = db.execute(
+            "UPDATE prompt_chat_jobs SET credit_state='refunded',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
+            (now, request_id, license_row["license_id"]),
+        ).rowcount
+        if not changed:
+            return
+        db.execute(
+            "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
+            (PROMPT_CHAT_CREDIT_COST, now, license_row["discord_user_id"]),
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+            (license_row["discord_user_id"], PROMPT_CHAT_CREDIT_COST, "prompt_chat_refund", request_id, f"prompt-chat-refund:{request_id}", now),
+        )
+
+    async def prompt_chat(
+        self,
+        payload: PromptChatRequest,
+        license_row: sqlite3.Row,
+        request_id: str,
+    ) -> dict[str, Any]:
+        if payload.model != PROMPT_CHAT_MODEL_ID or payload.stream:
+            raise HTTPException(422, "Only the pinned Qwen 3.8 Prompt Editor model is available.")
+        if not self.config.prompt_chat_endpoint or len(self.config.vast_api_key) < 24 or CoroutineServerless is None:
+            raise HTTPException(503, "Qwen Prompt Editor is not configured.")
+        messages = self._prompt_chat_content(payload)
+        request_document = {
+            "model": PROMPT_CHAT_MODEL_ID,
+            "messages": messages,
+            "temperature": payload.temperature,
+            "max_tokens": payload.max_tokens,
+            "stream": False,
+        }
+        request_digest = hashlib.sha256(
+            json.dumps(request_document, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        system_prompt = (
+            "You are KREA2 Prompt Editor, an expert at revising image-generation prompts. "
+            "Preserve every visual fact the user did not ask to change, including subject, pose, anatomy, outfit, camera, lighting, setting, color, texture, and photographic character. "
+            "Make exactly the requested edits. When the user asks for a rewrite, return only the complete revised prompt with no preface, explanation, markdown fence, negative prompt, or commentary. "
+            "When the user asks a direct question, answer it briefly. You cannot see the source image; work only from the supplied prompt and conversation."
+        )
+        provider_payload = {
+            **request_document,
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        with self.connection() as db:
+            now = int(time.time())
+            self._release_stale_reservations(db, now)
+            self._assert_unused_prompt_chat_request(db, license_row, request_id, request_digest)
+            self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
+            if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
+                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+        reserved = False
+        try:
+            async with self._prompt_chat_lock:
+                with self.connection() as db:
+                    now = int(time.time())
+                    self._release_stale_reservations(db, now)
+                    self._reserve_prompt_chat_credit(db, license_row, request_id, request_digest, now)
+                    reserved = True
+                async with CoroutineServerless(
+                    api_key=self.config.vast_api_key,
+                    default_request_timeout=self.config.prompt_chat_timeout_seconds,
+                ) as client:
+                    endpoint = await client.get_endpoint(self.config.prompt_chat_endpoint)
+                    result = await endpoint.request(
+                        "/v1/chat/completions",
+                        provider_payload,
+                        cost=payload.max_tokens,
+                        timeout=self.config.prompt_chat_timeout_seconds,
+                        retry=True,
+                    )
+                reply = self._prompt_chat_reply(result)
+                with self.connection() as db:
+                    now = int(time.time())
+                    charged = db.execute(
+                        "UPDATE prompt_chat_jobs SET credit_state='charged',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
+                        (now, request_id, license_row["license_id"]),
+                    ).rowcount
+                    if charged != 1:
+                        raise RuntimeError("Prompt Editor credit settlement could not be confirmed.")
+                    balance = self._account_balance(db, str(license_row["discord_user_id"]))
+                return {
+                    "reply": reply,
+                    "model": PROMPT_CHAT_MODEL_ID,
+                    "credits_charged": PROMPT_CHAT_CREDIT_COST,
+                    "available_credits": balance,
+                    "privacy": "conversation content is forwarded for inference and is not stored by the KREA2 gateway",
+                }
+        except asyncio.CancelledError:
+            if reserved:
+                with self.connection() as db:
+                    self._refund_prompt_chat_credit(db, license_row, request_id, int(time.time()))
+            raise
+        except HTTPException:
+            if reserved:
+                with self.connection() as db:
+                    self._refund_prompt_chat_credit(db, license_row, request_id, int(time.time()))
+            raise
+        except Exception as exc:
+            if reserved:
+                with self.connection() as db:
+                    self._refund_prompt_chat_credit(db, license_row, request_id, int(time.time()))
+            raise HTTPException(503, "Qwen Prompt Editor is warming or temporarily unavailable; no credit was charged.") from exc
 
     async def infer(self, payload: ChatRequest, license_row: sqlite3.Row, request_id: str) -> dict[str, Any]:
         if payload.model != MODEL_ID or payload.stream:
@@ -509,37 +2068,231 @@ class Gateway:
             raise HTTPException(503, "The remote Vision service is not configured.")
         if CoroutineServerless is None:
             raise HTTPException(503, "The remote Vision SDK is not installed.")
-        readiness = await self.remote_readiness()
-        if not readiness["workergroup_attached"]:
-            raise HTTPException(503, "Remote GPU not available. Retry shortly.")
-        # Do not reject an attached Serverless group merely because it scaled
-        # to zero after its idle window. Vast needs the request itself to wake
-        # a cold worker. Credits are still refunded if that request fails.
+        request_payload = payload.model_dump(exclude_none=True)
+        request_digest = hashlib.sha256(
+            json.dumps(
+                request_payload,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        # Reject a replay before querying or waking any remote GPU.  The credit
+        # reservation repeats this check inside its transaction to close the
+        # race between this no-wake preflight and final route admission.
         with self.connection() as db:
-            now = int(time.time())
-            self._release_stale_reservations(db, now)
-            self._reserve_image_credits(db, license_row, request_id, now)
+            self._release_stale_reservations(db, int(time.time()))
+            self._assert_unused_request_id(
+                db, license_row, request_id, request_digest
+            )
+            self._preflight_credit_balance(db, license_row)
+        self._instance_readiness_until = 0.0
+        readiness = await self.remote_readiness()
+        self._require_remote_capacity(readiness)
+        # The image's own route is the cold-worker wake signal. Do not issue a
+        # redundant text probe first: that doubled cold latency and, worse,
+        # waiting for READY before creating a route could never wake an inactive
+        # worker. ``admit_after_route`` below reserves credits only after this
+        # exact image route is READY and scale-to-zero has been restored.
+        reserved = False
+        reservation_owned = False
+        result: dict[str, Any] | None = None
+        last_activation_error: Exception | None = None
         try:
-            async with CoroutineServerless(api_key=self.config.vast_api_key, default_request_timeout=self.config.request_timeout_seconds) as client:
-                endpoint = await client.get_endpoint(self.config.vast_endpoint)
-                result = await endpoint.request("/v1/chat/completions", payload.model_dump(exclude_none=True), cost=payload.max_tokens, timeout=self.config.request_timeout_seconds, retry=False)
+            route_deadline = min(
+                self.config.request_timeout_seconds,
+                self.config.activation_deadline_seconds,
+            )
+            async with self._activation_lock:
+                # The request may have waited behind another image. Repeat every
+                # no-wake preflight inside the FIFO lock so a newly exhausted
+                # balance, replayed request ID, or changed GPU pool cannot spend
+                # provider time using stale state.
+                with self.connection() as db:
+                    self._release_stale_reservations(db, int(time.time()))
+                    self._assert_unused_request_id(
+                        db, license_row, request_id, request_digest
+                    )
+                    self._preflight_credit_balance(db, license_row)
+                self._instance_readiness_until = 0.0
+                readiness = await self.remote_readiness()
+                self._require_remote_capacity(readiness)
+                candidates: set[int] = set()
+                if (
+                    int(readiness.get("ready_workers") or 0) == 0
+                    and int(readiness.get("inactive_workers") or 0) == 1
+                    and int(readiness.get("starting_workers") or 0) == 0
+                    and int(readiness.get("worker_count") or 0) == 1
+                ):
+                    candidates = await asyncio.to_thread(
+                        self._prepared_activation_machine_ids
+                    )
+                activation_expires = time.monotonic() + route_deadline
+                for activation_attempt in range(2):
+                    if time.monotonic() >= activation_expires:
+                        break
+                    floor_restored = False
+                    floor_reset_required = True
+                    activation_phase = "floor-up"
+                    try:
+                        await self._set_activation_floor_async(1.0)
+                        activation_phase = "route"
+                        async with CoroutineServerless(
+                            api_key=self.config.vast_api_key,
+                            default_request_timeout=max(
+                                route_deadline,
+                                self.config.inference_deadline_seconds,
+                            ),
+                        ) as client:
+                            endpoint = await client.get_endpoint(self.config.vast_endpoint)
+
+                            async def admit_after_route() -> None:
+                                nonlocal activation_phase, floor_restored, reservation_owned, reserved
+                                activation_phase = "post-route-policy"
+                                self._instance_readiness_until = 0.0
+                                routed_readiness = await self.remote_readiness()
+                                self._require_remote_capacity(
+                                    routed_readiness, require_ready=True
+                                )
+                                activation_phase = "floor-down"
+                                await self._restore_activation_floor()
+                                floor_restored = True
+                                activation_phase = "credit-reservation"
+                                with self.connection() as db:
+                                    now = int(time.time())
+                                    self._release_stale_reservations(db, now)
+                                    reservation_owned = self._reserve_image_credits(
+                                        db, license_row, request_id, request_digest, now
+                                    )
+                                reserved = True
+                                activation_phase = "inference"
+
+                            result = await self._fast_routed_request(
+                                client,
+                                endpoint,
+                                request_payload,
+                                activation_expires,
+                                # This is scheduling load, not an output-token limit.
+                                # A single prompt must not recruit several GPUs.
+                                cost=min(payload.max_tokens, 100),
+                                before_send=admit_after_route,
+                                worker_timeout_seconds=self.config.inference_deadline_seconds,
+                            )
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except HTTPException:
+                        raise
+                    except Exception as exc:
+                        last_activation_error = exc
+                        if reserved:
+                            raise
+                    finally:
+                        if floor_reset_required and not floor_restored:
+                            await self._restore_activation_floor()
+                            floor_restored = True
+
+                    if activation_attempt == 1:
+                        break
+
+                    # Route/controller failures do not identify a bad machine.
+                    # Retry the now-warm admission once without mutating the
+                    # deny-list; evidence-based health reconciliation owns GPU
+                    # quarantine.
+                    self._recovery_status = "activation-retrying"
+                    remaining = activation_expires - time.monotonic()
+                    if remaining <= 0.25:
+                        break
+                    await asyncio.sleep(min(2.0, remaining))
+
+                if result is None:
+                    # Attribute an unreserved route failure only when the exact
+                    # single stopped standby is still present and the controller
+                    # remains freshly policy-clean after floor=0 was confirmed.
+                    # Two distinct image IDs are required before quarantine.
+                    evidence_clean = False
+                    try:
+                        self._instance_readiness_until = 0.0
+                        failed_readiness = await self.remote_readiness()
+                        self._require_remote_capacity(failed_readiness)
+                        exact_single_standby = bool(
+                            len(candidates) == 1
+                            and int(failed_readiness.get("ready_workers") or 0) == 0
+                            and int(failed_readiness.get("inactive_workers") or 0) == 1
+                            and int(failed_readiness.get("starting_workers") or 0) == 0
+                            and int(failed_readiness.get("worker_count") or 0) == 1
+                        )
+                        if exact_single_standby:
+                            failed_candidates = await asyncio.to_thread(
+                                self._prepared_activation_machine_ids
+                            )
+                            evidence_clean = failed_candidates == candidates
+                    except Exception:
+                        evidence_clean = False
+                    if evidence_clean and self._record_activation_failure(
+                        candidates, request_id
+                    ):
+                        try:
+                            quarantined = await asyncio.to_thread(
+                                self._replace_failed_activation_workers,
+                                candidates,
+                            )
+                        except Exception:
+                            quarantined = set()
+                        if quarantined:
+                            raise HTTPException(
+                                503,
+                                "The repeatedly failing remote standby was quarantined and an approved replacement is being prepared; no credits were reserved. Retry shortly or use Local GPU.",
+                            )
+                    raise last_activation_error or TimeoutError("Remote route did not become ready")
+                self._record_activation_success(candidates)
+        except asyncio.CancelledError:
+            if reservation_owned:
+                with self.connection() as db:
+                    self._release_image_credits(db, license_row, request_id, int(time.time()))
+            self._instance_readiness_until = 0.0
+            raise
+        except HTTPException:
+            raise
         except Exception as exc:
-            with self.connection() as db:
-                self._release_image_credits(db, license_row, request_id, int(time.time()))
-            raise HTTPException(503, "Remote GPU not available. Retry shortly.") from exc
-        nested = result.get("response", result) if isinstance(result, dict) else None
+            self._instance_readiness_until = 0.0
+            if not reserved:
+                raise HTTPException(
+                    503,
+                    "Remote GPU activation and its one automatic recovery attempt did not complete; no credits were reserved.",
+                ) from exc
+            raise HTTPException(
+                503,
+                f"Remote GPU did not complete within the {int(self.config.inference_deadline_seconds)}-second inference limit after routing; the image reservation is awaiting the pipeline's final charge-or-refund decision.",
+            ) from exc
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise HTTPException(
+                503,
+                "Remote GPU transport did not return a usable result; the image reservation is awaiting the pipeline's final charge-or-refund decision.",
+            )
+        nested = result.get("response")
         if isinstance(nested, str):
             try: nested = json.loads(nested)
             except json.JSONDecodeError as exc: raise HTTPException(502, "Remote Vision returned invalid JSON.") from exc
-        if not isinstance(nested, dict) or nested.get("ok") is False:
-            with self.connection() as db:
-                self._release_image_credits(db, license_row, request_id, int(time.time()))
-            raise HTTPException(503, "Remote GPU not available. Retry shortly.")
+        choices = nested.get("choices") if isinstance(nested, dict) else None
+        first_message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+        content = (
+            first_message.get("content") or first_message.get("reasoning_content")
+            if isinstance(first_message, dict)
+            else None
+        )
+        if not isinstance(nested, dict) or not isinstance(content, str) or not content.strip():
+            raise HTTPException(
+                503,
+                "Remote GPU did not return a usable result; the image reservation is awaiting the pipeline's final charge-or-refund decision.",
+            )
         return nested
 
     def complete_audit(self, payload: AuditCompletion, license_row: sqlite3.Row, request_id: str) -> None:
         if payload.model_id != PUBLIC_MODEL_ID:
             raise HTTPException(422, "The remote model proof is invalid.")
+        if len(payload.prompt_variants) not in {1,3}:
+            raise HTTPException(422, "The remote prompt proof must contain one prompt or exactly three variations.")
         variants = [clean_text(item, 8000) for item in payload.prompt_variants]
         if any(len(item) < 1200 for item in variants):
             raise HTTPException(422, "The remote prompt proof is incomplete.")
@@ -552,6 +2305,8 @@ class Gateway:
                 raise HTTPException(404, "The remote request record was not found.")
             if job["completed_at"] is not None:
                 return
+            if job["credit_state"] == "refunded":
+                raise HTTPException(409, "A refunded remote image cannot be marked complete.")
             now = int(time.time())
             if job["credit_state"] == "reserved":
                 db.execute("UPDATE remote_jobs SET credit_state='charged' WHERE request_id=?", (request_id,))
@@ -649,6 +2404,11 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
     @app.get("/health")
     async def health() -> dict[str, Any]:
         remote = await gateway.remote_readiness()
+        activation_elapsed = gateway._activation_last_elapsed_seconds
+        if gateway._activation_started_at:
+            activation_elapsed = max(
+                0.0, time.monotonic() - gateway._activation_started_at
+            )
         return {
             "ok": True, "model": PUBLIC_MODEL_ID,
             "configured": remote["configured"],
@@ -656,9 +2416,81 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             "remote_cold_start_eligible": bool(remote["cold_start_eligible"]),
             "remote_worker_count": remote["worker_count"],
             "remote_workergroup_attached": remote["workergroup_attached"],
+            "remote_controller_verified": bool(remote.get("controller_verified")),
             "remote_status": remote["reason"] or "Remote GPU ready.",
+            "remote_starting_workers": int(remote.get("starting_workers") or 0),
+            "remote_unhealthy_workers": int(remote.get("unhealthy_workers") or 0),
+            "remote_inactive_workers": int(remote.get("inactive_workers") or 0),
+            "remote_disallowed_workers": int(remote.get("disallowed_workers") or 0),
+            "remote_recovery_status": str(remote.get("recovery_status") or gateway._recovery_status),
+            "remote_activation_phase": gateway._activation_phase,
+            "remote_activation_elapsed_seconds": round(activation_elapsed, 3),
+            "remote_activation_last_outcome": gateway._activation_last_outcome,
+            "remote_bootstrap_deadline_seconds": int(gateway.config.bootstrap_deadline_seconds),
+            "remote_activation_deadline_seconds": int(gateway.config.activation_deadline_seconds),
+            "remote_inference_deadline_seconds": int(gateway.config.inference_deadline_seconds),
+            "remote_allowed_gpu_names": list(gateway.config.allowed_gpu_names),
+            "remote_max_worker_hourly_usd": gateway.config.max_worker_hourly_usd,
             "discord_oauth_configured": gateway.oauth_configured(),
             "bitcoin_credits_configured": gateway.btcpay_configured(),
+        }
+
+    @app.post("/v1/admin/wake-proof")
+    async def admin_wake_proof(
+        x_krea2_admin_key: str | None = Header(
+            default=None, alias="X-Krea2-Admin-Key"
+        ),
+    ) -> dict[str, Any]:
+        """Run one tiny image-free model wake proof without app credit movement."""
+
+        if (
+            len(gateway.config.admin_key) < 32
+            or not hmac.compare_digest(
+                str(x_krea2_admin_key or ""), gateway.config.admin_key
+            )
+        ):
+            raise HTTPException(403, "Administrative authorization failed.")
+
+        def credit_aggregate() -> dict[str, int]:
+            with gateway.connection() as db:
+                account = db.execute(
+                    "SELECT COALESCE(SUM(available_credits),0),COUNT(*) FROM credit_accounts"
+                ).fetchone()
+                return {
+                    "available_credit_sum": int(account[0]),
+                    "accounts": int(account[1]),
+                    "jobs": int(
+                        db.execute("SELECT COUNT(*) FROM remote_jobs").fetchone()[0]
+                    ),
+                    "ledger": int(
+                        db.execute("SELECT COUNT(*) FROM credit_ledger").fetchone()[0]
+                    ),
+                }
+
+        before = credit_aggregate()
+        started = time.monotonic()
+        # An empty maintenance request ID cannot contribute quarantine evidence.
+        await gateway._ensure_remote_active("")
+        elapsed = time.monotonic() - started
+        after = credit_aggregate()
+        if after != before:
+            raise HTTPException(
+                500,
+                "The uncharged wake proof detected unexpected credit or job mutation.",
+            )
+        remote = await gateway.remote_readiness()
+        return {
+            "ok": True,
+            "elapsed_seconds": round(elapsed, 3),
+            "credit_state_unchanged": True,
+            "remote_ready": bool(remote.get("ready_workers")),
+            "remote_inactive_workers": int(remote.get("inactive_workers") or 0),
+            "activation_outcome": gateway._activation_last_outcome,
+            "activation_elapsed_seconds": round(
+                gateway._activation_last_elapsed_seconds, 3
+            ),
+            "desired_floor": gateway._desired_activation_floor,
+            "headroom_target": gateway._activation_headroom_target,
         }
 
     @app.post("/v1/oauth/start")
@@ -679,6 +2511,15 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
     async def chat(payload: ChatRequest, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, Any]:
         license_row = gateway.authenticate(authorization, request_id or "")
         return await gateway.infer(payload, license_row, request_id or "")
+
+    @app.post("/v1/prompt-chat/completions")
+    async def prompt_chat(
+        payload: PromptChatRequest,
+        authorization: str | None = Header(default=None),
+        request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id"),
+    ) -> dict[str, Any]:
+        license_row = gateway.authenticate(authorization, request_id or "")
+        return await gateway.prompt_chat(payload, license_row, request_id or "")
 
     @app.post("/v1/audit/complete")
     def complete(payload: AuditCompletion, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
