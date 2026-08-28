@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.14.5
+ * @version 0.14.6
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.14.5";
+const PLUGIN_VERSION = "0.14.6";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1679,17 +1679,35 @@ function detectImageFormat(bytes) {
     return null;
 }
 
+function localPathApi(raw) {
+    const value = String(raw || "").trim();
+    if (value.startsWith("/") && path.posix.isAbsolute(value)) return path.posix;
+    if (path.win32.isAbsolute(value)) return path.win32;
+    if (path.posix.isAbsolute(value)) return path.posix;
+    return null;
+}
+
 function validateSaveFolder(raw) {
     const value = String(raw || "").trim();
-    if (!value || value.includes("\u0000") || !path.win32.isAbsolute(value)) {
-        return {ok: false, error: "The local save folder must be an absolute Windows path."};
+    const pathApi = localPathApi(value);
+    if (!value || value.includes("\u0000") || !pathApi) {
+        return {ok: false, error: "The local save folder must be an absolute Windows, Linux, or macOS path."};
     }
-    const normalized = path.win32.normalize(value);
-    const root = path.win32.parse(normalized).root;
-    if (!root || normalized.toLowerCase() === root.toLowerCase()) {
-        return {ok: false, error: "Choose a folder below a drive root."};
+    const normalized = pathApi.normalize(value);
+    const root = pathApi.parse(normalized).root;
+    const rootOnly = pathApi === path.win32
+        ? normalized.toLowerCase() === root.toLowerCase()
+        : normalized === root;
+    if (!root || rootOnly) {
+        return {ok: false, error: "Choose a folder below the filesystem root."};
     }
-    return {ok: true, path: normalized};
+    return {ok: true, path: normalized, pathStyle: pathApi === path.win32 ? "windows" : "posix"};
+}
+
+function localPathJoin(base, ...parts) {
+    const pathApi = localPathApi(base);
+    if (!pathApi) throw new Error("A platform-absolute local path is required.");
+    return pathApi.join(base, ...parts);
 }
 
 function callFileSystem(fileSystem, asyncMethod, syncMethod, args) {
@@ -1799,7 +1817,7 @@ async function saveOriginalImage(folder, bytes, sha256, format, fileSystem = fs)
     await mkdirCompat(fileSystem, validated.path);
 
     const canonicalName = `${sha256}${format.extension}`;
-    const canonicalPath = path.win32.join(validated.path, canonicalName);
+    const canonicalPath = localPathJoin(validated.path, canonicalName);
     if (await writeExclusive(canonicalPath, bytes, fileSystem)) {
         return {filePath: canonicalPath, filename: canonicalName, deduplicated: false};
     }
@@ -1810,7 +1828,7 @@ async function saveOriginalImage(folder, bytes, sha256, format, fileSystem = fs)
 
     for (let counter = 1; counter <= 999; counter += 1) {
         const collisionName = `${sha256}-collision-${counter}${format.extension}`;
-        const collisionPath = path.win32.join(validated.path, collisionName);
+        const collisionPath = localPathJoin(validated.path, collisionName);
         if (await writeExclusive(collisionPath, bytes, fileSystem)) {
             return {filePath: collisionPath, filename: collisionName, deduplicated: false, collision: true};
         }
@@ -1824,14 +1842,14 @@ async function saveOriginalImage(folder, bytes, sha256, format, fileSystem = fs)
 function historyThumbnailCacheDirectory(folder) {
     const validated = validateSaveFolder(folder);
     if (!validated.ok) throw new Error(validated.error);
-    return path.win32.join(validated.path, HISTORY_THUMBNAIL_DIRECTORY);
+    return localPathJoin(validated.path, HISTORY_THUMBNAIL_DIRECTORY);
 }
 
 function historyThumbnailCacheCandidates(folder, hash) {
     const key = String(hash || "").trim().toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("A full image SHA-256 is required for the thumbnail cache.");
     const directory = historyThumbnailCacheDirectory(folder);
-    return [".webp", ".png", ".jpg", ".jpeg"].map(extension => path.win32.join(directory, `${key}${extension}`));
+    return [".webp", ".png", ".jpg", ".jpeg"].map(extension => localPathJoin(directory, `${key}${extension}`));
 }
 
 function clearHistoryThumbnailCache(directory, fileSystem = fs) {
@@ -1841,7 +1859,7 @@ function clearHistoryThumbnailCache(directory, fileSystem = fs) {
         for (const entry of entries) {
             if (!entry?.isFile?.() || !/^[a-f0-9]{64}\.(?:webp|png|jpe?g)$/i.test(entry.name)) continue;
             try {
-                fileSystem.unlinkSync(path.win32.join(directory, entry.name));
+                fileSystem.unlinkSync(localPathJoin(directory, entry.name));
                 removed += 1;
             }
             catch {}
@@ -1852,8 +1870,10 @@ function clearHistoryThumbnailCache(directory, fileSystem = fs) {
 }
 
 async function savePromptSidecar(imagePath, prompt, fileSystem = fs) {
-    const parsed = path.win32.parse(imagePath);
-    const sidecarPath = path.win32.join(parsed.dir, `${parsed.name}.txt`);
+    const pathApi = localPathApi(imagePath);
+    if (!pathApi) throw new Error("A platform-absolute image path is required.");
+    const parsed = pathApi.parse(imagePath);
+    const sidecarPath = pathApi.join(parsed.dir, `${parsed.name}.txt`);
     const content = `${String(prompt).trim()}\r\n`;
     const bytes = Buffer.from(content, "utf8");
     if (await writeExclusive(sidecarPath, bytes, fileSystem)) return sidecarPath;
@@ -1861,7 +1881,7 @@ async function savePromptSidecar(imagePath, prompt, fileSystem = fs) {
     if (existing === content) return sidecarPath;
 
     const promptHash = sha256Hex(Buffer.from(content)).slice(0, 12);
-    const alternate = path.win32.join(parsed.dir, `${parsed.name}-prompt-${promptHash}.txt`);
+    const alternate = pathApi.join(parsed.dir, `${parsed.name}-prompt-${promptHash}.txt`);
     if (!(await writeExclusive(alternate, bytes, fileSystem))) {
         const alternateExisting = await readFileCompat(fileSystem, alternate, "utf8");
         if (alternateExisting !== content) throw new Error("A different prompt sidecar already uses the collision-safe name.");
@@ -1870,10 +1890,12 @@ async function savePromptSidecar(imagePath, prompt, fileSystem = fs) {
 }
 
 function visionPromptSidecarPath(imagePath, canonicalHash = "", cacheProfile = null) {
-    const parsed = path.win32.parse(imagePath);
+    const pathApi = localPathApi(imagePath);
+    if (!pathApi) throw new Error("A platform-absolute image path is required.");
+    const parsed = pathApi.parse(imagePath);
     const baseName = /^[a-f0-9]{64}$/i.test(String(canonicalHash)) ? String(canonicalHash).toLowerCase() : parsed.name;
     const suffix = cacheProfile ? `.${visionCacheProfileDigest(cacheProfile)}` : "";
-    return path.win32.join(parsed.dir, `${baseName}.vision${suffix}.txt`);
+    return pathApi.join(parsed.dir, `${baseName}.vision${suffix}.txt`);
 }
 
 async function saveVisionPromptSidecar(imagePath, prompt, fileSystem = fs, canonicalHash = "", promptVariants = [], cacheProfile = null) {
@@ -1886,8 +1908,10 @@ async function saveVisionPromptSidecar(imagePath, prompt, fileSystem = fs, canon
         const existing = await readFileCompat(fileSystem, sidecarPath, "utf8");
         if (existing !== content) {
             const promptHash = sha256Hex(Buffer.from(content)).slice(0, 12);
-            const parsedSidecar = path.win32.parse(sidecarPath);
-            const alternate = path.win32.join(parsedSidecar.dir, `${parsedSidecar.name}-${promptHash}.txt`);
+            const pathApi = localPathApi(sidecarPath);
+            if (!pathApi) throw new Error("A platform-absolute prompt sidecar path is required.");
+            const parsedSidecar = pathApi.parse(sidecarPath);
+            const alternate = pathApi.join(parsedSidecar.dir, `${parsedSidecar.name}-${promptHash}.txt`);
             if (!(await writeExclusive(alternate, bytes, fileSystem))) {
                 const alternateExisting = await readFileCompat(fileSystem, alternate, "utf8");
                 if (alternateExisting !== content) throw new Error("A different Vision prompt sidecar already uses the collision-safe name.");
@@ -5173,7 +5197,7 @@ class Krea2DiscordCollector {
         const encoded = await this.encodeHistoryThumbnail(original);
         const directory = historyThumbnailCacheDirectory(this.settings.saveFolder);
         await mkdirCompat(fs, directory);
-        const destination = path.win32.join(directory, `${key}${encoded.extension}`);
+        const destination = localPathJoin(directory, `${key}${encoded.extension}`);
         await writeFileCompat(fs, destination, encoded.bytes, {flag: "w"});
         return destination;
     }

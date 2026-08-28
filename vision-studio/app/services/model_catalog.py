@@ -547,14 +547,22 @@ def _first_verified_artifact(
     return None
 
 
+def _supported_server_binary(path: Path | None) -> bool:
+    """Accept the native llama.cpp server name while retaining executable checks."""
+
+    if path is None or not path.is_file():
+        return False
+    if os.name == "nt":
+        return path.suffix.casefold() == ".exe"
+    return os.access(path, os.X_OK)
+
+
 def available_llama_cpp_specs(config: Settings) -> list[ModelSpec]:
     server_exe = _configured_path(config.llama_cpp_server_exe, base=ROOT)
     model_root = _configured_path(config.llama_cpp_model_root, base=ROOT)
     manifest = _checked_in_manifest(config.llama_cpp_artifact_manifest)
     if (
-        server_exe is None
-        or not server_exe.is_file()
-        or server_exe.suffix.casefold() != ".exe"
+        not _supported_server_binary(server_exe)
         or model_root is None
         or not model_root.is_dir()
         or manifest is None

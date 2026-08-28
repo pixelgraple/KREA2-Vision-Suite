@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.6 - 2026-08-28
+
+- Adds visible Windows, Linux, and macOS support badges plus an explicit per-feature platform matrix.
+- Adds a portable Linux/macOS installer and launcher that install the loopback broker and BetterDiscord plugin, create matching private credentials, default to Online API, and verify live health.
+- Makes plugin save folders, image paths, prompt sidecars, and history thumbnails accept both Windows and POSIX absolute paths.
+- Accepts a native executable `llama-server` on POSIX while retaining the `.exe` requirement on Windows.
+- Marks automatic suite installation Windows-only and directs Linux/macOS users to the safe manual updater.
+- Runs backend and BetterDiscord regression suites on Windows, Ubuntu, and macOS in GitHub Actions.
+
 ## 0.14.5 - 2026-08-28
 
 - Makes V2 Direct Fidelity produce a compact pose/support ledger in the same paid image call, with no extra inference or credit.

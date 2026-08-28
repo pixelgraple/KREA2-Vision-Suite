@@ -81,6 +81,7 @@ class ReleaseUpdateManager:
         process_start: Callable = subprocess.Popen,
         busy_check: Callable[[], bool] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        automatic_install_supported: bool = True,
     ) -> None:
         self.application_root = Path(application_root).resolve()
         self.current_version = current_version or detect_current_version(self.application_root)
@@ -91,6 +92,7 @@ class ReleaseUpdateManager:
         self.process_start = process_start
         self.busy_check = busy_check or (lambda: False)
         self.sleep = sleep
+        self.automatic_install_supported = bool(automatic_install_supported)
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._maintenance = False
@@ -119,7 +121,7 @@ class ReleaseUpdateManager:
                     "channel": UPDATE_CHANNEL,
                     "current_version": self.current_version,
                     "manifest_url": MANIFEST_URL,
-                    "automatic_install_supported": True,
+                    "automatic_install_supported": self.automatic_install_supported,
                     "maintenance_pending": self._maintenance,
                 }
             )
@@ -236,6 +238,10 @@ class ReleaseUpdateManager:
         checked = self.check()
         if not checked.get("update_available"):
             return checked
+        if not self.automatic_install_supported:
+            raise SuiteUpdateError(
+                "Automatic installation is available on Windows only. Rerun the Linux/macOS shell installer to update safely."
+            )
         with self._lock:
             if self._thread and self._thread.is_alive():
                 raise SuiteUpdateBusy("A KREA2 Vision Suite update is already in progress.")

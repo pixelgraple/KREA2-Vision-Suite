@@ -1,0 +1,39 @@
+name: Cross-platform tests
+
+on:
+  push:
+    branches: [main, qwen38-serverless]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: vision-studio/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Vision Studio dependencies
+        run: python -m pip install -r vision-studio/requirements.txt
+      - name: Run Vision Studio tests
+        working-directory: vision-studio
+        run: python -m unittest discover -s tests -q
+      - name: Validate generated BetterDiscord plugin
+        run: node --check betterdiscord-plugin/Krea2DiscordCollector.plugin.js
+      - name: Run BetterDiscord tests
+        run: node scripts/run-plugin-tests.js

@@ -181,6 +181,7 @@ assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "endpoint"), false);
 assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "token"), false);
 assert.equal(DEFAULT_SETTINGS.saveFolder.endsWith(path.join("Pictures", "Krea2Vision")), true);
 assert.equal(historyThumbnailCacheDirectory("C:\\Krea2Vision"), "C:\\Krea2Vision\\.krea2-history-thumbnails");
+assert.equal(historyThumbnailCacheDirectory("/home/example/Pictures/Krea2Vision"), "/home/example/Pictures/Krea2Vision/.krea2-history-thumbnails");
 assert.deepEqual(historyThumbnailCacheCandidates("C:\\Krea2Vision", "a".repeat(64)), [
     `C:\\Krea2Vision\\.krea2-history-thumbnails\\${"a".repeat(64)}.webp`,
     `C:\\Krea2Vision\\.krea2-history-thumbnails\\${"a".repeat(64)}.png`,
@@ -581,7 +582,13 @@ assert.deepEqual(parseUploadResponse(201, '{"classification":"added"}'), {classi
 assert.deepEqual(parseUploadResponse(409, ""), {classification: "duplicate"});
 assert.throws(() => parseUploadResponse(201, '{"ok":true}'), /recognized classification/);
 assert.equal(validateSaveFolder("C:\\Users\\Example\\Pictures\\Krea2Vision").ok, true);
+assert.deepEqual(validateSaveFolder("/home/example/Pictures/Krea2Vision"), {
+    ok: true,
+    path: "/home/example/Pictures/Krea2Vision",
+    pathStyle: "posix"
+});
 assert.equal(validateSaveFolder("relative\\folder").ok, false);
+assert.equal(validateSaveFolder("/").ok, false);
 
 const hashA = "a".repeat(64);
 assert.equal(submissionKey(hashA, "embedded_metadata"), `${hashA}:embedded_metadata`);

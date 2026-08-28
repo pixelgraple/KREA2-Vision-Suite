@@ -8,7 +8,7 @@ Contributions should preserve the suite's local-only, privacy-first behavior and
 
 Before opening a pull request:
 
-1. Run both Python suites and both BetterDiscord JavaScript suites listed in the root README.
+1. Run `python -m unittest discover -s vision-studio/tests -q` and `node scripts/run-plugin-tests.js`; GitHub repeats them on Windows, Ubuntu, and macOS.
 2. Confirm no model weight, `.env`, token, database, prompt, image, local absolute path, or runtime log is staged.
 3. Keep Discord jobs to one image per FIFO turn and preserve immediate yield to waiting Forge/KREA/other work.
 4. Keep the 15-second Discord warm residency opportunistic: any non-Discord ticket must cancel it and trigger eviction before that ticket runs.

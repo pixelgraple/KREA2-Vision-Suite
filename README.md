@@ -1,5 +1,10 @@
 # KREA2 Vision Suite
 
+[![Cross-platform tests](https://github.com/pixelgraple/KREA2-Vision-Suite/actions/workflows/cross-platform-tests.yml/badge.svg)](https://github.com/pixelgraple/KREA2-Vision-Suite/actions/workflows/cross-platform-tests.yml)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=111)
+![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white)
+
 ## Start here: what this does
 
 KREA2 Vision Suite adds an image-description tool to Discord. Install BetterDiscord, install this plugin, choose which Discord servers may use it, and then click the magnifier in the top-right corner of an image. KREA2 Vision examines that image and gives you three detailed prompts you can use to recreate a similar image in Krea2 or another image generator.
@@ -11,7 +16,7 @@ During first-run setup, choose one of two Vision modes:
 
 The plugin setup itself is designed to take about a minute. A local model download can take longer, depending on the model size and your internet connection. Once setup is complete, every image in a Discord server that you explicitly allow gets a magnifier action. You can queue several images, watch their progress in Prompt History, see the exact model used for each result, or open **Interrogate** to upload an image manually.
 
-KREA2 Vision Suite is a free, open-source Windows application in beta. It is already useful, but bugs and occasional errors can still happen while the project is being improved. Join the community server for updates, help, and bug reports: [discord.gg/gdxCYCWd8g](https://discord.gg/gdxCYCWd8g).
+KREA2 Vision Suite is a free, open-source Windows, Linux, and macOS application in beta. Windows has the fully automated installer and verified local CUDA/Forge workflow. Linux and macOS use the portable shell installer and default to Online API; Linux local inference is available through manual Ollama or native llama.cpp configuration, while macOS local inference remains experimental. Bugs and occasional errors can still happen while the project is being improved. Join the community server for updates, help, and bug reports: [discord.gg/gdxCYCWd8g](https://discord.gg/gdxCYCWd8g).
 
 The project is local-first. The BetterDiscord plugin talks to a private Vision service on `127.0.0.1:7870`; local models run on the user's own NVIDIA GPU. KREA2 guidance, dataset contribution, and rich failure attachments are separately disclosed and controlled. Mandatory technical failures post one owner-only, redacted `.txt` traceback per unique failed image so launch, transport, and GPU-capacity failures can be repaired across installations.
 
@@ -24,6 +29,7 @@ Online inference means the selected image and bounded request metadata must leav
 ## Contents
 
 - [What it does](#what-it-does)
+- [Platform support](#platform-support)
 - [Download and install](#download-and-install)
 - [How the Vision pipeline works](#how-the-vision-pipeline-works)
 - [How the three prompts are written](#how-the-three-prompts-are-written)
@@ -50,11 +56,24 @@ Online inference means the selected image and bounded request metadata must leav
 
 The supported product is intentionally focused on Discord image interrogation. The older Prompt Assistant and photo-editing experiments are not part of the installed release.
 
+## Platform support
+
+| Feature | Windows 10/11 | Linux | macOS |
+|---|---:|---:|---:|
+| BetterDiscord magnifier, metadata/YAML prompts, Prompt History, and Qwen Prompt Editor | Supported | Supported | Supported |
+| Online API Vision | Supported | Supported | Supported |
+| Automated installation | Full PowerShell installer | Portable shell installer | Portable shell installer |
+| Local Ollama/llama.cpp Vision | Supported and verified | Supported with manual configuration | Experimental/manual |
+| Shared Forge/KreaForge FIFO and CUDA handoff | Supported and verified | Manual configuration | Not applicable |
+| Automated in-app suite update | Supported | Manual update | Manual update |
+
+Every push and pull request runs the Python broker and BetterDiscord test suites on GitHub-hosted Windows, Ubuntu, and macOS runners. The badges above report the current matrix result. Platform support does not imply that Discord or BetterDiscord officially endorses this project.
+
 ## Download and install
 
-### Complete Windows package
+### Windows
 
-Download [Krea2VisionSuite-v0.14.0-win64.zip](releases/Krea2VisionSuite-v0.14.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.14.6-win64.zip](releases/Krea2VisionSuite-v0.14.6-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -75,6 +94,19 @@ The installer can:
 9. health-check the local service before opening Discord.
 
 See [Windows installation](docs/INSTALL_WINDOWS.md), [friend quick start](docs/QUICK_START_FRIENDS.md), and [troubleshooting](docs/TROUBLESHOOTING.md).
+
+### Linux and macOS
+
+Install BetterDiscord first, clone or download the complete repository, then run:
+
+```bash
+chmod +x installer/Install-Krea2VisionSuite.sh installer/Start-Krea2VisionSuite.sh
+./installer/Install-Krea2VisionSuite.sh
+```
+
+The portable installer creates an isolated Python environment, installs the generated plugin in the current user's BetterDiscord plugin directory, creates matching private loopback credentials, selects V2 Online API by default, starts port `7870`, and verifies its health. It does not require a local GPU or model download. Restart Discord completely after installation.
+
+See [Linux and macOS installation](docs/INSTALL_LINUX_MACOS.md) for default paths, local-inference options, limitations, startup, and manual updates.
 
 ## How the Vision pipeline works
 
@@ -209,7 +241,7 @@ The optional Vast worker may scale from zero to five workers. `min_load=0` avoid
 
 ```text
 betterdiscord-plugin/     BetterDiscord source, generated plugin, parser, and tests
-installer/                Windows install, repair, startup, and health checks
+installer/                Windows and portable Linux/macOS install/start tools
 vision-studio/            FastAPI loopback broker and Vision pipeline
 vast-serverless-gemma26/  Optional 24 GB GPU worker container
 docs/                     Product, privacy, architecture, model, and setup documentation
@@ -222,10 +254,10 @@ scripts/                  Release builder and verification automation
 
 Requirements for development:
 
-- Windows 10/11 for installer and live BetterDiscord testing;
+- Windows 10/11, Linux, or macOS;
 - Python 3.12;
-- Node.js for plugin build/tests;
-- an NVIDIA GPU for real local model validation.
+- Node.js 22 for plugin build/tests;
+- an NVIDIA GPU only for real local CUDA model validation.
 
 Run the backend suite:
 
@@ -234,18 +266,22 @@ cd vision-studio
 python -m unittest discover -s tests -v
 ```
 
-Run plugin checks:
+Run every plugin check on any supported OS:
+
+```text
+node scripts/run-plugin-tests.js
+```
+
+Build the generated plugin after changing its source:
 
 ```powershell
 cd betterdiscord-plugin
 node .\build-inline-plugin.js
-node .\Krea2DiscordCollector.test.js
-node --test .\Krea2DiscordCollector.dataset-guidance.test.js
-node --test .\Krea2DiscordCollector.feedback.test.js
-node --test .\parser\png-prompt-metadata.test.js
 node --check .\Krea2DiscordCollector.plugin.source.js
 node --check .\Krea2DiscordCollector.plugin.js
 ```
+
+GitHub Actions repeats the backend and plugin suites on `windows-latest`, `ubuntu-latest`, and `macos-latest` through [.github/workflows/cross-platform-tests.yml](.github/workflows/cross-platform-tests.yml).
 
 Build a release:
 

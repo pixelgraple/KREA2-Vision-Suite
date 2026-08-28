@@ -1,4 +1,8 @@
-# Windows installer and repair center
+# Installers and repair tools
+
+Windows uses the complete PowerShell installer and repair center documented below. Linux and macOS use `Install-Krea2VisionSuite.sh`, which installs the loopback backend and BetterDiscord plugin for the current user, configures V2 Online API by default, and performs a live health check. See [Linux and macOS installation](../docs/INSTALL_LINUX_MACOS.md).
+
+## Windows installer and repair center
 
 Run `Krea2VisionSuite-Installer.cmd` from an extracted release or cloned repository.
 

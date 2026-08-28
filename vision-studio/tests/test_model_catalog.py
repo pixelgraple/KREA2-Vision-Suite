@@ -31,6 +31,7 @@ def _verified_bundle(
     server_exe = root / "runtime" / "llama-server.exe"
     server_exe.parent.mkdir(parents=True)
     server_exe.write_bytes(b"test executable")
+    server_exe.chmod(0o755)
     model_root = root / "models"
     model_root.mkdir()
     entries = []
@@ -78,6 +79,16 @@ def _verified_bundle(
 class ModelCatalogTests(unittest.TestCase):
     def setUp(self):
         catalog._sha256_for_fingerprint.cache_clear()
+
+    def test_native_posix_llama_server_name_is_supported_when_executable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            server = Path(temporary) / "llama-server"
+            server.write_bytes(b"native test executable")
+            server.chmod(0o755)
+            with patch.object(catalog.os, "name", "posix"):
+                self.assertTrue(catalog._supported_server_binary(server))
+            with patch.object(catalog.os, "name", "nt"):
+                self.assertFalse(catalog._supported_server_binary(server))
 
     def test_installed_qwen_compatibility_remains_raw_ollama_tags(self):
         response = Mock()

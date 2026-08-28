@@ -14,6 +14,7 @@ llama_cpp:
   # The runtime is installed separately; model GGUF files are downloaded
   # manually into the 2B/4B/8B subfolders under this model root.
   server_exe: '~/AppData/Local/Krea2Vision/llama.cpp/b10590/llama-server.exe'
+  # Linux may override this with ~/.local/share/Krea2Vision/llama.cpp/b10590/llama-server.
   model_root: '~/Documents/KreaHereticModels'
   # Discovery fails closed when a model body or selected projector differs
   # from the checked-in byte size or SHA-256 manifest.

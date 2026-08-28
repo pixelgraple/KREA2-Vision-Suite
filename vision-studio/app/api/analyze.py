@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hmac, ipaddress, json, logging, secrets, tempfile, threading
+import hmac, ipaddress, json, logging, os, secrets, tempfile, threading
 from pathlib import Path
 from typing import Annotated
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Response, UploadFile
@@ -67,7 +67,11 @@ def discord_update_busy() -> bool:
     summary=discord_jobs.summary()
     return bool(int(summary.get("queued") or 0) or int(summary.get("running") or 0))
 
-suite_updates=ReleaseUpdateManager(ROOT,busy_check=discord_update_busy)
+suite_updates=ReleaseUpdateManager(
+    ROOT,
+    busy_check=discord_update_busy,
+    automatic_install_supported=os.name == "nt",
+)
 krea2_contributor=(
     Krea2PromptContributor(settings.discord_vision_token)
     if len(settings.discord_vision_token.encode("utf-8")) >= 32

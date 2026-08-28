@@ -63,6 +63,28 @@ def manifest(version: str, release: bytes, **overrides) -> bytes:
 
 
 class ReleaseUpdateManagerTests(unittest.TestCase):
+    def test_non_windows_install_is_reported_and_fails_before_download(self):
+        release = make_release("1.2.4")
+        body = manifest("1.2.4", release)
+        calls = []
+
+        def get(url, **_kwargs):
+            calls.append(url)
+            return FakeResponse(url, body)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = ReleaseUpdateManager(
+                Path(temporary),
+                current_version="1.2.3",
+                update_root=Path(temporary) / "updates",
+                http_get=get,
+                automatic_install_supported=False,
+            )
+            self.assertFalse(manager.status()["automatic_install_supported"])
+            with self.assertRaisesRegex(SuiteUpdateError, "Linux/macOS shell installer"):
+                manager.start()
+        self.assertEqual(calls, [MANIFEST_URL])
+
     def test_verified_release_launches_only_bundled_update_mode(self):
         version = "1.2.4"
         release = make_release(version)
