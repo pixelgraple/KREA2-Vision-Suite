@@ -1,10 +1,17 @@
-# Krea2 Discord Vision v0.13.26
+# Krea2 Discord Vision v0.13.34
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
-This BetterDiscord plugin adds one focused tool to exact Discord image attachments inside explicitly allowlisted servers:
+This BetterDiscord plugin adds two independent tools to exact Discord image attachments inside explicitly allowlisted servers:
 
-- the image magnifier holds request bytes in memory, queues one shared-GPU Vision job, and returns three grounded prompt variations without saving the image or prompts to disk.
+- the top-left **+** reads embedded image metadata and, when present on the same Discord message, a `.yaml` or `.yml` companion. It opens the exact positive prompt locally without running Vision, using credits, submitting to a dataset, or saving anything;
+- the top-right image magnifier holds request bytes in memory, queues one shared-GPU Vision job, and returns one grounded V2 prompt by default or three variations when enabled, without saving the full-resolution image.
+
+## Source metadata +
+
+The metadata action supports ordinary `parameters:` exports and ComfyUI exports whose `prompt:` field contains the workflow's JSON prompt graph. For ComfyUI files it follows a sampler's positive-conditioning edge to the actual text encoder, ignores negative conditioning and image-conditioned refiner branches, and refuses ambiguous or traversal-limited graphs instead of guessing. It does not load the large `workflow:` editor graph as prompt text.
+
+A companion YAML is used only when its filename stem uniquely matches the selected image, or when the Discord message contains exactly one image and one YAML attachment. Multiple possible pairings fail closed. Encoded, encrypted, substantially non-English, malformed, generic JSON, and unsupported structured content remain skipped.
 
 During first-run setup, the user can enable **Automatically contribute my three generated prompts to Krea2** and accept the current [Seedframe Terms](https://seedframe.xyz/policies/terms). When enabled, every successful Vision request submits its three generated prompt texts through the authenticated loopback Vision broker. When disabled, Vision remains available and no generated prompt is submitted. A fresh installation never needs a Seedframe endpoint or token. Contributions never send image bytes, image hashes, Discord IDs or URLs, filenames, or local paths. Entries are quarantined as `review_required` and never become training-ready automatically.
 
@@ -26,15 +33,15 @@ The right-side Discord rail now includes an **Interrogate** tab. It accepts a PN
 
 An optional **Identity or role notes** field lets the uploader provide known labels and pronouns for that one request, such as `Subject A is a trans woman, she/her; Subject B is a man, he/him.` The Vision model never infers transgender, cisgender, femboy, tgirl, man, or woman identity from appearance or anatomy. Without a supplied note it uses pixel-grounded presentation wording, such as `feminine-presenting adult with a directly visible penis`, while keeping anatomy, pose and participant roles separate. The note remains in session memory only and is cleared after enqueueing.
 
-Every press of Start creates one normal authenticated Vision job. Uploaded images join the same plugin submission chain and exact shared Forge/Krea FIFO as message magnifiers, so users may queue several images while each image still runs one at a time and yields correctly. The form clears immediately after enqueueing so another image can be selected. The completed job opens in the existing prompt-history result viewer with its retained local thumbnail and all three generated prompts.
+Every press of Start creates one normal authenticated Vision job. Uploaded images join the same plugin submission chain and exact shared Forge/Krea FIFO as message magnifiers, so users may queue several images while each image still runs one at a time and yields correctly. The form clears immediately after enqueueing so another image can be selected. The completed job opens in the existing prompt-history result viewer with its retained local thumbnail and generated prompt result.
 
 Local images remain queued until their shared Forge/KreaForge FIFO turn or until the user cancels them; local contention does not expire after 30 seconds. Online API worker-capacity waits remain bounded and may end as **GPU not available**. Other failures show the sanitized error returned by the local or remote provider.
 
 Upload bytes remain in request memory. Prompt History stores sanitized job metadata and generated prompt text in the private local Vision SQLite database until the user selects **Clear history**. For reliable previews across reloads, the plugin stores one small local thumbnail per image under `<configured save folder>\.krea2-history-thumbnails`. It does not copy the full-resolution source image or create prompt sidecars.
 
-## Three prompts and session feedback
+## One prompt by default, optional three-prompt output
 
-Every successful image description returns:
+V2 returns one canonical prompt by default. **Generate three V2 prompt variations** can be enabled in settings to return:
 
 1. **Balanced** — overall reconstruction.
 2. **Subject & pose** — subject geometry, expression, wardrobe, anatomy, and interaction emphasis.
@@ -122,6 +129,8 @@ node --check .\Krea2DiscordCollector.plugin.js
 node .\Krea2DiscordCollector.test.js
 node --test .\Krea2DiscordCollector.dataset-guidance.test.js
 node --test .\Krea2DiscordCollector.feedback.test.js
+node .\Krea2DiscordCollector.metadata-yaml.test.js
+node .\Krea2DiscordCollector.v2-output.test.js
 node --test .\parser\png-prompt-metadata.test.js
 ```
 

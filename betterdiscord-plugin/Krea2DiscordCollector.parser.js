@@ -21,6 +21,14 @@ const DEFAULT_LIMITS = Object.freeze({
     maxAncillaryFieldBytes: 4096
 });
 
+const STRUCTURED_PROMPT_LIMITS = Object.freeze({
+    maxDocumentChars: 5 * 1024 * 1024,
+    maxNodes: 10000,
+    maxReferences: 50000,
+    maxTraversalDepth: 64,
+    maxPromptChars: 64 * 1024
+});
+
 const UTF8_FATAL_DECODER = new TextDecoder("utf-8", {fatal: true});
 
 function boundedInteger(value, fallback, minimum, maximum) {
@@ -349,6 +357,269 @@ function decodeHtmlEntitiesOnce(raw) {
     });
 }
 
+function isPlainRecord(value) {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function repairKnownUtf8Mojibake(raw) {
+    const replacements = Object.freeze({
+        "â€”": "—",
+        "â€“": "–",
+        "â€™": "’",
+        "â€˜": "‘",
+        "â€œ": "“",
+        "â€�": "”",
+        "Â ": " "
+    });
+    return String(raw).replace(/â€”|â€“|â€™|â€˜|â€œ|â€�|Â /g, match => replacements[match] || match);
+}
+
+function normalizeStructuredPromptText(raw) {
+    let text;
+    try {
+        text = decodeHtmlEntitiesOnce(String(raw || ""))
+            .normalize("NFKC")
+            .replace(/^\uFEFF+/, "")
+            .replace(/\r\n?|\u2028|\u2029/g, "\n")
+            .trim();
+    }
+    catch {
+        return "";
+    }
+    return repairKnownUtf8Mojibake(text).trim();
+}
+
+function scanBalancedJsonPrefix(raw, start) {
+    const text = String(raw || "");
+    const first = Number.isSafeInteger(start) ? start : 0;
+    if (text[first] !== "{" && text[first] !== "[") return null;
+    const stack = [];
+    let quoted = false;
+    let escaped = false;
+    for (let index = first; index < text.length; index += 1) {
+        const character = text[index];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === '"') quoted = false;
+            continue;
+        }
+        if (character === '"') {
+            quoted = true;
+            continue;
+        }
+        if (character === "{" || character === "[") stack.push(character);
+        else if (character === "}" || character === "]") {
+            const expected = character === "}" ? "{" : "[";
+            if (stack.pop() !== expected) return null;
+            if (!stack.length) return {json: text.slice(first, index + 1), end: index + 1};
+        }
+    }
+    return null;
+}
+
+function comfyNodeMap(value, maximumNodes) {
+    const possible = isPlainRecord(value?.prompt) ? value.prompt : value;
+    if (!isPlainRecord(possible)) return null;
+    const entries = Object.entries(possible);
+    if (!entries.length || entries.length > maximumNodes) return null;
+    const nodes = new Map();
+    for (const [id, node] of entries) {
+        if (!isPlainRecord(node) || !isPlainRecord(node.inputs) || typeof node.class_type !== "string") continue;
+        nodes.set(String(id), node);
+    }
+    return nodes.size ? nodes : null;
+}
+
+function directReferenceId(value, nodes) {
+    if (!Array.isArray(value) || value.length < 1) return null;
+    const id = String(value[0]);
+    return nodes.has(id) ? id : null;
+}
+
+function collectInputReferences(value, nodes, output, state, depth = 0) {
+    if (depth > 12) {
+        state.truncated = true;
+        return;
+    }
+    if (state.references >= state.maxReferences) return;
+    const direct = directReferenceId(value, nodes);
+    if (direct) {
+        output.add(direct);
+        state.references += 1;
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) collectInputReferences(item, nodes, output, state, depth + 1);
+        return;
+    }
+    if (!isPlainRecord(value)) return;
+    for (const item of Object.values(value)) collectInputReferences(item, nodes, output, state, depth + 1);
+}
+
+function collectUpstreamNodeIds(startValue, nodes, limits, sharedState) {
+    const roots = new Set();
+    collectInputReferences(startValue, nodes, roots, sharedState);
+    const visited = new Set();
+    const queue = [...roots].map(id => ({id, depth: 0}));
+    while (queue.length && sharedState.references < limits.maxReferences) {
+        const current = queue.shift();
+        if (!current || visited.has(current.id)) continue;
+        if (current.depth > limits.maxTraversalDepth) {
+            sharedState.truncated = true;
+            continue;
+        }
+        visited.add(current.id);
+        const node = nodes.get(current.id);
+        if (!node) continue;
+        const references = new Set();
+        collectInputReferences(node.inputs, nodes, references, sharedState);
+        for (const id of references) {
+            if (!visited.has(id)) queue.push({id, depth: current.depth + 1});
+        }
+    }
+    return visited;
+}
+
+function resolvePromptInput(value, nodes, limits, sharedState, depth = 0, visited = new Set()) {
+    if (depth > 16) {
+        sharedState.truncated = true;
+        return [];
+    }
+    if (sharedState.references >= limits.maxReferences) return [];
+    if (typeof value === "string") return [value];
+    const reference = directReferenceId(value, nodes);
+    if (!reference || visited.has(reference)) return [];
+    visited.add(reference);
+    sharedState.references += 1;
+    const node = nodes.get(reference);
+    if (!node) return [];
+    const values = [];
+    for (const key of ["text", "text1", "value", "string", "prompt", "positive_prompt"]) {
+        if (!(key in node.inputs)) continue;
+        values.push(...resolvePromptInput(node.inputs[key], nodes, limits, sharedState, depth + 1, visited));
+    }
+    return values;
+}
+
+function nodeLooksImageConditioned(node) {
+    const label = `${node?.class_type || ""} ${node?._meta?.title || ""}`;
+    return /\b(?:VAE\s*Encode|Reference\s*Latent|Load\s*Image|IPAdapter|ControlNet|Image\s*(?:Encode|Condition))\b/i.test(label);
+}
+
+function candidateTextsFromNode(id, node, nodes, limits, sharedState) {
+    const label = `${node?.class_type || ""} ${node?._meta?.title || ""}`;
+    if (/negative/i.test(label)) return [];
+    if (!/(?:CLIP.*Text.*Encode|Text.*Encode)/i.test(label)) return [];
+    const values = [];
+    let direct = false;
+    for (const key of ["text", "text_g", "text_l", "prompt", "positive_prompt"]) {
+        if (!(key in node.inputs)) continue;
+        if (typeof node.inputs[key] === "string") direct = true;
+        for (const raw of resolvePromptInput(node.inputs[key], nodes, limits, sharedState)) {
+            const prompt = normalizeStructuredPromptText(raw);
+            if (!prompt || prompt.length > limits.maxPromptChars) continue;
+            values.push({id, prompt, direct});
+        }
+    }
+    return values;
+}
+
+function extractComfyPositivePrompt(graph, options = {}) {
+    const limits = {
+        ...STRUCTURED_PROMPT_LIMITS,
+        ...(options && typeof options === "object" ? options : {})
+    };
+    const nodes = comfyNodeMap(graph, limits.maxNodes);
+    if (!nodes) return {status: "invalid", reason: "not_comfyui_prompt_graph"};
+
+    const samplers = [...nodes.entries()].filter(([, node]) => /sampler/i.test(String(node.class_type || "")) && node.inputs.positive !== undefined);
+    if (!samplers.length) return {status: "no_prompt", reason: "comfyui_sampler_not_found"};
+
+    const sharedState = {references: 0, maxReferences: limits.maxReferences, truncated: false};
+    const candidates = [];
+    for (const [samplerId, sampler] of samplers) {
+        const positiveNodes = collectUpstreamNodeIds(sampler.inputs.positive, nodes, limits, sharedState);
+        const latentNodes = collectUpstreamNodeIds(sampler.inputs.latent_image, nodes, limits, sharedState);
+        const imageConditioned = [...positiveNodes, ...latentNodes].some(id => nodeLooksImageConditioned(nodes.get(id)));
+        for (const id of positiveNodes) {
+            const node = nodes.get(id);
+            for (const candidate of candidateTextsFromNode(id, node, nodes, limits, sharedState)) {
+                candidates.push({...candidate, samplerId, imageConditioned});
+            }
+        }
+    }
+    if (sharedState.truncated) return {status: "invalid", reason: "comfyui_traversal_limit"};
+    if (sharedState.references >= limits.maxReferences) return {status: "invalid", reason: "comfyui_reference_limit"};
+    if (!candidates.length) return {status: "no_prompt", reason: "comfyui_positive_text_not_found"};
+
+    const baseCandidates = candidates.filter(candidate => !candidate.imageConditioned);
+    let pool = baseCandidates.length ? baseCandidates : candidates;
+    if (!baseCandidates.length) {
+        const directCandidates = pool.filter(candidate => candidate.direct);
+        if (directCandidates.length) pool = directCandidates;
+    }
+    const unique = new Map();
+    for (const candidate of pool) {
+        const key = candidate.prompt.replace(/\s+/g, " ").trim();
+        if (!unique.has(key)) unique.set(key, candidate);
+    }
+    if (unique.size !== 1) {
+        return {status: "ambiguous", reason: "multiple_comfyui_positive_prompts", candidateCount: unique.size};
+    }
+    const selected = [...unique.values()][0];
+    return {
+        status: "found",
+        reason: "comfyui_positive_prompt_extracted",
+        prompt: selected.prompt,
+        nodeId: selected.id,
+        samplerId: selected.samplerId
+    };
+}
+
+function extractPromptFromMetadataDocument(raw, options = {}) {
+    const text = String(raw || "").replace(/^\uFEFF+/, "").replace(/\r\n?/g, "\n").trim();
+    const maximum = Number.isSafeInteger(options.maxDocumentChars)
+        ? Math.min(options.maxDocumentChars, STRUCTURED_PROMPT_LIMITS.maxDocumentChars)
+        : STRUCTURED_PROMPT_LIMITS.maxDocumentChars;
+    if (!text || text.length > maximum) return {status: "invalid", reason: text ? "structured_document_too_large" : "empty_document"};
+
+    let start = -1;
+    let recognized = false;
+    const wrapper = text.match(/^prompt\s*:\s*/i);
+    const wrapped = Boolean(wrapper);
+    if (wrapper) {
+        recognized = true;
+        start = wrapper[0].length;
+        while (/\s/.test(text[start] || "")) start += 1;
+    }
+    else if (options.allowBareComfyJson === true && (text[0] === "{" || text[0] === "[")) {
+        recognized = true;
+        start = 0;
+    }
+    if (!recognized || (text[start] !== "{" && text[start] !== "[")) {
+        return {status: "not_structured", reason: "comfyui_prompt_wrapper_not_found"};
+    }
+    const scanned = scanBalancedJsonPrefix(text, start);
+    if (!scanned) {
+        return wrapped
+            ? {status: "invalid", reason: "malformed_comfyui_prompt_json"}
+            : {status: "not_structured", reason: "bare_value_not_comfyui_json"};
+    }
+    let graph;
+    try { graph = JSON.parse(scanned.json); }
+    catch {
+        return wrapped
+            ? {status: "invalid", reason: "malformed_comfyui_prompt_json"}
+            : {status: "not_structured", reason: "bare_value_not_comfyui_json"};
+    }
+    const extracted = extractComfyPositivePrompt(graph, options);
+    if (!wrapped && extracted.status === "invalid" && extracted.reason === "not_comfyui_prompt_graph") {
+        return {status: "not_structured", reason: "bare_value_not_comfyui_graph"};
+    }
+    return extracted;
+}
+
 function looksLikeJsonContainer(raw) {
     const text = String(raw).trim();
     if (!text || (text[0] !== "{" && text[0] !== "[")) return false;
@@ -458,10 +729,6 @@ function languageAssessment(raw) {
 
 function evaluateCandidate(candidate, limits) {
     let text = String(candidate.text);
-    const decoded = decodeHtmlEntitiesOnce(text);
-    const htmlDecoded = decoded !== text;
-    text = decoded;
-
     try {
         text = text.normalize("NFKC");
     }
@@ -479,7 +746,7 @@ function evaluateCandidate(candidate, limits) {
         chunkType: candidate.chunkType,
         compressed: candidate.compressed,
         encoding: candidate.encoding,
-        htmlDecoded,
+        htmlDecoded: false,
         wrapperStripped: false,
         negativePromptFound: false,
         normalizedChars: text.length,
@@ -494,12 +761,39 @@ function evaluateCandidate(candidate, limits) {
         return {...common, status: "encoded_or_unknown", reason: "binary_control_characters"};
     }
     if (!text) return {...common, status: "metadata_no_prompt", reason: "empty_metadata_value"};
+    const structuredPrompt = extractPromptFromMetadataDocument(text, {
+        allowBareComfyJson: candidate.sourceKey === "prompt",
+        maxDocumentChars: limits.maxNormalizedChars
+    });
+    if (structuredPrompt.status === "found") {
+        text = structuredPrompt.prompt;
+        common.wrapperStripped = true;
+        common.normalizedChars = text.length;
+        common.structuredReason = structuredPrompt.reason;
+    }
+    else if (structuredPrompt.status !== "not_structured") {
+        return {...common, status: "structured", reason: structuredPrompt.reason};
+    }
+    else {
+        const decoded = decodeHtmlEntitiesOnce(text);
+        common.htmlDecoded = decoded !== text;
+        try { text = decoded.normalize("NFKC").trim(); }
+        catch { return {...common, status: "encoded_or_unknown", reason: "unicode_normalization_failed"}; }
+        common.normalizedChars = text.length;
+    }
+    if (text.length > limits.maxNormalizedChars) {
+        return {...common, status: "encoded_or_unknown", reason: "normalized_text_too_large"};
+    }
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) {
+        return {...common, status: "encoded_or_unknown", reason: "binary_control_characters"};
+    }
+    if (!text) return {...common, status: "metadata_no_prompt", reason: "empty_metadata_value"};
     if (looksLikeJsonContainer(text)) return {...common, status: "structured", reason: "structured_json"};
     if (/^(?:---|\.\.\.|%YAML\b|%TAG\b|!!(?:map|seq|str)\b|!<[^>]+>)/i.test(text)) {
         return {...common, status: "structured", reason: "structured_yaml_or_document"};
     }
 
-    const wrapper = text.match(/^\s*(?:parameters|prompt)\s*:\s*/i);
+    const wrapper = common.wrapperStripped ? null : text.match(/^\s*(?:parameters|prompt)\s*:\s*/i);
     if (wrapper) {
         text = text.slice(wrapper[0].length).trim();
         common.wrapperStripped = true;
@@ -535,7 +829,7 @@ function evaluateCandidate(candidate, limits) {
         return {...common, status: "encoded_or_unknown", reason: "positive_prompt_language_uncertain"};
     }
 
-    return {...common, status: "found", reason: "positive_prompt_extracted", prompt: text};
+    return {...common, status: "found", reason: common.structuredReason || "positive_prompt_extracted", prompt: text};
 }
 
 function candidateOrder(left, right) {
@@ -670,5 +964,7 @@ async function parsePngPromptMetadata(input, options) {
 
 module.exports = Object.freeze({
     DEFAULT_LIMITS,
+    extractComfyPositivePrompt,
+    extractPromptFromMetadataDocument,
     parsePngPromptMetadata
 });

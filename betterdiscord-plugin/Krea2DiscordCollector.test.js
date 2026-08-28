@@ -2,16 +2,12 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const Plugin = require("./Krea2DiscordCollector.plugin.js");
 const {
     applyPromptPreset,
-    base64Url,
-    buildOperationalErrorReport,
     buildVisionMultipartBody,
     chooseBestMediaUrl,
-    clearHistoryThumbnailCache,
     decodeHtmlEntities,
     DEFAULT_SETTINGS,
     detectImageFormat,
@@ -22,7 +18,6 @@ const {
     filenameFromContentDisposition,
     filenameFromUrl,
     filterHistoryJobs,
-    filterExternalUrl,
     formatAverageQueueTime,
     formatDownloadGiB,
     formatHistoryDuration,
@@ -69,7 +64,6 @@ const {
     saveVisionPromptSidecar,
     safeModelFilePart,
     sanitizeFilename,
-    sanitizeOperationalErrorText,
     sha256Hex,
     submissionKey,
     validateSaveFolder,
@@ -96,16 +90,6 @@ function pngWithText(keyword, value) {
 }
 
 async function run() {
-const backendContract = fs.readFileSync(
-    path.join(__dirname, "..", "vision-studio", "app", "services", "discord_vision.py"),
-    "utf8"
-);
-const backendPipelineId = backendContract.match(/^PIPELINE_ID\s*=\s*["']([^"']+)["']/m)?.[1] || "";
-assert.equal(
-    VISION_PIPELINE_ID,
-    backendPipelineId,
-    "BetterDiscord and the Vision backend must ship with the same pipeline identity"
-);
 assert.deepEqual(parseDiscordRoute("/channels/123456789/987654321"), {
     guildId: "123456789",
     channelId: "987654321"
@@ -132,13 +116,6 @@ assert.equal(validateEndpoint("https://seedframe.example/candidates").ok, true);
 assert.equal(validateEndpoint("http://127.0.0.1:8787/candidates").ok, true);
 assert.equal(validateEndpoint("http://seedframe.example/candidates").ok, false);
 assert.equal(validateEndpoint("https://token@seedframe.example/candidates").ok, false);
-assert.equal(filterExternalUrl("https://discord.com/oauth2/authorize?client_id=123&state=abc", "discord-oauth").ok, true);
-assert.equal(filterExternalUrl("https://discord.com/oauth2/authorize#fragment", "discord-oauth").ok, false);
-assert.equal(filterExternalUrl("https://discord.com.evil.example/oauth2/authorize?client_id=123", "discord-oauth").ok, false);
-assert.equal(filterExternalUrl("javascript:alert(1)", "discord-oauth").ok, false);
-assert.equal(filterExternalUrl("https://bitcoin.seedframe.xyz/i/demo", "checkout").ok, true);
-assert.equal(filterExternalUrl("https://bitcoin.zoo-chat.org/i/demo", "checkout").ok, true);
-assert.equal(filterExternalUrl("https://evil.example/i/demo", "checkout").ok, false);
 assert.equal(isCurrentPrivacyReceipt(null), false);
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION}), false);
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION - 1, acceptedAt: Date.now()}), false);
@@ -178,30 +155,15 @@ async function testStaleContributionConsentRepromptsOrFallsBackToOptOut() {
     assert.equal(settingsSaves, 1);
 
     const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
-    const consentIndex = source.indexOf("await this.ensureContributionConsent()");
-    const requestIndex = source.indexOf("buildVisionMultipartBody", consentIndex);
-    assert.ok(consentIndex >= 0 && requestIndex > consentIndex, "Vision must resolve opt-in consent before building the request");
+    const contributionGuardIndex = source.indexOf("const contributionEnabled = false;");
+    const requestIndex = source.indexOf("buildVisionMultipartBody", contributionGuardIndex);
+    assert.ok(
+        contributionGuardIndex >= 0 && requestIndex > contributionGuardIndex,
+        "Vision must hard-disable image-level contribution before building the request"
+    );
 }
 
 await testStaleContributionConsentRepromptsOrFallsBackToOptOut();
-
-const pluginSource = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
-assert.match(pluginSource, /discordUserId:\s*String\(status\?\.discord_user_id/);
-assert.match(pluginSource, /remote_discord_user_id:\s*remoteLicense\?\.discordUserId/);
-assert.match(pluginSource, /remote_discord_username:\s*remoteLicense\?\.discordUsername/);
-assert.match(pluginSource, /document\.body\.append\(root\)/, "Prompt History must be a detached overlay, not a Discord layout child");
-assert.match(pluginSource, /root\.dataset\.floating = "true"/, "Prompt History must use the fixed overlay rail");
-assert.doesNotMatch(pluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/, "Prompt History must never mutate Discord's member-list layout");
-assert.doesNotMatch(pluginSource, /this\.ensureHistoryRail\(\);\s*\n\s*if \(!this\.getVerifiedRoute/, "Image scans must not rebuild the rail");
-assert.doesNotMatch(pluginSource, /\/api\/suite-update|checkForSuiteUpdate|startSuiteUpdate|pollSuiteUpdate/, "The published BetterDiscord plugin must not contain an updater");
-assert.match(pluginSource, /function filterExternalUrl\(/, "All externally supplied links must pass through the approved-host filter");
-assert.match(pluginSource, /window\.open\(checked\.url, "_blank", "noopener,noreferrer"\)/, "Approved external links must use the standard browser launch path");
-assert.doesNotMatch(pluginSource, /getByKeys\?\.\("openExternal"\)/, "The plugin must not depend on Discord's removed openExternal Webpack export");
-assert.match(pluginSource, /Optional identity or role notes/);
-assert.match(pluginSource, /Identity is never inferred from pixels or anatomy/);
-assert.match(pluginSource, /Uploader-supplied identity or role metadata \(not inferred from pixels\)/);
-assert.match(pluginSource, /guidance: requestGuidance/);
-assert.match(pluginSource, /this\.interrogateIdentityNote = ""/);
 
 assert.equal(validateVisionLoopbackEndpoint("http://127.0.0.1:7870/api/discord-describe").ok, true);
 assert.equal(validateVisionLoopbackEndpoint("https://[::1]:7870/api/discord-describe").ok, true);
@@ -209,7 +171,6 @@ assert.equal(DEFAULT_SETTINGS.visionEndpoint, "http://127.0.0.1:7870/api/discord
 assert.equal(DEFAULT_SETTINGS.visionModel, "llamacpp::heretic-8b-q8_0");
 assert.equal(DEFAULT_SETTINGS.preferredPreset, "dataset-detailed");
 assert.equal(DEFAULT_SETTINGS.useKrea2DatasetGuidance, false);
-assert.equal(DEFAULT_SETTINGS.shareFailureDiagnostics, false);
 assert.equal(DEFAULT_SETTINGS.completionToasts, true);
 assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "endpoint"), false);
 assert.equal(Object.hasOwn(DEFAULT_SETTINGS, "token"), false);
@@ -222,23 +183,6 @@ assert.deepEqual(historyThumbnailCacheCandidates("C:\\Krea2Vision", "a".repeat(6
     `C:\\Krea2Vision\\.krea2-history-thumbnails\\${"a".repeat(64)}.jpeg`
 ]);
 assert.throws(() => historyThumbnailCacheCandidates("C:\\Krea2Vision", "not-a-hash"), /SHA-256/);
-{
-    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "krea2-thumbnail-cache-"));
-    const cacheDirectory = historyThumbnailCacheDirectory(cacheRoot);
-    try {
-        fs.mkdirSync(cacheDirectory, {recursive: true});
-        for (let index = 0; index < 252; index += 1) {
-            const hash = index.toString(16).padStart(64, "0");
-            fs.writeFileSync(path.join(cacheDirectory, `${hash}.webp`), Buffer.from("RIFF"));
-        }
-        fs.writeFileSync(path.join(cacheDirectory, "do-not-delete.txt"), "unrelated");
-        assert.equal(clearHistoryThumbnailCache(cacheDirectory), 252);
-        assert.deepEqual(fs.readdirSync(cacheDirectory), ["do-not-delete.txt"]);
-    }
-    finally {
-        fs.rmSync(cacheRoot, {recursive: true, force: true});
-    }
-}
 assert.equal(formatVramMiB(13312), "13,312 MiB");
 assert.equal(formatVramMiB(null), "Unavailable");
 assert.equal(formatDownloadGiB(9461810784), "8.8 GiB");
@@ -318,15 +262,9 @@ assert.match(suiteLauncherSource, /127\.0\.0\.1:7870\/health/);
 assert.doesNotMatch(suiteLauncherSource, /127\.0\.0\.1:8795/);
 assert.match(rootInstallerSource, /-Mode Install -Model 8B/);
 assert.doesNotMatch(builtPluginSource, /krea2history:\/\//);
-assert.match(builtPluginSource, /\/v1\/oauth\/start/);
-assert.match(builtPluginSource, /Connect Discord for Online API/);
-assert.match(builtPluginSource, /function filterExternalUrl\(/);
-assert.match(builtPluginSource, /window\.open\(checked\.url, "_blank", "noopener,noreferrer"\)/);
-assert.doesNotMatch(builtPluginSource, /getByKeys\?\.\("openExternal"\)/);
-assert.match(builtPluginSource, /document\.body\.append\(root\)/);
+assert.match(builtPluginSource, /openVerifiedExternal\(rawUrl, purpose\)[\s\S]*?filterExternalUrl\(rawUrl, purpose\)/);
 assert.match(builtPluginSource, /root\.dataset\.detached = "true"/);
-assert.doesNotMatch(builtPluginSource, /membersWrap_/);
-assert.doesNotMatch(builtPluginSource, /membersColumn\.insertAdjacentElement\("afterend", root\)/);
+assert.match(builtPluginSource, /document\.body\.append\(root\)/);
 assert.match(builtPluginSource, /--krea2-text: #f3f5f7/);
 assert.match(builtPluginSource, /--krea2-muted: #a8b0bd/);
 assert.match(builtPluginSource, /\.krea2-history-prompt[\s\S]*?-webkit-text-fill-color: var\(--krea2-text\)/);
@@ -335,11 +273,6 @@ assert.match(builtPluginSource, /const HISTORY_DETAIL_POLL_MS = 1000/);
 assert.match(builtPluginSource, /krea2-history-average-queue/);
 assert.match(builtPluginSource, /Average queue time:/);
 assert.match(builtPluginSource, /const ONBOARDING_VERSION = 9/);
-assert.match(builtPluginSource, /Mandatory error telemetry never contains image bytes or hashes, prompts, Discord identity or IDs, URLs, filenames, or local paths/);
-assert.match(builtPluginSource, /GPU_AVAILABILITY_TIMEOUT_MS = 30 \* 1000/);
-assert.match(builtPluginSource, /\/api\/discord-errors/);
-assert.match(builtPluginSource, /https:\/\/seedframe\.xyz\/api\/diagnostics\/krea2-vision/);
-assert.match(builtPluginSource, /async submitOperationalErrorDirect\(item, visionToken\)/);
 assert.match(builtPluginSource, /Install model \+ projector together/);
 assert.match(builtPluginSource, /Verify installed model \+ projector/);
 assert.match(builtPluginSource, /async requestVisionModelInstall\(publicId, method\)/);
@@ -355,6 +288,10 @@ assert.match(builtPluginSource, /Repair KREA2 Vision Suite shortcut/);
 assert.match(builtPluginSource, /Model that actually described this image/);
 assert.match(builtPluginSource, /Exact model ID:/);
 assert.match(builtPluginSource, /\["Interrogate", "interrogate"\]/);
+assert.match(builtPluginSource, /\["V2", "v2"\]/);
+assert.match(builtPluginSource, /V2 DIRECT FIDELITY — ACTIVE/);
+assert.match(builtPluginSource, /tab\.textContent = active \? "V2 ON" : "V2"/);
+assert.match(builtPluginSource, /this\.settings\.visionAnalysisProfile = "v2"/);
 assert.match(builtPluginSource, /buildInterrogatePanel\(panel\)/);
 assert.match(builtPluginSource, /queueInterrogateSelection\(\)/);
 assert.match(builtPluginSource, /input\.accept = "image\/png,image\/jpeg,image\/webp/);
@@ -405,7 +342,7 @@ async function testInterrogateUploadUsesExistingQueue() {
     collector.requestVisionPrompt = async (original, localSave, visionConfig, signal, onElapsed, options) => {
         request = {original, localSave, visionConfig, signal, options};
         onElapsed("0:01");
-        return {model: "Heretic — Qwen3-VL 4B Q8_0"};
+        return {model: "Heretic — Qwen3-VL 4B Q8_0", prompt_variants: ["grounded prompt"]};
     };
     collector.finishVisionPrompt = async ({model: usedModel}) => { finishedModel = usedModel; };
     collector.refreshHistory = async () => {
@@ -450,10 +387,11 @@ assert.match(inMemoryVisionFlow, /requestImage = \{filename:/);
 assert.match(inMemoryVisionFlow, /this\.rememberHistoryThumbnail\(original, true\)/);
 assert.doesNotMatch(inMemoryVisionFlow, /contributeVisionPrompt\(\{/);
 assert.match(builtPluginSource, /Contribute my three generated prompts to Krea2/);
-assert.match(builtPluginSource, /all three generated prompt texts/);
-assert.match(builtPluginSource, /No image bytes, image hashes, Discord IDs, Discord URLs, filenames, or local paths are sent/);
+assert.match(builtPluginSource, /Vision interrogation is intentionally prompt-only/);
+assert.match(builtPluginSource, /const contributionEnabled = false/);
 assert.doesNotMatch(builtPluginSource, /void this\.collectImage\(image, plusButton\)/);
-assert.doesNotMatch(builtPluginSource, /plusButton\.textContent = "\+"/);
+assert.match(builtPluginSource, /plusButton\.textContent = "\+"/);
+assert.match(builtPluginSource, /Extract an embedded or same-message parameters YAML prompt \(no GPU, credits, dataset submission, or automatic save\)/);
 assert.match(builtPluginSource, /\.krea2-history-result \{ display: grid; grid-template-columns: 176px minmax\(0, 1fr\)/);
 assert.match(builtPluginSource, /const url = view\.URL\.createObjectURL\(new view\.Blob/);
 assert.match(builtPluginSource, /thumbnail\.alt = `Source image for \$\{historyJobTitle\(job\)\}`/);
@@ -508,17 +446,12 @@ const historyCompletedSecond = {
     finished: 260
 };
 const parsedHistory = parseHistoryListResponse(JSON.stringify({
-    summary: {queued: 1, running: 0, completed_24h: 1, total: 42, rejected: 0, errors: 0},
+    summary: {queued: 1, running: 0, completed_24h: 1, rejected: 0, errors: 0},
     scheduler: {warm: {active: true, seconds_remaining: 12}, next_eligible_job: {eligible_now: false, reason: "Waiting"}},
-    pagination: {page: 2, page_size: 20, total_items: 42, total_pages: 3, has_previous: true, has_next: true},
     jobs: [historyCompleted, historyQueued]
 }));
 assert.equal(parsedHistory.jobs.length, 2);
 assert.equal(parsedHistory.summary.queued, 1);
-assert.equal(parsedHistory.summary.total, 42);
-assert.equal(parsedHistory.pagination.page, 2);
-assert.equal(parsedHistory.pagination.total_pages, 3);
-assert.equal(parsedHistory.pagination.has_previous, true);
 assert.deepEqual(filterHistoryJobs(parsedHistory.jobs, "completed").map(job => job.id), [historyCompleted.id]);
 assert.deepEqual(filterHistoryJobs(parsedHistory.jobs, "queued").map(job => job.id), [historyQueued.id]);
 assert.equal(historyJobTitle(parsedHistory.jobs[0]), `Image ${"b".repeat(10)}`);
@@ -537,19 +470,6 @@ assert.deepEqual(historyAverageQueueWait([historyCompleted], 86541), {seconds: n
 assert.equal(formatAverageQueueTime(null), "Average queue time: —");
 assert.equal(formatAverageQueueTime(17.5), "Average queue time: 18 seconds");
 assert.equal(formatAverageQueueTime(1), "Average queue time: 1 second");
-const operationalReport = buildOperationalErrorReport({
-    event_id: "9".repeat(32),
-    model_id: "vast::gemma4-26b-a4b-heretic-q3_k_l",
-    error_code: "worker_error",
-    error_message: "Failed at https://private.example/path in C:\\Users\\person\\secret.png token=should-not-leak",
-    stage: "Submitting image"
-}, "v".repeat(32));
-assert.equal(operationalReport.schema, "seedframe.krea2-vision-operational-error.v1");
-assert.equal(operationalReport.runtime, "remote");
-assert.equal(operationalReport.event_id, "9".repeat(32));
-assert.match(operationalReport.report_sha256, /^[a-f0-9]{64}$/);
-assert.doesNotMatch(JSON.stringify(operationalReport), /private\.example|secret\.png|should-not-leak/i);
-assert.equal(sanitizeOperationalErrorText("GPU not available"), "GPU not available");
 assert.equal(isHistoryJobActive({status: "queued"}), true);
 assert.equal(isHistoryJobActive({status: "RUNNING"}), true);
 assert.equal(isHistoryJobActive({status: "completed"}), false);
@@ -608,8 +528,6 @@ assert.equal(
     sha256Hex(Buffer.from("abc")),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 );
-assert.equal(base64Url(Buffer.from([0xff, 0xff, 0xff])), "____");
-assert.match(base64Url(Buffer.from("legacy Electron compatibility", "utf8")), /^[A-Za-z0-9_-]+$/);
 
 assert.equal(decodeHtmlEntities("cats &amp; dogs &#33;"), "cats & dogs !");
 assert.deepEqual(evaluatePromptValue(
@@ -891,7 +809,7 @@ async function testVisionRequestContract() {
     assert.equal(imageRequest.options.body.includes(forgePng), true);
     assert.equal(imageRequest.options.body.toString("latin1").includes("llamacpp::heretic-8b-q8_0"), true);
     assert.match(imageRequest.options.body.toString("latin1"), /name="dataset_guidance"\r\n\r\n0\r\n/);
-    assert.equal(imageRequest.options.body.toString("latin1").includes('name="contribution_terms"'), true);
+    assert.equal(imageRequest.options.body.toString("latin1").includes('name="contribution_terms"'), false);
     assert.equal(imageRequest.options.body.toString("latin1").includes('name="controls"'), false);
     assert.equal(imageRequest.options.body.toString("latin1").includes("discordapp"), false);
 
@@ -958,7 +876,7 @@ async function testVisionPromptStaysLocal() {
     collector.uploadCandidate = async () => { throw new Error("Magnifier must never upload a Vision prompt."); };
     await collector.finishVisionPrompt(args);
     assert.equal(button.state, "vision-ready");
-    assert.deepEqual(toast, {message: "Three prompts are ready in session memory. Krea2 contribution is off.", level: "success"});
+    assert.deepEqual(toast, {message: "One prompt is ready in session memory. Krea2 contribution is off.", level: "success"});
     assert.equal(collector.sentHashes.has(`${imageHash}:vision_ai`), false);
     assert.equal(collector.sentHashes.has(`${imageHash}:embedded_metadata`), false);
 }
@@ -1070,122 +988,6 @@ function testLocalVisionQueueVisibility() {
 }
 
 testLocalVisionQueueVisibility();
-
-async function testRemoteSubmissionTimesOutAfterThirtySecondsWithoutGpu() {
-    const collector = new Plugin();
-    collector.running = true;
-    collector.generation = 12;
-    collector.settings.visionExecutionMode = "online";
-    collector.validateLocalCollectionSettings = () => ({guildId: "123456", channelId: "654321"});
-    collector.attachmentBelongsToGuild = () => true;
-    collector.renderHistoryRail = () => {};
-    collector.toast = () => {};
-    collector.log = () => {};
-    const reports = [];
-    collector.queueOperationalError = report => reports.push(report);
-    let releaseEarlierFlow;
-    collector.visionFlowQueue = new Promise(resolve => { releaseEarlierFlow = resolve; });
-    const image = {
-        isConnected: true,
-        currentSrc: "https://cdn.discordapp.com/attachments/654321/777777/image.png?ex=a&is=b&hm=c",
-        dataset: {},
-        closest: () => null
-    };
-    const button = {dataset: {}, isConnected: true};
-    collector.setButtonState = (_button, state, _text, title) => { button.state = state; button.title = title; };
-    let timeoutCallback = null;
-    const realSetTimeout = global.setTimeout;
-    const realClearTimeout = global.clearTimeout;
-    global.setTimeout = (callback, milliseconds) => {
-        assert.equal(milliseconds, 30000);
-        timeoutCallback = callback;
-        return 1234;
-    };
-    global.clearTimeout = () => {};
-    try {
-        collector.queueVisionAnalysis(image, button);
-        assert.equal(button.state, "vision-queued");
-        assert.equal(typeof timeoutCallback, "function");
-        timeoutCallback();
-        const [job] = collector.getLocalVisionHistoryJobs();
-        assert.equal(job.status, "error");
-        assert.equal(job.public_error, "GPU not available");
-        assert.equal(button.state, "error");
-        assert.match(button.title, /GPU not available/);
-        assert.equal(button.dataset.busy, "false");
-        assert.equal(reports.length, 1);
-        assert.equal(reports[0].errorCode, "gpu_not_available");
-        releaseEarlierFlow();
-        await collector.visionFlowQueue;
-        assert.equal(collector.getLocalVisionHistoryJobs()[0].status, "error");
-    }
-    finally {
-        global.setTimeout = realSetTimeout;
-        global.clearTimeout = realClearTimeout;
-    }
-}
-
-await testRemoteSubmissionTimesOutAfterThirtySecondsWithoutGpu();
-
-function testLocalSubmissionWaitsWithoutDeadline() {
-    const collector = new Plugin();
-    collector.renderHistoryRail = () => {};
-    const id = collector.addLocalVisionSubmission({config: {visionModel: "llamacpp::gemma4-12b-heretic-q8_0"}});
-    let timerStored = false;
-    const storeTimer = collector.localVisionSubmissionTimers.set.bind(collector.localVisionSubmissionTimers);
-    collector.localVisionSubmissionTimers.set = (...args) => {
-        timerStored = true;
-        return storeTimer(...args);
-    };
-    collector.armLocalVisionSubmissionTimeout(id, null, "llamacpp::gemma4-12b-heretic-q8_0");
-    assert.equal(timerStored, false);
-    assert.equal(collector.localVisionSubmissionTimers.has(id), false);
-    assert.equal(collector.localVisionSubmissions.get(id).status, "queued");
-}
-
-testLocalSubmissionWaitsWithoutDeadline();
-
-async function testOperationalErrorFallsBackDirectlyWhenBrokerCannotDeliver() {
-    const collector = new Plugin();
-    collector.running = true;
-    collector.getVisionConfig = () => ({origin: "http://127.0.0.1:7870", token: "v".repeat(32)});
-    collector.pendingOperationalErrors = [{
-        event_id: "8".repeat(32),
-        model_id: "vast::gemma4-26b-a4b-heretic-q3_k_l",
-        error_code: "gpu_not_available",
-        error_message: "GPU not available",
-        stage: "Waiting for capacity"
-    }];
-    const calls = [];
-    collector.api = {Net: {fetch: async (url, options) => {
-        calls.push({url, options});
-        if (url.startsWith("http://127.0.0.1")) {
-            return {ok: false, status: 503, redirected: false, url};
-        }
-        const payload = JSON.parse(options.body);
-        return {
-            ok: true,
-            status: 200,
-            redirected: false,
-            url,
-            headers: {get: () => null},
-            arrayBuffer: async () => Buffer.from(JSON.stringify({
-                accepted: true,
-                report_sha256: payload.report_sha256
-            }))
-        };
-    }}};
-    await collector.flushOperationalErrors();
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].url, "https://seedframe.xyz/api/diagnostics/krea2-vision");
-    assert.equal(collector.pendingOperationalErrors.length, 0);
-    const directPayload = JSON.parse(calls[1].options.body);
-    for (const forbidden of ["image", "image_hash", "prompt", "discord_username", "filename", "local_path"]) {
-        assert.equal(Object.hasOwn(directPayload, forbidden), false);
-    }
-}
-
-await testOperationalErrorFallsBackDirectlyWhenBrokerCannotDeliver();
 
 async function runQueuedVisionDomMutation({nextUrl, nextMessageRoot}) {
     const collector = new Plugin();

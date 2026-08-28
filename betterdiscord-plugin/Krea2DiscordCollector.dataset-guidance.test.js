@@ -86,7 +86,6 @@ function exactArrayBuffer(buffer) {
 
 test("Krea2 guidance is an opt-in with session-only preference feedback", () => {
     assert.equal(DEFAULT_SETTINGS.useKrea2DatasetGuidance, false);
-    assert.equal(DEFAULT_SETTINGS.shareFailureDiagnostics, false);
     const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
     const modelIndex = source.indexOf('label: "Local GPU Vision model"');
     const toggleIndex = source.indexOf('label: "Guide prompts with the Krea2 example dataset"');
@@ -99,20 +98,15 @@ test("Krea2 guidance is an opt-in with session-only preference feedback", () => 
 
 test("generated single-file plugin contains the same default and multipart contract", () => {
     assert.equal(BuiltPlugin.helpers.DEFAULT_SETTINGS.useKrea2DatasetGuidance, false);
-    assert.equal(BuiltPlugin.helpers.DEFAULT_SETTINGS.shareFailureDiagnostics, false);
     assert.equal(BuiltPlugin.helpers.VISION_PIPELINE_ID, VISION_PIPELINE_ID);
     const multipart = BuiltPlugin.helpers.buildVisionMultipartBody(PNG, {
         datasetGuidance: true,
         feedbackContext: EMPTY_FEEDBACK.payload,
-        contributionTerms: BuiltPlugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION,
-        diagnosticTerms: BuiltPlugin.helpers.KREA2_DIAGNOSTIC_TERMS_VERSION,
-        diagnosticUsername: "garlicjr2"
+        contributionTerms: BuiltPlugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION
     });
     assert.equal(multipartValue(multipart.body, "dataset_guidance"), "1");
     assert.equal(multipartValue(multipart.body, "feedback_context"), EMPTY_FEEDBACK.payload);
     assert.equal(multipartValue(multipart.body, "contribution_terms"), BuiltPlugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION);
-    assert.equal(multipartValue(multipart.body, "diagnostic_terms"), BuiltPlugin.helpers.KREA2_DIAGNOSTIC_TERMS_VERSION);
-    assert.equal(multipartValue(multipart.body, "diagnostic_username"), "garlicjr2");
     const built = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.js"), "utf8");
     assert.doesNotMatch(built, /Krea2DiscordCollector\.parser\.js/);
 });
@@ -122,26 +116,18 @@ test("multipart always sends an explicit dataset_guidance value", () => {
     const on = buildVisionMultipartBody(PNG, {filename: `${IMAGE_HASH}.png`, mimeType: "image/png", model: MODEL, datasetGuidance: true, feedbackContext: EMPTY_FEEDBACK.payload});
     assert.equal(multipartValue(off.body, "dataset_guidance"), "0");
     assert.equal(multipartValue(on.body, "dataset_guidance"), "1");
+    assert.equal(multipartValue(off.body, "analysis_profile"), "fast");
+    assert.equal(
+        multipartValue(buildVisionMultipartBody(PNG, {analysisProfile: "maximum"}).body, "analysis_profile"),
+        "maximum"
+    );
     assert.equal((off.body.toString("latin1").match(/name="dataset_guidance"/g) || []).length, 1);
     assert.equal((on.body.toString("latin1").match(/name="dataset_guidance"/g) || []).length, 1);
     assert.equal(multipartValue(off.body, "feedback_context"), null);
     assert.equal(multipartValue(on.body, "feedback_context"), EMPTY_FEEDBACK.payload);
 });
 
-test("failure diagnostics are absent by default and require the exact separate terms", () => {
-    const off = buildVisionMultipartBody(PNG, {filename: "image.png", mimeType: "image/png"});
-    const stale = buildVisionMultipartBody(PNG, {diagnosticTerms: "old", diagnosticUsername: "garlicjr2"});
-    const on = buildVisionMultipartBody(PNG, {
-        diagnosticTerms: Plugin.helpers.KREA2_DIAGNOSTIC_TERMS_VERSION,
-        diagnosticUsername: "garlicjr2"
-    });
-    assert.equal(multipartValue(off.body, "diagnostic_terms"), null);
-    assert.equal(multipartValue(stale.body, "diagnostic_terms"), null);
-    assert.equal(multipartValue(on.body, "diagnostic_terms"), Plugin.helpers.KREA2_DIAGNOSTIC_TERMS_VERSION);
-    assert.equal(multipartValue(on.body, "diagnostic_username"), "garlicjr2");
-});
-
-test("successful responses require the v8 skin-pose-surface pipeline and a consistent eight-sample receipt", () => {
+test("successful responses require the v4 pose/anatomy pipeline and a consistent eight-sample receipt", () => {
     const applied = parseVisionPromptResponse(JSON.stringify(responsePayload(true)), {
         expectedDatasetGuidance: true,
         expectedFeedbackDigest: EMPTY_FEEDBACK.digest
@@ -173,9 +159,9 @@ test("request keys vary by opt-in, model, preset, pipeline and fresh guided job"
     assert.equal(offA, offB, "OFF requests remain stable across client job IDs");
     assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, model: "llamacpp::heretic-4b-q8_0"}));
     assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, preset: "photorealistic"}));
+    assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, analysisProfile: "maximum"}));
     assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, pipelineId: "discord-faithful-v4"}));
     assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, contributionEnabled: true}));
-    assert.notEqual(offA, visionRequestCacheKey(IMAGE_HASH, {...base, diagnosticsEnabled: true}));
     const onA = visionRequestCacheKey(IMAGE_HASH, {...base, datasetGuidance: true, feedbackDigest: EMPTY_FEEDBACK.digest, jobId: JOB_A});
     const onB = visionRequestCacheKey(IMAGE_HASH, {...base, datasetGuidance: true, feedbackDigest: EMPTY_FEEDBACK.digest, jobId: JOB_B});
     assert.notEqual(offA, onA);
@@ -209,7 +195,7 @@ test("variant sidecars require an exact OFF or ON result identity", async () => 
         const offPath = await saveVisionPromptSidecar(imagePath, PROMPTS[0], fs, IMAGE_HASH, PROMPTS, offProfile);
         assert.equal(path.basename(offPath), `${IMAGE_HASH}.vision.${visionCacheProfileDigest(offProfile)}.txt`);
         const bundle = JSON.parse(fs.readFileSync(offPath.replace(/\.txt$/i, ".prompts.json"), "utf8"));
-        assert.equal(bundle.schema_version, 2);
+        assert.equal(bundle.schema_version, 3);
         assert.deepEqual(bundle.cache_identity.dataset_guidance, datasetState(false));
         assert.equal((await readReusableVisionPrompt(imagePath, fs, IMAGE_HASH, offProfile))?.prompt_variants.length, 3);
         assert.equal(await readReusableVisionPrompt(imagePath, fs, IMAGE_HASH, onProfileA), null);
@@ -280,7 +266,7 @@ test("loopback requests propagate OFF and ON and bind the response receipt to th
     collector.settings.shareDatasetContributions = true;
     const on = await collector.requestVisionPrompt(original, local, config, new AbortController().signal, null, {jobId: JOB_B});
     assert.equal(multipartValue(captures.at(-1).options.body, "dataset_guidance"), "1");
-    assert.equal(multipartValue(captures.at(-1).options.body, "contribution_terms"), BuiltPlugin.helpers.KREA2_CONTRIBUTION_TERMS_VERSION);
+    assert.equal(multipartValue(captures.at(-1).options.body, "contribution_terms"), null);
     assert.equal(multipartValue(captures.at(-1).options.body, "feedback_context"), EMPTY_FEEDBACK.payload);
     assert.equal(on.cache_identity.dataset_guidance.sample_count, 8);
     assert.equal(on.cache_identity.dataset_guidance.feedback_digest, EMPTY_FEEDBACK.digest);

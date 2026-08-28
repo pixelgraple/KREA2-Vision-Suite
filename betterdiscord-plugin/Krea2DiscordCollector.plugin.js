@@ -1,8 +1,8 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.13.26
- * @description Local or online Discord Vision with three grounded prompt variants; Krea2 contribution is opt-in.
+ * @version 0.13.34
+ * @description Local or online Discord Vision with one grounded V2 prompt by default and optional three-prompt output.
  */
 
 "use strict";
@@ -11,7 +11,10 @@ const fs = require("fs");
 const path = require("path");
 const {createHash, randomBytes} = require("crypto");
 
-const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
+const {
+    parsePngPromptMetadata: parseHardenedPngPromptMetadata,
+    extractPromptFromMetadataDocument: extractMetadataDocumentPrompt
+} = (() => {
     const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const SUPPORTED_KEYS = new Set(["parameters", "prompt"]);
     const STATUS_PRIORITY = Object.freeze([
@@ -31,6 +34,14 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
         maxCandidates: 32,
         maxKeywordBytes: 79,
         maxAncillaryFieldBytes: 4096
+    });
+
+    const STRUCTURED_PROMPT_LIMITS = Object.freeze({
+        maxDocumentChars: 5 * 1024 * 1024,
+        maxNodes: 10000,
+        maxReferences: 50000,
+        maxTraversalDepth: 64,
+        maxPromptChars: 64 * 1024
     });
 
     const UTF8_FATAL_DECODER = new TextDecoder("utf-8", {fatal: true});
@@ -361,6 +372,269 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
         });
     }
 
+    function isPlainRecord(value) {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function repairKnownUtf8Mojibake(raw) {
+        const replacements = Object.freeze({
+            "â€”": "—",
+            "â€“": "–",
+            "â€™": "’",
+            "â€˜": "‘",
+            "â€œ": "“",
+            "â€�": "”",
+            "Â ": " "
+        });
+        return String(raw).replace(/â€”|â€“|â€™|â€˜|â€œ|â€�|Â /g, match => replacements[match] || match);
+    }
+
+    function normalizeStructuredPromptText(raw) {
+        let text;
+        try {
+            text = decodeHtmlEntitiesOnce(String(raw || ""))
+                .normalize("NFKC")
+                .replace(/^\uFEFF+/, "")
+                .replace(/\r\n?|\u2028|\u2029/g, "\n")
+                .trim();
+        }
+        catch {
+            return "";
+        }
+        return repairKnownUtf8Mojibake(text).trim();
+    }
+
+    function scanBalancedJsonPrefix(raw, start) {
+        const text = String(raw || "");
+        const first = Number.isSafeInteger(start) ? start : 0;
+        if (text[first] !== "{" && text[first] !== "[") return null;
+        const stack = [];
+        let quoted = false;
+        let escaped = false;
+        for (let index = first; index < text.length; index += 1) {
+            const character = text[index];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (character === "\\") escaped = true;
+                else if (character === '"') quoted = false;
+                continue;
+            }
+            if (character === '"') {
+                quoted = true;
+                continue;
+            }
+            if (character === "{" || character === "[") stack.push(character);
+            else if (character === "}" || character === "]") {
+                const expected = character === "}" ? "{" : "[";
+                if (stack.pop() !== expected) return null;
+                if (!stack.length) return {json: text.slice(first, index + 1), end: index + 1};
+            }
+        }
+        return null;
+    }
+
+    function comfyNodeMap(value, maximumNodes) {
+        const possible = isPlainRecord(value?.prompt) ? value.prompt : value;
+        if (!isPlainRecord(possible)) return null;
+        const entries = Object.entries(possible);
+        if (!entries.length || entries.length > maximumNodes) return null;
+        const nodes = new Map();
+        for (const [id, node] of entries) {
+            if (!isPlainRecord(node) || !isPlainRecord(node.inputs) || typeof node.class_type !== "string") continue;
+            nodes.set(String(id), node);
+        }
+        return nodes.size ? nodes : null;
+    }
+
+    function directReferenceId(value, nodes) {
+        if (!Array.isArray(value) || value.length < 1) return null;
+        const id = String(value[0]);
+        return nodes.has(id) ? id : null;
+    }
+
+    function collectInputReferences(value, nodes, output, state, depth = 0) {
+        if (depth > 12) {
+            state.truncated = true;
+            return;
+        }
+        if (state.references >= state.maxReferences) return;
+        const direct = directReferenceId(value, nodes);
+        if (direct) {
+            output.add(direct);
+            state.references += 1;
+            return;
+        }
+        if (Array.isArray(value)) {
+            for (const item of value) collectInputReferences(item, nodes, output, state, depth + 1);
+            return;
+        }
+        if (!isPlainRecord(value)) return;
+        for (const item of Object.values(value)) collectInputReferences(item, nodes, output, state, depth + 1);
+    }
+
+    function collectUpstreamNodeIds(startValue, nodes, limits, sharedState) {
+        const roots = new Set();
+        collectInputReferences(startValue, nodes, roots, sharedState);
+        const visited = new Set();
+        const queue = [...roots].map(id => ({id, depth: 0}));
+        while (queue.length && sharedState.references < limits.maxReferences) {
+            const current = queue.shift();
+            if (!current || visited.has(current.id)) continue;
+            if (current.depth > limits.maxTraversalDepth) {
+                sharedState.truncated = true;
+                continue;
+            }
+            visited.add(current.id);
+            const node = nodes.get(current.id);
+            if (!node) continue;
+            const references = new Set();
+            collectInputReferences(node.inputs, nodes, references, sharedState);
+            for (const id of references) {
+                if (!visited.has(id)) queue.push({id, depth: current.depth + 1});
+            }
+        }
+        return visited;
+    }
+
+    function resolvePromptInput(value, nodes, limits, sharedState, depth = 0, visited = new Set()) {
+        if (depth > 16) {
+            sharedState.truncated = true;
+            return [];
+        }
+        if (sharedState.references >= limits.maxReferences) return [];
+        if (typeof value === "string") return [value];
+        const reference = directReferenceId(value, nodes);
+        if (!reference || visited.has(reference)) return [];
+        visited.add(reference);
+        sharedState.references += 1;
+        const node = nodes.get(reference);
+        if (!node) return [];
+        const values = [];
+        for (const key of ["text", "text1", "value", "string", "prompt", "positive_prompt"]) {
+            if (!(key in node.inputs)) continue;
+            values.push(...resolvePromptInput(node.inputs[key], nodes, limits, sharedState, depth + 1, visited));
+        }
+        return values;
+    }
+
+    function nodeLooksImageConditioned(node) {
+        const label = `${node?.class_type || ""} ${node?._meta?.title || ""}`;
+        return /\b(?:VAE\s*Encode|Reference\s*Latent|Load\s*Image|IPAdapter|ControlNet|Image\s*(?:Encode|Condition))\b/i.test(label);
+    }
+
+    function candidateTextsFromNode(id, node, nodes, limits, sharedState) {
+        const label = `${node?.class_type || ""} ${node?._meta?.title || ""}`;
+        if (/negative/i.test(label)) return [];
+        if (!/(?:CLIP.*Text.*Encode|Text.*Encode)/i.test(label)) return [];
+        const values = [];
+        let direct = false;
+        for (const key of ["text", "text_g", "text_l", "prompt", "positive_prompt"]) {
+            if (!(key in node.inputs)) continue;
+            if (typeof node.inputs[key] === "string") direct = true;
+            for (const raw of resolvePromptInput(node.inputs[key], nodes, limits, sharedState)) {
+                const prompt = normalizeStructuredPromptText(raw);
+                if (!prompt || prompt.length > limits.maxPromptChars) continue;
+                values.push({id, prompt, direct});
+            }
+        }
+        return values;
+    }
+
+    function extractComfyPositivePrompt(graph, options = {}) {
+        const limits = {
+            ...STRUCTURED_PROMPT_LIMITS,
+            ...(options && typeof options === "object" ? options : {})
+        };
+        const nodes = comfyNodeMap(graph, limits.maxNodes);
+        if (!nodes) return {status: "invalid", reason: "not_comfyui_prompt_graph"};
+
+        const samplers = [...nodes.entries()].filter(([, node]) => /sampler/i.test(String(node.class_type || "")) && node.inputs.positive !== undefined);
+        if (!samplers.length) return {status: "no_prompt", reason: "comfyui_sampler_not_found"};
+
+        const sharedState = {references: 0, maxReferences: limits.maxReferences, truncated: false};
+        const candidates = [];
+        for (const [samplerId, sampler] of samplers) {
+            const positiveNodes = collectUpstreamNodeIds(sampler.inputs.positive, nodes, limits, sharedState);
+            const latentNodes = collectUpstreamNodeIds(sampler.inputs.latent_image, nodes, limits, sharedState);
+            const imageConditioned = [...positiveNodes, ...latentNodes].some(id => nodeLooksImageConditioned(nodes.get(id)));
+            for (const id of positiveNodes) {
+                const node = nodes.get(id);
+                for (const candidate of candidateTextsFromNode(id, node, nodes, limits, sharedState)) {
+                    candidates.push({...candidate, samplerId, imageConditioned});
+                }
+            }
+        }
+        if (sharedState.truncated) return {status: "invalid", reason: "comfyui_traversal_limit"};
+        if (sharedState.references >= limits.maxReferences) return {status: "invalid", reason: "comfyui_reference_limit"};
+        if (!candidates.length) return {status: "no_prompt", reason: "comfyui_positive_text_not_found"};
+
+        const baseCandidates = candidates.filter(candidate => !candidate.imageConditioned);
+        let pool = baseCandidates.length ? baseCandidates : candidates;
+        if (!baseCandidates.length) {
+            const directCandidates = pool.filter(candidate => candidate.direct);
+            if (directCandidates.length) pool = directCandidates;
+        }
+        const unique = new Map();
+        for (const candidate of pool) {
+            const key = candidate.prompt.replace(/\s+/g, " ").trim();
+            if (!unique.has(key)) unique.set(key, candidate);
+        }
+        if (unique.size !== 1) {
+            return {status: "ambiguous", reason: "multiple_comfyui_positive_prompts", candidateCount: unique.size};
+        }
+        const selected = [...unique.values()][0];
+        return {
+            status: "found",
+            reason: "comfyui_positive_prompt_extracted",
+            prompt: selected.prompt,
+            nodeId: selected.id,
+            samplerId: selected.samplerId
+        };
+    }
+
+    function extractPromptFromMetadataDocument(raw, options = {}) {
+        const text = String(raw || "").replace(/^\uFEFF+/, "").replace(/\r\n?/g, "\n").trim();
+        const maximum = Number.isSafeInteger(options.maxDocumentChars)
+            ? Math.min(options.maxDocumentChars, STRUCTURED_PROMPT_LIMITS.maxDocumentChars)
+            : STRUCTURED_PROMPT_LIMITS.maxDocumentChars;
+        if (!text || text.length > maximum) return {status: "invalid", reason: text ? "structured_document_too_large" : "empty_document"};
+
+        let start = -1;
+        let recognized = false;
+        const wrapper = text.match(/^prompt\s*:\s*/i);
+        const wrapped = Boolean(wrapper);
+        if (wrapper) {
+            recognized = true;
+            start = wrapper[0].length;
+            while (/\s/.test(text[start] || "")) start += 1;
+        }
+        else if (options.allowBareComfyJson === true && (text[0] === "{" || text[0] === "[")) {
+            recognized = true;
+            start = 0;
+        }
+        if (!recognized || (text[start] !== "{" && text[start] !== "[")) {
+            return {status: "not_structured", reason: "comfyui_prompt_wrapper_not_found"};
+        }
+        const scanned = scanBalancedJsonPrefix(text, start);
+        if (!scanned) {
+            return wrapped
+                ? {status: "invalid", reason: "malformed_comfyui_prompt_json"}
+                : {status: "not_structured", reason: "bare_value_not_comfyui_json"};
+        }
+        let graph;
+        try { graph = JSON.parse(scanned.json); }
+        catch {
+            return wrapped
+                ? {status: "invalid", reason: "malformed_comfyui_prompt_json"}
+                : {status: "not_structured", reason: "bare_value_not_comfyui_json"};
+        }
+        const extracted = extractComfyPositivePrompt(graph, options);
+        if (!wrapped && extracted.status === "invalid" && extracted.reason === "not_comfyui_prompt_graph") {
+            return {status: "not_structured", reason: "bare_value_not_comfyui_graph"};
+        }
+        return extracted;
+    }
+
     function looksLikeJsonContainer(raw) {
         const text = String(raw).trim();
         if (!text || (text[0] !== "{" && text[0] !== "[")) return false;
@@ -470,10 +744,6 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
 
     function evaluateCandidate(candidate, limits) {
         let text = String(candidate.text);
-        const decoded = decodeHtmlEntitiesOnce(text);
-        const htmlDecoded = decoded !== text;
-        text = decoded;
-
         try {
             text = text.normalize("NFKC");
         }
@@ -491,7 +761,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
             chunkType: candidate.chunkType,
             compressed: candidate.compressed,
             encoding: candidate.encoding,
-            htmlDecoded,
+            htmlDecoded: false,
             wrapperStripped: false,
             negativePromptFound: false,
             normalizedChars: text.length,
@@ -506,12 +776,39 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
             return {...common, status: "encoded_or_unknown", reason: "binary_control_characters"};
         }
         if (!text) return {...common, status: "metadata_no_prompt", reason: "empty_metadata_value"};
+        const structuredPrompt = extractPromptFromMetadataDocument(text, {
+            allowBareComfyJson: candidate.sourceKey === "prompt",
+            maxDocumentChars: limits.maxNormalizedChars
+        });
+        if (structuredPrompt.status === "found") {
+            text = structuredPrompt.prompt;
+            common.wrapperStripped = true;
+            common.normalizedChars = text.length;
+            common.structuredReason = structuredPrompt.reason;
+        }
+        else if (structuredPrompt.status !== "not_structured") {
+            return {...common, status: "structured", reason: structuredPrompt.reason};
+        }
+        else {
+            const decoded = decodeHtmlEntitiesOnce(text);
+            common.htmlDecoded = decoded !== text;
+            try { text = decoded.normalize("NFKC").trim(); }
+            catch { return {...common, status: "encoded_or_unknown", reason: "unicode_normalization_failed"}; }
+            common.normalizedChars = text.length;
+        }
+        if (text.length > limits.maxNormalizedChars) {
+            return {...common, status: "encoded_or_unknown", reason: "normalized_text_too_large"};
+        }
+        if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) {
+            return {...common, status: "encoded_or_unknown", reason: "binary_control_characters"};
+        }
+        if (!text) return {...common, status: "metadata_no_prompt", reason: "empty_metadata_value"};
         if (looksLikeJsonContainer(text)) return {...common, status: "structured", reason: "structured_json"};
         if (/^(?:---|\.\.\.|%YAML\b|%TAG\b|!!(?:map|seq|str)\b|!<[^>]+>)/i.test(text)) {
             return {...common, status: "structured", reason: "structured_yaml_or_document"};
         }
 
-        const wrapper = text.match(/^\s*(?:parameters|prompt)\s*:\s*/i);
+        const wrapper = common.wrapperStripped ? null : text.match(/^\s*(?:parameters|prompt)\s*:\s*/i);
         if (wrapper) {
             text = text.slice(wrapper[0].length).trim();
             common.wrapperStripped = true;
@@ -547,7 +844,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
             return {...common, status: "encoded_or_unknown", reason: "positive_prompt_language_uncertain"};
         }
 
-        return {...common, status: "found", reason: "positive_prompt_extracted", prompt: text};
+        return {...common, status: "found", reason: common.structuredReason || "positive_prompt_extracted", prompt: text};
     }
 
     function candidateOrder(left, right) {
@@ -680,17 +977,23 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata} = (() => {
         return result(selected.status, null, selected.sourceKey, selected.reason, diagnostics, selected);
     }
 
-    return Object.freeze({DEFAULT_LIMITS, parsePngPromptMetadata});
+    return Object.freeze({
+        DEFAULT_LIMITS,
+        extractComfyPositivePrompt,
+        extractPromptFromMetadataDocument,
+        parsePngPromptMetadata
+    });
 
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.13.26";
+const PLUGIN_VERSION = "0.13.34";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
 const HOST_CLASS = "krea2-discord-collector-host";
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_METADATA_SIDECAR_BYTES = 5 * 1024 * 1024;
 const MAX_SAVED_HASHES = 5000;
 const MAX_DIAGNOSTIC_SUMMARIES = 250;
 const MAX_DIAGNOSTIC_CHUNKS = 96;
@@ -731,7 +1034,7 @@ function isCurrentPrivacyReceipt(receipt) {
     );
 }
 const VISUAL_EMBEDDING_SIZE = 8;
-const VISION_PIPELINE_ID = "discord-faithful-v9-external-support-wardrobe-lock";
+const VISION_PIPELINE_ID = "discord-faithful-v10-fast-default";
 const KREA2_CONTRIBUTION_TERMS_VERSION = "seedframe-krea2-vision-2026-08-25";
 const KREA2_DIAGNOSTIC_TERMS_VERSION = "seedframe-krea2-vision-diagnostics-2026-08-25";
 const KREA2_OPERATIONAL_ERROR_SCHEMA = "seedframe.krea2-vision-operational-error.v1";
@@ -795,7 +1098,7 @@ function isCurrentDiagnosticReceipt(receipt) {
         Number(receipt.acceptedAt) > 0
     );
 }
-const VISION_SIDECAR_SCHEMA_VERSION = 2;
+const VISION_SIDECAR_SCHEMA_VERSION = 3;
 const KREA2_GUIDANCE_SAMPLE_COUNT = 8;
 const HISTORY_ROOT_ID = "krea2-discord-history-root";
 const HISTORY_MODAL_ID = "krea2-discord-history-modal";
@@ -986,6 +1289,11 @@ const VISION_EXECUTION_OPTIONS = Object.freeze([
     ["Local GPU — use an installed model on this computer", "local"],
     ["Online API — Gemma 4 26B-A4B on the private remote worker (Discord sign-in required)", "online"]
 ]);
+const VISION_ANALYSIS_OPTIONS = Object.freeze([
+    ["Fast — one direct image pass (recommended)", "fast"],
+    ["V2 Direct Fidelity — closer pose, action, and framing", "v2"],
+    ["Maximum detail — multi-pass audit", "maximum"]
+]);
 const LOCAL_VISION_MODEL_IDS = new Set(VISION_MODEL_OPTIONS.map(([, id]) => id));
 const VISION_MODEL_IDS = new Set([...LOCAL_VISION_MODEL_IDS, ONLINE_VISION_MODEL_ID]);
 
@@ -993,6 +1301,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     visionEndpoint: "http://127.0.0.1:7870/api/discord-describe",
     visionToken: "",
     visionExecutionMode: "local",
+    visionAnalysisProfile: "fast",
+    visionAnalysisProfileVersion: 2,
+    v2ThreePromptVariations: false,
     visionModel: "llamacpp::heretic-8b-q8_0",
     remoteLicense: null,
     allowedGuildIds: "",
@@ -1010,6 +1321,22 @@ const DEFAULT_SETTINGS = Object.freeze({
 
 function normalizeVisionExecutionMode(value) {
     return String(value || "").trim().toLowerCase() === "online" ? "online" : "local";
+}
+
+function normalizeVisionAnalysisProfile(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "v2" || normalized === "maximum" ? normalized : "fast";
+}
+
+function normalizeVisionPromptCount(value, analysisProfile = "fast") {
+    const profile = normalizeVisionAnalysisProfile(analysisProfile);
+    if (profile !== "v2") return 3;
+    return Number(value) === 3 ? 3 : 1;
+}
+
+function effectiveVisionPromptCount(settings = {}, analysisProfile = settings.visionAnalysisProfile) {
+    const profile = normalizeVisionAnalysisProfile(analysisProfile);
+    return normalizeVisionPromptCount(profile === "v2" && settings.v2ThreePromptVariations === true ? 3 : 1, profile);
 }
 
 function effectiveVisionModel(settings = {}) {
@@ -1192,6 +1519,8 @@ function normalizeVisionCacheProfile(raw) {
     if (!/^[a-f0-9]{64}$/.test(guidanceSha256)) throw new Error("Vision cache profile guidance digest is invalid.");
     return Object.freeze({
         requested_model: requestedModel,
+        analysis_profile: normalizeVisionAnalysisProfile(raw.analysis_profile),
+        prompt_count: normalizeVisionPromptCount(raw.prompt_count, raw.analysis_profile),
         prompt_preset: normalizePromptPreset(raw.prompt_preset),
         pipeline_id: pipelineId,
         guidance_sha256: guidanceSha256,
@@ -1199,10 +1528,12 @@ function normalizeVisionCacheProfile(raw) {
     });
 }
 
-function buildVisionCacheProfile({model, preset, pipelineId = VISION_PIPELINE_ID, guidance = "", datasetGuidance} = {}) {
+function buildVisionCacheProfile({model, analysisProfile = "fast", promptCount, preset, pipelineId = VISION_PIPELINE_ID, guidance = "", datasetGuidance} = {}) {
     const normalizedGuidance = String(guidance || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 600);
     return normalizeVisionCacheProfile({
         requested_model: model,
+        analysis_profile: normalizeVisionAnalysisProfile(analysisProfile),
+        prompt_count: normalizeVisionPromptCount(promptCount, analysisProfile),
         prompt_preset: normalizePromptPreset(preset),
         pipeline_id: pipelineId,
         guidance_sha256: sha256Hex(Buffer.from(normalizedGuidance, "utf8")),
@@ -1215,7 +1546,7 @@ function visionCacheProfileDigest(raw) {
     return sha256Hex(Buffer.from(JSON.stringify(profile), "utf8"));
 }
 
-function visionRequestCacheKey(imageSha256, {model, preset, guidance = "", datasetGuidance = false, feedbackDigest = "", jobId = "", pipelineId = VISION_PIPELINE_ID, contributionEnabled = false, diagnosticsEnabled = false} = {}) {
+function visionRequestCacheKey(imageSha256, {model, analysisProfile = "fast", promptCount, preset, guidance = "", datasetGuidance = false, feedbackDigest = "", jobId = "", pipelineId = VISION_PIPELINE_ID, contributionEnabled = false, diagnosticsEnabled = false} = {}) {
     const hash = String(imageSha256 || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error("Vision request image hash is invalid.");
     const selectedModel = String(model || "").trim();
@@ -1231,6 +1562,8 @@ function visionRequestCacheKey(imageSha256, {model, preset, guidance = "", datas
     return createHash("sha256").update([
         hash,
         selectedModel,
+        normalizeVisionAnalysisProfile(analysisProfile),
+        String(normalizeVisionPromptCount(promptCount, analysisProfile)),
         normalizePromptPreset(preset),
         String(pipelineId || ""),
         sha256Hex(Buffer.from(normalizedGuidance, "utf8")),
@@ -1347,6 +1680,10 @@ const CSS = `
 .${VISION_BUTTON_CLASS}[data-state="done"] {
     background: rgba(35, 145, 79, 0.95);
     cursor: default;
+}
+
+.${BUTTON_CLASS}[data-state="done"] {
+    cursor: pointer;
 }
 
 .${BUTTON_CLASS}[data-state="no-metadata"] {
@@ -1505,6 +1842,9 @@ const CSS = `
 .krea2-history-tab { flex: 1; min-width: 0; padding: 7px 3px; border: 0; border-radius: 6px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); background: transparent; cursor: pointer; font: 650 9.5px/1 system-ui, sans-serif; }
 .krea2-history-tab:hover { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: var(--krea2-surface-hover); }
 .krea2-history-tab[aria-selected="true"] { color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: #2a303a; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.krea2-history-tab[data-filter="v2"] { color: #bfc5ff; -webkit-text-fill-color: #bfc5ff; border: 1px solid rgba(124,135,255,.3); }
+.krea2-history-tab[data-filter="v2"][data-profile-active="true"] { color: #eef0ff; -webkit-text-fill-color: #eef0ff; background: rgba(92,103,218,.2); box-shadow: inset 0 0 0 1px rgba(124,135,255,.22); }
+.krea2-history-tab[data-filter="v2"][aria-selected="true"] { color: #fff; -webkit-text-fill-color: #fff; background: linear-gradient(135deg,#5865f2,#7c57d9); box-shadow: 0 2px 8px rgba(88,101,242,.34); }
 
 .krea2-history-list { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 12px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
 .krea2-history-pagination { display: flex; align-items: center; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--krea2-border); }
@@ -1517,6 +1857,10 @@ const CSS = `
 .krea2-history-empty { padding: 32px 18px; color: var(--krea2-muted); -webkit-text-fill-color: var(--krea2-muted); text-align: center; font-size: 11px; }
 .krea2-interrogate-panel { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 14px; scrollbar-width: thin; scrollbar-color: #3a414d transparent; }
 .krea2-interrogate-card { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--krea2-border); border-radius: 11px; background: var(--krea2-surface-raised); }
+.krea2-v2-mode { display: grid; gap: 4px; padding: 10px 11px; border: 1px solid rgba(124,135,255,.55); border-radius: 9px; color: #f2f3ff; -webkit-text-fill-color: #f2f3ff; background: linear-gradient(135deg,rgba(88,101,242,.28),rgba(124,87,217,.18)); }
+.krea2-v2-mode[hidden] { display: none !important; }
+.krea2-v2-mode strong { font-size: 11px; letter-spacing: .02em; }
+.krea2-v2-mode span { color: #c7cbf8; -webkit-text-fill-color: #c7cbf8; font-size: 9.5px; line-height: 1.45; }
 .krea2-interrogate-title { color: var(--krea2-text); font-size: 14px; font-weight: 750; letter-spacing: -.01em; }
 .krea2-interrogate-copy { margin-top: -5px; color: var(--krea2-muted); font-size: 10px; line-height: 1.5; }
 .krea2-interrogate-drop { display: grid; place-items: center; min-height: 142px; padding: 12px; overflow: hidden; border: 1px dashed #485161; border-radius: 10px; color: var(--krea2-muted); background: #101216; text-align: center; cursor: pointer; }
@@ -2297,9 +2641,9 @@ async function saveVisionPromptSidecar(imagePath, prompt, fileSystem = fs, canon
             savedPath = alternate;
         }
     }
-    if (Array.isArray(promptVariants) && promptVariants.length === 3) {
+    if (Array.isArray(promptVariants) && (promptVariants.length === 1 || promptVariants.length === 3)) {
         const normalizedVariants = promptVariants.map(normalizeVisionPrompt);
-        if (normalizedVariants[0] !== normalizeVisionPrompt(prompt) || new Set(normalizedVariants).size !== 3) {
+        if (normalizedVariants[0] !== normalizeVisionPrompt(prompt) || new Set(normalizedVariants).size !== normalizedVariants.length) {
             throw new Error("Vision prompt variations did not match the primary prompt contract.");
         }
         const bundlePath = savedPath.replace(/\.txt$/i, ".prompts.json");
@@ -2350,16 +2694,16 @@ async function readReusableVisionPrompt(imagePath, fileSystem = fs, canonicalHas
                 (bundle?.schema_version === 1 || bundle?.schema_version === VISION_SIDECAR_SCHEMA_VERSION) &&
                 (!expectedHash || bundle.image_sha256 === expectedHash) &&
                 Array.isArray(bundle.prompt_variants) &&
-                bundle.prompt_variants.length === 3
+                (bundle.prompt_variants.length === 1 || bundle.prompt_variants.length === 3)
             ) {
                 const normalized = bundle.prompt_variants.map(normalizeVisionPrompt);
-                if (normalized[0] === prompt && new Set(normalized).size === 3) promptVariants = normalized;
+                if (normalized[0] === prompt && new Set(normalized).size === normalized.length) promptVariants = normalized;
             }
         }
         catch (error) {
             if (!isFileSystemError(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
         }
-        if (normalizedExpected && promptVariants.length !== 3) return null;
+        if (normalizedExpected && promptVariants.length !== normalizedExpected.prompt_count) return null;
         return {
             prompt,
             prompt_variants: promptVariants,
@@ -2611,12 +2955,25 @@ function isSubstantiallyNonEnglish(raw) {
 }
 
 function evaluatePromptValue(raw) {
-    let text = decodeHtmlEntities(String(raw || ""))
+    let text = String(raw || "")
         .normalize("NFKC")
         .replace(/^\uFEFF/, "")
-        .replace(/\u0000/g, "")
         .replace(/\r\n?/g, "\n")
         .trim();
+    const structuredPrompt = extractMetadataDocumentPrompt?.(text, {
+        allowBareComfyJson: false,
+        maxDocumentChars: MAX_METADATA_SIDECAR_BYTES
+    });
+    if (structuredPrompt?.status === "found") text = structuredPrompt.prompt;
+    else if (structuredPrompt && structuredPrompt.status !== "not_structured") {
+        return {classification: "structured"};
+    }
+    else {
+        text = decodeHtmlEntities(text)
+            .normalize("NFKC")
+            .replace(/\u0000/g, "")
+            .trim();
+    }
     text = text.replace(/^\s*(?:parameters|prompt)\s*:\s*/i, "").trim();
     if (!text) return {classification: "metadata_no_prompt"};
     if (looksLikeJsonObjectOrArray(text)) return {classification: "structured"};
@@ -2738,7 +3095,7 @@ function escapeMultipartHeader(raw) {
     return String(raw).replace(/[\r\n"]/g, "_");
 }
 
-function buildVisionMultipartBody(bytes, {filename, mimeType, model, guidance, datasetGuidance = false, feedbackContext = "", jobId, contributionTerms = "", diagnosticTerms = "", diagnosticUsername = ""} = {}) {
+function buildVisionMultipartBody(bytes, {filename, mimeType, model, guidance, analysisProfile = "fast", promptCount, datasetGuidance = false, feedbackContext = "", jobId, contributionTerms = "", diagnosticTerms = "", diagnosticUsername = ""} = {}) {
     const imageBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const boundary = `----Krea2Vision${randomBytes(18).toString("hex")}`;
     const chunks = [];
@@ -2758,6 +3115,12 @@ function buildVisionMultipartBody(bytes, {filename, mimeType, model, guidance, d
         appendText('Content-Disposition: form-data; name="guidance"\r\n\r\n');
         appendText(String(guidance).replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 600));
     }
+    appendText(`\r\n--${boundary}\r\n`);
+    appendText('Content-Disposition: form-data; name="analysis_profile"\r\n\r\n');
+    appendText(normalizeVisionAnalysisProfile(analysisProfile));
+    appendText(`\r\n--${boundary}\r\n`);
+    appendText('Content-Disposition: form-data; name="prompt_count"\r\n\r\n');
+    appendText(String(normalizeVisionPromptCount(promptCount, analysisProfile)));
     appendText(`\r\n--${boundary}\r\n`);
     appendText('Content-Disposition: form-data; name="dataset_guidance"\r\n\r\n');
     appendText(datasetGuidance === true ? "1" : "0");
@@ -2837,7 +3200,7 @@ function normalizeVisionPromptVariants(raw, {requireThree = true, fallbackPrompt
     return prompts;
 }
 
-function parseVisionPromptResponse(rawText, {expectedDatasetGuidance = null, expectedFeedbackDigest = null} = {}) {
+function parseVisionPromptResponse(rawText, {expectedPromptCount = null, expectedDatasetGuidance = null, expectedFeedbackDigest = null} = {}) {
     const text = String(rawText || "");
     if (!text || Buffer.byteLength(text, "utf8") > MAX_VISION_RESPONSE_BYTES) {
         throw new Error("Vision Prompt Studio returned an empty or oversized response.");
@@ -2864,7 +3227,14 @@ function parseVisionPromptResponse(rawText, {expectedDatasetGuidance = null, exp
     const model = state.model.normalize("NFKC").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
     if (!model) throw new Error("Vision Prompt Studio returned an invalid model identifier.");
     const prompt = normalizeVisionPrompt(state.prompt);
-    const promptVariants = normalizeVisionPromptVariants(state.prompt_variants);
+    const expectedCount = expectedPromptCount === null ? null : Number(expectedPromptCount);
+    if (expectedCount !== null && expectedCount !== 1 && expectedCount !== 3) {
+        throw new Error("Vision Prompt Studio expected an invalid prompt count.");
+    }
+    const promptVariants = normalizeVisionPromptVariants(state.prompt_variants, {requireThree: expectedCount === null || expectedCount === 3});
+    if (expectedCount !== null && promptVariants.length !== expectedCount) {
+        throw new Error(`Vision Prompt Studio returned ${promptVariants.length} prompts when ${expectedCount} were requested.`);
+    }
     if (promptVariants[0] !== prompt) {
         throw new Error("Vision Prompt Studio returned a primary prompt that did not match Prompt 1.");
     }
@@ -3338,7 +3708,7 @@ function sanitizeReviewRecord(raw) {
 function safeReproducibility(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const clean = {};
-    for (const key of ["schema_version", "pipeline_id", "provider", "model_id", "model_label", "quantization", "model_sha256", "model_bytes", "mmproj_sha256", "mmproj_bytes", "artifact_revision", "runtime_bundle_id", "runtime_release", "context_cap", "max_output_cap", "estimated_vram_mb", "measured_peak_vram_mb", "safety_reserve_mb", "full_image_passes", "detail_crops", "image_audit"]) {
+    for (const key of ["schema_version", "pipeline_id", "analysis_profile", "prompt_variant_count", "provider", "model_id", "model_label", "quantization", "model_sha256", "model_bytes", "mmproj_sha256", "mmproj_bytes", "artifact_revision", "runtime_bundle_id", "runtime_release", "context_cap", "max_output_cap", "estimated_vram_mb", "measured_peak_vram_mb", "safety_reserve_mb", "full_image_passes", "detail_crops", "image_audit"]) {
         const value = raw[key];
         if (typeof value === "string") clean[key] = value.slice(0, 200);
         else if (typeof value === "number" && Number.isFinite(value)) clean[key] = value;
@@ -3360,6 +3730,87 @@ function isMetadataPlusOwner(currentUserId, configuredOwnerUserId) {
 function metadataProbeCacheKey(provenance) {
     if (!provenance?.kind || !provenance?.attachmentChannelId || !provenance?.attachmentId || !provenance?.path) return null;
     return `${provenance.kind}:${provenance.attachmentChannelId}:${provenance.attachmentId}:${provenance.path}`;
+}
+
+function attachmentRecords(raw) {
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw?.toArray === "function") {
+        try { return raw.toArray(); }
+        catch { return []; }
+    }
+    if (raw && typeof raw.values === "function") {
+        try { return [...raw.values()]; }
+        catch { return []; }
+    }
+    if (raw && typeof raw === "object") return Object.values(raw);
+    return [];
+}
+
+function normalizedAttachmentRecord(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const id = String(raw.id || "").trim();
+    const filename = String(raw.filename || raw.name || "")
+        .normalize("NFKC")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .trim()
+        .slice(0, 260);
+    const url = String(raw.url || raw.proxy_url || raw.proxyUrl || "").trim();
+    const size = Math.max(0, Math.trunc(Number(raw.size) || 0));
+    const contentType = String(raw.content_type || raw.contentType || "").toLowerCase();
+    if (!/^\d{5,25}$/.test(id) || !filename || !url) return null;
+    return {
+        id,
+        filename,
+        url,
+        size,
+        contentType,
+        width: Math.max(0, Math.trunc(Number(raw.width) || 0)),
+        height: Math.max(0, Math.trunc(Number(raw.height) || 0))
+    };
+}
+
+function attachmentStem(filename) {
+    return path.parse(String(filename || "")).name.normalize("NFKC").trim().toLowerCase();
+}
+
+function isImageAttachmentRecord(record) {
+    return Boolean(record) && (
+        record.width > 0 && record.height > 0
+        || /^image\//i.test(record.contentType)
+        || /\.(?:png|jpe?g|webp|gif|avif)$/i.test(record.filename)
+    );
+}
+
+function isYamlAttachmentRecord(record) {
+    return Boolean(record)
+        && /\.ya?ml$/i.test(record.filename)
+        && (!record.size || record.size <= MAX_METADATA_SIDECAR_BYTES);
+}
+
+function selectCompanionMetadataAttachment(imageProvenance, rawAttachments) {
+    const imageId = String(imageProvenance?.attachmentId || "");
+    if (!/^\d{5,25}$/.test(imageId)) return {status: "none", reason: "image_attachment_unverified"};
+    const records = attachmentRecords(rawAttachments).map(normalizedAttachmentRecord).filter(Boolean);
+    const selectedImage = records.find(record => record.id === imageId && isImageAttachmentRecord(record));
+    if (!selectedImage) return {status: "none", reason: "image_attachment_not_in_message"};
+    const images = records.filter(isImageAttachmentRecord);
+    const yaml = records.filter(isYamlAttachmentRecord);
+    if (!yaml.length) return {status: "none", reason: "yaml_attachment_not_found"};
+
+    const selectedStem = attachmentStem(selectedImage.filename);
+    const sameStemImages = images.filter(record => attachmentStem(record.filename) === selectedStem);
+    const sameStem = yaml.filter(record => attachmentStem(record.filename) === selectedStem);
+    if (sameStem.length === 1 && sameStemImages.length === 1) {
+        return {status: "found", attachment: sameStem[0], reason: "matching_filename_stem"};
+    }
+    if (sameStem.length === 1 && sameStemImages.length > 1) {
+        return {status: "ambiguous", reason: "multiple_images_share_yaml_filename_stem"};
+    }
+    if (sameStem.length > 1) return {status: "ambiguous", reason: "multiple_matching_yaml_attachments"};
+    if (images.length === 1 && yaml.length === 1) {
+        return {status: "found", attachment: yaml[0], reason: "single_image_single_yaml"};
+    }
+    return {status: "ambiguous", reason: "yaml_image_pairing_ambiguous"};
 }
 
 function hasExcludedImageContext(image, messageRoot) {
@@ -3466,6 +3917,7 @@ class Krea2DiscordCollector {
         this.running = false;
         this.generation = 0;
         this.channelStore = null;
+        this.messageStore = null;
         this.userStore = null;
     }
 
@@ -3473,13 +3925,20 @@ class Krea2DiscordCollector {
         this.api = new BdApi(PLUGIN_NAME);
         const storedSettings = this.api.Data.load("settings") || {};
         this.settings = {...DEFAULT_SETTINGS, ...storedSettings};
+        const migrateV2Profile = Math.trunc(Number(storedSettings.visionAnalysisProfileVersion) || 0) < 2;
         // Releases before 0.13.4 exposed an obsolete direct-upload endpoint and
         // token. Contributions now pass only through the authenticated loopback
         // Vision broker, so never retain or reuse those legacy values.
         delete this.settings.endpoint;
         delete this.settings.token;
         this.settings.visionExecutionMode = normalizeVisionExecutionMode(this.settings.visionExecutionMode);
-        this.settings.shareDatasetContributions = this.settings.shareDatasetContributions === true;
+        this.settings.visionAnalysisProfile = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
+        if (migrateV2Profile) this.settings.visionAnalysisProfile = "v2";
+        this.settings.visionAnalysisProfileVersion = 2;
+        // The magnifier is prompt-only. Metadata collection remains on the
+        // separate + action; a stale legacy opt-in must never make Vision
+        // prompts or source images into dataset contributions.
+        this.settings.shareDatasetContributions = false;
         this.settings.shareFailureDiagnostics = this.settings.shareFailureDiagnostics === true;
         this.settings.historyCollapsed = this.settings.historyCollapsed === true;
         this.settings.useKrea2DatasetGuidance = this.settings.useKrea2DatasetGuidance === true;
@@ -3487,6 +3946,8 @@ class Krea2DiscordCollector {
         if (
             Object.prototype.hasOwnProperty.call(storedSettings, "endpoint")
             || Object.prototype.hasOwnProperty.call(storedSettings, "token")
+            || storedSettings.shareDatasetContributions === true
+            || migrateV2Profile
         ) this.api.Data.save("settings", this.settings);
         const onboardingState = this.api.Data.load("onboardingState");
         const privacyReceipt = this.api.Data.load("privacyReceipt");
@@ -3517,6 +3978,7 @@ class Krea2DiscordCollector {
         this.promptFeedback = {};
         this.historyReviewFilter = "all";
         this.channelStore = this.api.Webpack.getStore("ChannelStore") || null;
+        this.messageStore = this.api.Webpack.getStore("MessageStore") || null;
         this.userStore = this.api.Webpack.getStore("UserStore") || null;
         this.running = true;
         this.generation += 1;
@@ -4189,7 +4651,7 @@ class Krea2DiscordCollector {
         const tabs = document.createElement("div");
         tabs.className = "krea2-history-tabs";
         tabs.setAttribute("role", "tablist");
-        for (const [label, filter] of [["Interrogate", "interrogate"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Errors", "errors"]]) {
+        for (const [label, filter] of [["Interrogate", "interrogate"], ["V2", "v2"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Errors", "errors"]]) {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "krea2-history-tab";
@@ -4198,10 +4660,15 @@ class Krea2DiscordCollector {
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", filter === this.historyFilter ? "true" : "false");
             button.addEventListener("click", () => {
+                if (filter === "v2") {
+                    this.settings.visionAnalysisProfile = "v2";
+                    this.settings.visionAnalysisProfileVersion = 2;
+                    this.api.Data.save("settings", this.settings);
+                }
                 this.historyFilter = filter;
                 this.historyPage = 1;
                 this.renderHistoryRail();
-                if (filter !== "interrogate") void this.refreshHistory(true);
+                if (filter !== "interrogate" && filter !== "v2") void this.refreshHistory(true);
             });
             tabs.append(button);
         }
@@ -4280,11 +4747,23 @@ class Krea2DiscordCollector {
         const card = document.createElement("section");
         card.className = "krea2-interrogate-card";
 
+        const v2Mode = document.createElement("div");
+        v2Mode.className = "krea2-v2-mode";
+        v2Mode.dataset.role = "v2-mode";
+        v2Mode.hidden = true;
+        const v2ModeTitle = document.createElement("strong");
+        v2ModeTitle.textContent = "V2 DIRECT FIDELITY — ACTIVE";
+        const v2ModeCopy = document.createElement("span");
+        v2ModeCopy.textContent = "Every magnifier and upload now uses the one-pass V2 system for closer pose, action, contact, camera angle, and framing.";
+        v2Mode.append(v2ModeTitle, v2ModeCopy);
+
         const title = document.createElement("div");
         title.className = "krea2-interrogate-title";
+        title.dataset.role = "interrogate-title";
         title.textContent = "Interrogate an image";
         const copy = document.createElement("div");
         copy.className = "krea2-interrogate-copy";
+        copy.dataset.role = "interrogate-copy";
         copy.textContent = "Upload one image, choose the exact Vision model, and add it to the same authenticated shared queue used by Discord image magnifiers. Files remain in session memory.";
 
         const input = document.createElement("input");
@@ -4341,6 +4820,23 @@ class Krea2DiscordCollector {
         loading.value = "";
         model.append(loading);
         field.append(modelLabel, model);
+
+        const profileField = document.createElement("div");
+        profileField.className = "krea2-interrogate-field";
+        const profileLabel = document.createElement("label");
+        profileLabel.textContent = "Prompt system";
+        const profile = document.createElement("select");
+        profile.className = "krea2-interrogate-model";
+        profile.dataset.role = "interrogate-profile";
+        profile.setAttribute("aria-label", "Select the prompt system for this image");
+        for (const [label, value] of VISION_ANALYSIS_OPTIONS) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            profile.append(option);
+        }
+        profile.value = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
+        profileField.append(profileLabel, profile);
 
         const noteField = document.createElement("div");
         noteField.className = "krea2-interrogate-field";
@@ -4424,13 +4920,18 @@ class Krea2DiscordCollector {
             this.interrogateSelectedModel = model.value;
             this.renderInterrogatePanel();
         });
+        profile.addEventListener("change", () => {
+            this.settings.visionAnalysisProfile = normalizeVisionAnalysisProfile(profile.value);
+            this.api.Data.save("settings", this.settings);
+            this.renderInterrogatePanel();
+        });
         note.addEventListener("input", () => {
             this.interrogateIdentityNote = note.value.slice(0, 400);
         });
         refresh.addEventListener("click", () => void this.refreshInterrogateModels(true));
         start.addEventListener("click", () => void this.queueInterrogateSelection());
 
-        card.append(title, copy, input, drop, fileRow, field, noteField, actions, status, queue);
+        card.append(v2Mode, title, copy, input, drop, fileRow, field, profileField, noteField, actions, status, queue);
         panel.append(card);
         this.renderInterrogatePanel(panel);
         if (!this.interrogateModels.length) void this.refreshInterrogateModels();
@@ -4443,12 +4944,16 @@ class Krea2DiscordCollector {
         const fileRow = panel.querySelector('[data-role="interrogate-file"]');
         const fileName = panel.querySelector('[data-role="interrogate-file-name"]');
         const model = panel.querySelector('[data-role="interrogate-model"]');
+        const profile = panel.querySelector('[data-role="interrogate-profile"]');
+        const title = panel.querySelector('[data-role="interrogate-title"]');
+        const copy = panel.querySelector('[data-role="interrogate-copy"]');
+        const v2Mode = panel.querySelector('[data-role="v2-mode"]');
         const note = panel.querySelector('[data-role="interrogate-identity-note"]');
         const start = panel.querySelector('[data-role="interrogate-start"]');
         const refresh = panel.querySelector('[data-role="interrogate-refresh"]');
         const status = panel.querySelector('[data-role="interrogate-status"]');
         const queue = panel.querySelector('[data-role="interrogate-queue"]');
-        if (!preview || !dropCopy || !fileRow || !fileName || !model || !note || !start || !refresh || !status || !queue) return;
+        if (!preview || !dropCopy || !fileRow || !fileName || !model || !profile || !note || !start || !refresh || !status || !queue) return;
 
         const selection = this.interrogateSelection;
         preview.hidden = !selection || !this.interrogatePreviewUrl;
@@ -4483,6 +4988,15 @@ class Krea2DiscordCollector {
         }
         if (this.interrogateSelectedModel && expectedOptions.includes(this.interrogateSelectedModel)) model.value = this.interrogateSelectedModel;
         model.disabled = this.interrogateModelsLoading || !this.interrogateModels.length || this.interrogatePreparing;
+        const isV2Tab = this.historyFilter === "v2";
+        if (v2Mode) v2Mode.hidden = !isV2Tab;
+        if (title) title.textContent = isV2Tab ? "V2 image interrogation" : "Interrogate an image";
+        if (copy) copy.textContent = isV2Tab
+            ? "Upload an image here or use the magnifier on any Discord image. V2 prioritizes visible pose, action, contact, camera angle, and framing in one direct observation pass."
+            : "Upload one image, choose the exact Vision model, and add it to the same authenticated shared queue used by Discord image magnifiers. Files remain in session memory.";
+        profile.value = isV2Tab ? "v2" : normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
+        profile.disabled = isV2Tab || this.interrogatePreparing;
+        start.textContent = isV2Tab ? "Start V2 interrogation" : "Start interrogation";
         if (note.value !== this.interrogateIdentityNote) note.value = this.interrogateIdentityNote;
         note.disabled = this.interrogatePreparing;
         refresh.disabled = this.interrogateModelsLoading || this.interrogatePreparing;
@@ -4606,6 +5120,8 @@ class Krea2DiscordCollector {
         }
 
         const original = this.interrogateSelection;
+        const analysisProfile = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile);
+        const promptCount = effectiveVisionPromptCount(this.settings, analysisProfile);
         const identityNote = String(this.interrogateIdentityNote || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 400);
         const requestGuidance = identityNote ? `Uploader-supplied identity or role metadata (not inferred from pixels): ${identityNote}` : "";
         const queuedGeneration = this.generation;
@@ -4656,6 +5172,8 @@ class Krea2DiscordCollector {
                 const feedbackContext = datasetGuidance ? buildPromptFeedbackContext(this.promptFeedback) : null;
                 const requestCacheKey = visionRequestCacheKey(original.sha256, {
                     model: selectedModel,
+                    analysisProfile,
+                    promptCount,
                     preset,
                     guidance: requestGuidance,
                     datasetGuidance,
@@ -4679,6 +5197,8 @@ class Krea2DiscordCollector {
                         }),
                         {
                             model: selectedModel,
+                            analysisProfile,
+                            promptCount,
                             guidance: requestGuidance,
                             preset,
                             datasetGuidance,
@@ -4697,7 +5217,7 @@ class Krea2DiscordCollector {
                 this.lastCompletionJobId = localSubmissionId;
                 this.interrogateStatus = `${original.displayName} finished with ${result.model || availableModel.label}.`;
                 this.interrogateStatusState = "success";
-                await this.finishVisionPrompt({button: null, model: result.model});
+                await this.finishVisionPrompt({button: null, model: result.model, promptCount: result.prompt_variants.length});
                 await this.refreshHistory(true);
                 if (this.historyJobs.some(job => job.id === localSubmissionId)) void this.openHistoryDetail(localSubmissionId);
             }
@@ -4763,7 +5283,7 @@ class Krea2DiscordCollector {
             const requestUrl = new URL(`${baseUrl}/api/discord-jobs`);
             requestUrl.searchParams.set("page", String(this.historyPage));
             requestUrl.searchParams.set("page_size", String(HISTORY_PAGE_SIZE));
-            requestUrl.searchParams.set("view", this.historyFilter === "interrogate" ? "recent" : this.historyFilter);
+            requestUrl.searchParams.set("view", this.historyFilter === "interrogate" || this.historyFilter === "v2" ? "recent" : this.historyFilter);
             if (this.historySearch.trim()) requestUrl.searchParams.set("q", this.historySearch.trim().slice(0, 200));
             if (this.historyModelFilter !== "all") requestUrl.searchParams.set("model", this.historyModelFilter);
             const expectedUrl = requestUrl.toString();
@@ -4820,9 +5340,10 @@ class Krea2DiscordCollector {
         const completion = root?.querySelector('[data-role="completion"]');
         if (!summaryNode || !averageQueueNode || !schedulerNode || !interrogateNode || !listNode || !paginationNode) return;
 
-        const isInterrogate = this.historyFilter === "interrogate";
-        if (heading) heading.textContent = isInterrogate ? "Interrogate" : "Prompt History";
-        if (subtitle) subtitle.textContent = isInterrogate ? "Upload · choose model · queue" : "All local Vision jobs";
+        const isV2 = this.historyFilter === "v2";
+        const isInterrogate = this.historyFilter === "interrogate" || isV2;
+        if (heading) heading.textContent = isV2 ? "V2 Direct Fidelity" : isInterrogate ? "Interrogate" : "Prompt History";
+        if (subtitle) subtitle.textContent = isV2 ? "Active · one pass · closer composition" : isInterrogate ? "Upload · choose model · queue" : "All local Vision jobs";
         if (libraryTools) libraryTools.hidden = isInterrogate;
         interrogateNode.hidden = !isInterrogate;
         listNode.hidden = isInterrogate;
@@ -4830,7 +5351,14 @@ class Krea2DiscordCollector {
 
         for (const tab of root.querySelectorAll(".krea2-history-tab")) {
             tab.setAttribute("aria-selected", tab.dataset.filter === this.historyFilter ? "true" : "false");
+            if (tab.dataset.filter === "v2") {
+                const active = normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile) === "v2";
+                tab.dataset.profileActive = active ? "true" : "false";
+                tab.textContent = active ? "V2 ON" : "V2";
+                tab.setAttribute("aria-label", active ? "V2 Direct Fidelity is the active magnifier prompt system" : "Activate V2 Direct Fidelity");
+            }
         }
+        this.renderInterrogatePanel(interrogateNode);
 
         summaryNode.replaceChildren();
         const summary = this.historySummary || {};
@@ -5256,35 +5784,15 @@ class Krea2DiscordCollector {
 
     armLocalVisionSubmissionTimeout(id, button, model) {
         this.clearLocalVisionSubmissionTimeout(id);
-        // Local requests may wait behind any number of earlier Discord,
-        // Forge, or KreaForge jobs.  Keep their cards and bytes in the normal
-        // cancellable submission chain instead of declaring the GPU broken.
-        // Online API capacity remains bounded independently.
+        // An on-demand Online API worker must be allowed to cold-start.  A
+        // local 30-second submission timer incorrectly marked the image as a
+        // GPU failure before Vision Studio could submit it to Serverless.
         if (String(model || "").trim() !== ONLINE_VISION_MODEL_ID) return;
-        const timer = setTimeout(() => {
-            this.localVisionSubmissionTimers.delete(id);
-            const current = this.localVisionSubmissions.get(id);
-            if (!this.running || !current || current.status !== "queued" || current.submission_started) return;
-            this.updateLocalVisionSubmission(id, {
-                status: "error",
-                stage: "GPU not available",
-                public_error: "GPU not available",
-                queue_ahead: 0,
-                timed_out: true
-            });
-            if (button) button.dataset.busy = "false";
-            this.setButtonState(button, "error", "!", "GPU not available. Click to retry.");
-            this.toast("GPU not available", "error");
-            this.log("error", "GPU not available");
-            this.queueOperationalError({
-                eventId: id,
-                modelId: model,
-                errorCode: "gpu_not_available",
-                errorMessage: "GPU not available",
-                stage: "Waiting to submit the Discord image"
-            });
-        }, GPU_AVAILABILITY_TIMEOUT_MS);
-        this.localVisionSubmissionTimers.set(id, timer);
+        this.updateLocalVisionSubmission(id, {
+            status: "queued",
+            stage: "Queued online — waking the remote GPU if it is asleep. The first request can take several minutes.",
+            public_error: ""
+        });
     }
 
     async cancelVisionJob(job) {
@@ -5691,9 +6199,12 @@ class Krea2DiscordCollector {
         const output = modalDocument.createElement("div");
         output.className = "krea2-history-output";
         if (job.prompt) {
-            const variants = Array.isArray(job.prompt_variants) && job.prompt_variants.length
+            const storedVariants = Array.isArray(job.prompt_variants) && job.prompt_variants.length
                 ? job.prompt_variants
                 : [job.prompt];
+            const isV2Result = /V2 Direct Fidelity/i.test(String(job.model || ""));
+            const requestedVariantCount = Number(job.reproducibility?.prompt_variant_count || 0);
+            const variants = isV2Result && requestedVariantCount !== 3 ? [storedVariants[0]] : storedVariants;
             const label = modalDocument.createElement("div");
             label.className = "krea2-history-prompt-label";
             label.textContent = variants.length === 3 ? "Generated prompt variations" : "Generated prompt";
@@ -5737,7 +6248,7 @@ class Krea2DiscordCollector {
             const selectVariant = index => {
                 selectedVariant = index;
                 prompt.value = variants[index] || variants[0];
-                copyVariant.textContent = `Copy Prompt ${index + 1}`;
+                copyVariant.textContent = variants.length === 1 ? "Copy prompt" : `Copy Prompt ${index + 1}`;
                 for (const [buttonIndex, button] of [...variantTabs.children].entries()) {
                     button.setAttribute("aria-selected", buttonIndex === index ? "true" : "false");
                 }
@@ -5755,7 +6266,9 @@ class Krea2DiscordCollector {
                 try {
                     await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(variants[selectedVariant]);
                     copyVariant.textContent = "Copied";
-                    setTimeout(() => { if (copyVariant.isConnected) copyVariant.textContent = `Copy Prompt ${selectedVariant + 1}`; }, 1400);
+                    setTimeout(() => {
+                        if (copyVariant.isConnected) copyVariant.textContent = variants.length === 1 ? "Copy prompt" : `Copy Prompt ${selectedVariant + 1}`;
+                    }, 1400);
                 }
                 catch { this.toast("Discord could not copy the selected prompt.", "error"); }
             });
@@ -5780,7 +6293,9 @@ class Krea2DiscordCollector {
             feedbackButtons.append(like, dislike);
             feedback.append(feedbackButtons, feedbackStatus);
             selectVariant(0);
-            output.append(label, variantTabs, prompt, feedback, copyVariant);
+            output.append(label);
+            if (variants.length > 1) output.append(variantTabs);
+            output.append(prompt, feedback, copyVariant);
         }
         else {
             const message = modalDocument.createElement("div");
@@ -7345,6 +7860,30 @@ class Krea2DiscordCollector {
         const hostRect = host.getBoundingClientRect();
         const imageRect = image.getBoundingClientRect();
 
+        let plusButton = this.buttonByImage.get(image);
+        if (!plusButton?.isConnected) {
+            plusButton = document.createElement("button");
+            plusButton.type = "button";
+            plusButton.className = BUTTON_CLASS;
+            plusButton.textContent = "+";
+            plusButton.dataset.state = "idle";
+            plusButton.dataset.sourceKey = provenance?.path || "";
+            plusButton.title = "Extract an embedded or same-message parameters YAML prompt (no GPU, credits, dataset submission, or automatic save)";
+            plusButton.setAttribute("aria-label", plusButton.title);
+            plusButton.__krea2Image = image;
+            plusButton.addEventListener("pointerdown", blockNavigation);
+            plusButton.addEventListener("dblclick", blockNavigation);
+            plusButton.addEventListener("click", event => {
+                blockNavigation(event);
+                this.queueMetadataProbe(image, plusButton);
+            });
+            host.append(plusButton);
+            this.buttons.add(plusButton);
+            this.buttonByImage.set(image, plusButton);
+        }
+        plusButton.style.left = `${Math.max(0, imageRect.left - hostRect.left + 6)}px`;
+        plusButton.style.top = `${Math.max(0, imageRect.top - hostRect.top + 6)}px`;
+
         let visionButton = this.visionButtonByImage.get(image);
         if (!visionButton?.isConnected) {
             visionButton = document.createElement("button");
@@ -7368,6 +7907,201 @@ class Krea2DiscordCollector {
         }
         visionButton.style.right = `${Math.max(0, hostRect.right - imageRect.right + 6)}px`;
         visionButton.style.top = `${Math.max(0, imageRect.top - hostRect.top + 6)}px`;
+    }
+
+    metadataCompanionForMessage(messageRoot, imageProvenance, route) {
+        const messageId = messageIdFromRoot(messageRoot);
+        if (!messageId || !route?.channelId) return {status: "none", reason: "message_identity_unavailable"};
+        this.messageStore ||= this.api.Webpack.getStore("MessageStore") || null;
+        let message = null;
+        try { message = this.messageStore?.getMessage?.(route.channelId, messageId) || null; }
+        catch { message = null; }
+        if (!message) return {status: "none", reason: "message_record_unavailable"};
+
+        const selected = selectCompanionMetadataAttachment(imageProvenance, message.attachments);
+        if (selected.status !== "found") return selected;
+        const provenance = extractMediaProvenance(selected.attachment.url);
+        if (
+            !provenance
+            || provenance.attachmentId !== selected.attachment.id
+            || provenance.attachmentChannelId !== imageProvenance.attachmentChannelId
+            || !this.attachmentBelongsToGuild(provenance, route.guildId)
+        ) return {status: "none", reason: "yaml_attachment_provenance_unverified"};
+        return {
+            status: "found",
+            reason: selected.reason,
+            attachment: Object.freeze({...selected.attachment}),
+            provenance: Object.freeze({...provenance})
+        };
+    }
+
+    captureMetadataSelection(image) {
+        if (!image?.isConnected) throw new Error("The selected Discord image is no longer connected.");
+        const route = this.validateLocalCollectionSettings();
+        const messageRoot = findMessageRoot(image);
+        const sourceUrlAtClick = recoverOriginalImageUrl(image);
+        const provenance = extractMediaProvenance(sourceUrlAtClick);
+        if (!messageRoot || !provenance || !this.attachmentBelongsToGuild(provenance, route.guildId)) {
+            throw new Error("The image attachment could not be verified in the allowlisted Discord server.");
+        }
+        const companion = this.metadataCompanionForMessage(messageRoot, provenance, route);
+        return Object.freeze({
+            sourceUrlAtClick,
+            provenance: Object.freeze({...provenance}),
+            messageId: messageIdFromRoot(messageRoot),
+            route: Object.freeze({...route}),
+            companion: Object.freeze(companion)
+        });
+    }
+
+    async downloadMetadataOriginal(selection, button, signal) {
+        const cached = this.getCachedOriginal(selection.provenance);
+        if (cached) return cached;
+        this.setButtonState(button, "downloading", "…", "Reading the original image metadata locally");
+        const response = await this.api.Net.fetch(selection.sourceUrlAtClick, {
+            method: "GET",
+            headers: {Accept: "image/*,application/octet-stream;q=0.8"},
+            redirect: "follow",
+            signal,
+            timeout: 60000
+        });
+        if (!response.ok) throw new Error(`Image metadata download failed with HTTP ${response.status}.`);
+        const finalProvenance = extractMediaProvenance(response.url || selection.sourceUrlAtClick);
+        if (!sameMediaProvenance(finalProvenance, selection.provenance)) {
+            throw new Error("The image redirect changed attachment identity; metadata was not inspected.");
+        }
+        const bytes = await readResponseBytes(response, null, MAX_IMAGE_BYTES);
+        if (!bytes.byteLength) throw new Error("The downloaded image was empty.");
+        const format = detectImageFormat(bytes);
+        if (!format) throw new Error("The downloaded bytes are not a supported image format.");
+        const original = {bytes, sha256: sha256Hex(bytes), format};
+        this.cacheOriginal(selection.provenance, original);
+        return original;
+    }
+
+    async downloadCompanionMetadata(selection, signal) {
+        if (selection.companion?.status !== "found") return null;
+        const {attachment, provenance} = selection.companion;
+        if (attachment.size && attachment.size > MAX_METADATA_SIDECAR_BYTES) {
+            return {classification: "encoded_or_unknown", source: attachment.filename};
+        }
+        const response = await this.api.Net.fetch(attachment.url, {
+            method: "GET",
+            headers: {Accept: "text/yaml,text/x-yaml,text/plain,application/octet-stream;q=0.8"},
+            redirect: "follow",
+            signal,
+            timeout: 30000
+        });
+        if (!response.ok) throw new Error(`YAML metadata download failed with HTTP ${response.status}.`);
+        const finalProvenance = extractMediaProvenance(response.url || attachment.url);
+        if (!sameMediaProvenance(finalProvenance, provenance)) {
+            throw new Error("The YAML redirect changed attachment identity; it was not parsed.");
+        }
+        const contentType = String(response.headers?.get?.("content-type") || "");
+        if (/^(?:text\/html|application\/(?:xml|xhtml\+xml))/i.test(contentType)) {
+            throw new Error("The YAML attachment URL returned a webpage instead of metadata text.");
+        }
+        const bytes = await readResponseBytes(response, null, MAX_METADATA_SIDECAR_BYTES);
+        let text;
+        try { text = new TextDecoder("utf-8", {fatal: true}).decode(bytes); }
+        catch { return {classification: "encoded_or_unknown", source: attachment.filename}; }
+        if (/\u0000/.test(text)) return {classification: "encoded_or_unknown", source: attachment.filename};
+        return {...evaluatePromptValue(text), source: attachment.filename};
+    }
+
+    showMetadataPromptModal(prompt, source) {
+        const content = document.createElement("div");
+        content.style.cssText = "display:grid;gap:10px;line-height:1.5;color:var(--text-normal)";
+        const explanation = document.createElement("p");
+        explanation.style.margin = "0";
+        explanation.textContent = `Exact positive prompt extracted from ${source}. No Vision model ran, no credits were used, and nothing was submitted or saved.`;
+        const textarea = document.createElement("textarea");
+        textarea.readOnly = true;
+        textarea.value = prompt;
+        textarea.rows = Math.min(18, Math.max(8, Math.ceil(prompt.length / 90)));
+        textarea.style.cssText = "width:100%;box-sizing:border-box;resize:vertical;padding:12px;border:1px solid var(--background-modifier-accent);border-radius:8px;background:var(--background-secondary);color:var(--text-normal);font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace";
+        content.append(explanation, textarea);
+        this.api.UI.showConfirmationModal("Source prompt found", content, {
+            confirmText: "Copy prompt",
+            cancelText: "Close",
+            danger: false,
+            onConfirm: () => void this.copyProductText(prompt)
+        });
+    }
+
+    queueMetadataProbe(image, button) {
+        if (!this.running || !image?.isConnected || !button?.isConnected || button.dataset?.busy === "true") return;
+        let selection;
+        try { selection = this.captureMetadataSelection(image); }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.setButtonState(button, "error", "!", `${message} Click to retry.`);
+            this.toast(message, "error");
+            return;
+        }
+        const key = metadataProbeCacheKey(selection.provenance);
+        if (!key) return;
+        button.dataset.busy = "true";
+        this.setButtonState(button, "hashing", "…", "Checking embedded metadata and same-message YAML");
+        const queuedGeneration = this.generation;
+        const flow = this.metadataProbeQueue.then(async () => {
+            if (!this.running || queuedGeneration !== this.generation || !button.isConnected) return;
+            const controller = new AbortController();
+            this.controllers.add(controller);
+            try {
+                const original = await this.downloadMetadataOriginal(selection, button, controller.signal);
+                const embedded = await extractConfidentPrompt(original.bytes, original.format);
+                const sidecar = await this.downloadCompanionMetadata(selection, controller.signal);
+                const found = [];
+                if (embedded.classification === "usable" && embedded.prompt) {
+                    found.push({prompt: embedded.prompt, source: "embedded image metadata"});
+                }
+                if (sidecar?.classification === "usable" && sidecar.prompt) {
+                    found.push({prompt: sidecar.prompt, source: sidecar.source || "same-message YAML"});
+                }
+                const unique = new Map();
+                for (const item of found) {
+                    const normalized = item.prompt.replace(/\s+/g, " ").trim();
+                    if (!unique.has(normalized)) unique.set(normalized, item);
+                }
+                if (unique.size === 1) {
+                    const result = [...unique.values()][0];
+                    this.showMetadataPromptModal(result.prompt, result.source);
+                    this.setButtonState(button, "done", "✓", `Prompt extracted from ${result.source}; no GPU, credits, submission, or automatic save. Click again to reopen.`);
+                    this.toast("Source prompt extracted locally. No GPU or credits were used.", "success");
+                    this.recordDiagnosticSummary(original.sha256, "usable", [
+                        ...(embedded.chunks || []),
+                        ...(sidecar ? [{name: "YAML", size: selection.companion?.attachment?.size || 0}] : [])
+                    ]);
+                    return;
+                }
+                if (unique.size > 1) {
+                    this.setButtonState(button, "metadata-no-prompt", "?", "Embedded metadata and same-message YAML contained different prompts; nothing was selected or submitted.");
+                    this.toast("Embedded metadata and YAML prompts differed, so the plugin did not guess.", "warning");
+                    return;
+                }
+                const classifications = [embedded.classification, sidecar?.classification];
+                if (selection.companion?.status === "ambiguous") classifications.push("structured");
+                const classification = ["non_english", "structured", "encoded_or_unknown", "metadata_no_prompt", "no_metadata"]
+                    .find(value => classifications.includes(value)) || "no_metadata";
+                this.showClassification(button, classification);
+                this.recordDiagnosticSummary(original.sha256, classification, embedded.chunks || []);
+            }
+            catch (error) {
+                if (!this.running || queuedGeneration !== this.generation || error?.name === "AbortError") return;
+                const message = error instanceof Error ? error.message : String(error);
+                this.setButtonState(button, "error", "!", `${message} Click to retry.`);
+                this.toast(message, "error");
+                this.log("error", message);
+            }
+            finally {
+                this.controllers.delete(controller);
+                this.metadataProbeByKey.delete(key);
+                if (button) button.dataset.busy = "false";
+            }
+        });
+        this.metadataProbeByKey.set(key, flow);
+        this.metadataProbeQueue = flow.catch(() => {});
     }
 
     removeButton(button) {
@@ -7665,7 +8399,9 @@ class Krea2DiscordCollector {
             const config = {
                 ...route,
                 visionModel: effectiveVisionModel(this.settings),
-                visionExecutionMode: normalizeVisionExecutionMode(this.settings.visionExecutionMode)
+                visionExecutionMode: normalizeVisionExecutionMode(this.settings.visionExecutionMode),
+                visionAnalysisProfile: normalizeVisionAnalysisProfile(this.settings.visionAnalysisProfile),
+                visionPromptCount: effectiveVisionPromptCount(this.settings, this.settings.visionAnalysisProfile)
             };
             selection = this.captureVisionSelection(image, config);
         }
@@ -7805,6 +8541,13 @@ class Krea2DiscordCollector {
             }
 
             const selectedModel = String(selection?.config?.visionModel || effectiveVisionModel(this.settings));
+            const analysisProfile = normalizeVisionAnalysisProfile(
+                selection?.config?.visionAnalysisProfile || this.settings.visionAnalysisProfile
+            );
+            const promptCount = normalizeVisionPromptCount(
+                selection?.config?.visionPromptCount ?? effectiveVisionPromptCount(this.settings, analysisProfile),
+                analysisProfile
+            );
             const preset = normalizePromptPreset(this.settings.preferredPreset);
             const datasetGuidance = this.settings.useKrea2DatasetGuidance === true;
             const feedbackContext = datasetGuidance ? buildPromptFeedbackContext(this.promptFeedback) : null;
@@ -7818,6 +8561,8 @@ class Krea2DiscordCollector {
 
             const requestCacheKey = visionRequestCacheKey(original.sha256, {
                 model: selectedModel,
+                analysisProfile,
+                promptCount,
                 preset,
                 guidance: "",
                 datasetGuidance,
@@ -7839,6 +8584,8 @@ class Krea2DiscordCollector {
                     elapsed => this.setButtonState(button, "vision-requesting", "AI", `KREA2 hybrid Vision is analyzing (${elapsed})`),
                     {
                         model: selectedModel,
+                        analysisProfile,
+                        promptCount,
                         preset,
                         datasetGuidance,
                         feedbackContext,
@@ -7861,7 +8608,8 @@ class Krea2DiscordCollector {
 
             await this.finishVisionPrompt({
                 button,
-                model: visionResult.model
+                model: visionResult.model,
+                promptCount: visionResult.prompt_variants.length
             });
         }
         catch (error) {
@@ -7894,11 +8642,19 @@ class Krea2DiscordCollector {
             void this.openOnboarding();
             throw new Error("Complete the current KREA2 Vision setup before using Vision.");
         }
-        const contributionEnabled = await this.ensureContributionConsent();
+        // Vision interrogation is intentionally prompt-only. Keep this hard
+        // guard at the request boundary so cached UI/data state cannot attach
+        // contribution terms to a magnifier request.
+        const contributionEnabled = false;
         const diagnosticConsent = await this.ensureDiagnosticConsent();
         const selectedModel = String(options.model || visionConfig.model || "").trim();
         const guidance = String(options.guidance || "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 600);
         const preset = normalizePromptPreset(options.preset || this.settings.preferredPreset);
+        const analysisProfile = normalizeVisionAnalysisProfile(options.analysisProfile || this.settings.visionAnalysisProfile);
+        const promptCount = normalizeVisionPromptCount(
+            options.promptCount ?? effectiveVisionPromptCount(this.settings, analysisProfile),
+            analysisProfile
+        );
         const datasetGuidance = options.datasetGuidance === undefined
             ? this.settings.useKrea2DatasetGuidance === true
             : options.datasetGuidance === true;
@@ -7908,6 +8664,8 @@ class Krea2DiscordCollector {
         const jobId = /^[a-f0-9]{32}$/.test(String(options.jobId || "")) ? String(options.jobId) : randomBytes(16).toString("hex");
         const requestCacheKey = visionRequestCacheKey(original.sha256, {
             model: selectedModel,
+            analysisProfile,
+            promptCount,
             preset,
             guidance,
             datasetGuidance,
@@ -7922,6 +8680,8 @@ class Krea2DiscordCollector {
             mimeType: original.format.mimeType,
             model: selectedModel,
             guidance,
+            analysisProfile,
+            promptCount,
             datasetGuidance,
             feedbackContext: feedbackContext?.payload || "",
             jobId,
@@ -7976,6 +8736,7 @@ class Krea2DiscordCollector {
                 throw new Error("Vision Prompt Studio did not return a JSON response.");
             }
             const parsed = parseVisionPromptResponse(await readBoundedResponseText(response), {
+                expectedPromptCount: promptCount,
                 expectedDatasetGuidance: datasetGuidance,
                 expectedFeedbackDigest: datasetGuidance ? feedbackContext.digest : null
             });
@@ -7984,6 +8745,8 @@ class Krea2DiscordCollector {
                 request_cache_key: requestCacheKey,
                 cache_identity: buildVisionCacheProfile({
                     model: selectedModel,
+                    analysisProfile,
+                    promptCount,
                     preset,
                     pipelineId: parsed.pipeline_id,
                     guidance,
@@ -7996,17 +8759,19 @@ class Krea2DiscordCollector {
         }
     }
 
-    async finishVisionPrompt({button, model = ""}) {
+    async finishVisionPrompt({button, model = "", promptCount = 1}) {
         const suffix = model ? ` Model: ${model}.` : "";
-        const contributed = this.settings.shareDatasetContributions === true;
+        const count = Number(promptCount) === 3 ? 3 : 1;
+        const noun = count === 1 ? "prompt" : "prompts";
+        const contributed = false;
         const contributionCopy = contributed
-            ? " All three prompts were accepted by the online Krea2 dataset."
+            ? ` ${count === 1 ? "The prompt was" : "All three prompts were"} accepted by the online Krea2 dataset.`
             : " Prompt contribution is disabled; nothing was submitted to Krea2.";
-        this.setButtonState(button, "vision-ready", "✓", `Detailed Vision prompts are ready.${suffix}${contributionCopy} The prompts and a small local thumbnail remain in Prompt History until you clear it; no full-resolution source image was copied into history.`);
+        this.setButtonState(button, "vision-ready", "✓", `Detailed Vision ${noun} ${count === 1 ? "is" : "are"} ready.${suffix}${contributionCopy} The ${noun} and a small local thumbnail remain in Prompt History until you clear it; no full-resolution source image was copied into history.`);
         this.toast(
             contributed
-                ? "Three prompts are ready in session memory and were added to the online Krea2 dataset."
-                : "Three prompts are ready in session memory. Krea2 contribution is off.",
+                ? `${count === 1 ? "One prompt is" : "Three prompts are"} ready in session memory and ${count === 1 ? "was" : "were"} added to the online Krea2 dataset.`
+                : `${count === 1 ? "One prompt is" : "Three prompts are"} ready in session memory. Krea2 contribution is off.`,
             "success"
         );
     }
@@ -8015,11 +8780,11 @@ class Krea2DiscordCollector {
         const states = {
             added: ["done", "✓", "Prompt metadata was added to the Krea2 dataset; no image or sidecar was saved.", "Prompt metadata added to Krea2. Nothing was saved locally.", "success"],
             duplicate: ["duplicate", "✓", "Krea2 already has this metadata contribution; nothing was saved locally.", "Krea2 already has this contribution.", "success"],
-            no_metadata: ["no-metadata", "–", "No prompt metadata was present; nothing was saved.", "No metadata was found and nothing was saved.", "info"],
-            metadata_no_prompt: ["metadata-no-prompt", "?", "Metadata existed but contained no usable positive prompt; nothing was saved.", "Metadata had no usable positive prompt.", "warning"],
-            encoded_or_unknown: ["encoded-or-unknown", "🔒", "Encoded, encrypted, or high-entropy metadata was skipped; nothing was saved.", "Encoded or unknown metadata was not submitted.", "warning"],
-            structured: ["structured", "🔒", "JSON/object/array/YAML-style prompt metadata was skipped; nothing was saved.", "Structured metadata was not submitted.", "warning"],
-            non_english: ["non-english", "🔒", "The positive prompt was substantially non-English and was skipped; nothing was saved.", "Substantially non-English metadata was not submitted.", "warning"]
+            no_metadata: ["no-metadata", "–", "No embedded or companion prompt metadata was present. No GPU, credits, submission, or save was used.", "No prompt metadata was found.", "info"],
+            metadata_no_prompt: ["metadata-no-prompt", "?", "Metadata existed but contained no usable positive prompt. No GPU, credits, submission, or save was used.", "Metadata had no usable positive prompt.", "warning"],
+            encoded_or_unknown: ["encoded-or-unknown", "🔒", "Encoded, encrypted, or high-entropy metadata was skipped. No GPU, credits, submission, or save was used.", "Encoded or unknown metadata was skipped.", "warning"],
+            structured: ["structured", "🔒", "Structured metadata was unsupported, malformed, or ambiguous, so it was skipped safely. No GPU, credits, submission, or save was used.", "Unsupported or ambiguous structured metadata was skipped.", "warning"],
+            non_english: ["non-english", "🔒", "The positive prompt was substantially non-English and was skipped. No GPU, credits, submission, or save was used.", "Substantially non-English metadata was skipped.", "warning"]
         };
         const [state, text, title, toast, type] = states[classification] || states.encoded_or_unknown;
         this.setButtonState(button, state, text, title);
@@ -8147,7 +8912,7 @@ class Krea2DiscordCollector {
         panel.style.cssText = "padding:16px;max-width:760px;color:var(--text-normal);line-height:1.45";
 
         const intro = document.createElement("p");
-        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint and returns three grounded prompt variations. If automatic Krea2 contribution is enabled, all three generated prompt texts are submitted with model/pipeline IDs and an anonymous installation digest. Contributions never include image bytes or Discord identifiers. Technical failures always submit privacy-minimal operational fields to the owner-only Seedframe error console: anonymous installation digest, model, pipeline, stage, error code/message, and software versions. Mandatory error telemetry never includes an image, image hash, prompt, Discord identity or IDs, URL, filename, or local path. The separate rich failure-diagnostic option remains opt-in. Generated prompts and sanitized job metadata remain in the private local Prompt History database until you select Clear history. Small local thumbnails are retained under the configured save folder for previews; full-resolution source images are not copied into history; feedback lasts only for this Discord session.";
+        intro.textContent = "Inside allowlisted Discord servers, the image magnifier sends request-scoped image bytes to the authenticated local KREA2 Vision endpoint. V2 returns one grounded prompt by default, or three genuine variations when you enable that option below. Contributions never include image bytes or Discord identifiers. Technical failures always submit privacy-minimal operational fields to the owner-only Seedframe error console: anonymous installation digest, model, pipeline, stage, error code/message, and software versions. Mandatory error telemetry never includes an image, image hash, prompt, Discord identity or IDs, URL, filename, or local path. The separate rich failure-diagnostic option remains opt-in. Generated prompts and sanitized job metadata remain in the private local Prompt History database until you select Clear history. Small local thumbnails are retained under the configured save folder for previews; full-resolution source images are not copied into history; feedback lasts only for this Discord session.";
         panel.append(intro);
 
         const addField = ({label, note, key, type = "text", placeholder = "", browseFolder = false}) => {
@@ -8327,6 +9092,17 @@ class Krea2DiscordCollector {
             key: "visionExecutionMode",
             options: VISION_EXECUTION_OPTIONS
         });
+        addSelect({
+            label: "Discord interrogation depth",
+            note: "Fast is the quickest one-pass prompt. V2 Direct Fidelity focuses on matching the visible pose, action, contact and framing. Maximum detail keeps the older multi-pass audits and can take several minutes.",
+            key: "visionAnalysisProfile",
+            options: VISION_ANALYSIS_OPTIONS
+        });
+        addCheckbox({
+            label: "Generate three V2 prompt variations",
+            note: "Off by default: V2 returns one canonical prompt with no redundant tabs. Turn this on to ask the same one-pass image inference for three genuine variations: Balanced, Subject & pose, and Scene & light. It remains one queued image and one Online API image charge, but the longer output may take more time.",
+            key: "v2ThreePromptVariations"
+        });
         const modelSelect = addSelect({
             label: "Local GPU Vision model",
             note: "The 8B Heretic model is preferred after live testing. Its 13,312 MiB estimate exceeds the 12 GiB allocation target, so Vision Studio still performs the authoritative post-Forge-unload admission check before every run.",
@@ -8445,8 +9221,10 @@ Krea2DiscordCollector.helpers = Object.freeze({
     formatDownloadGiB,
     formatVramMiB,
     detectImageFormat,
+    effectiveVisionPromptCount,
     effectiveVisionModel,
     evaluatePromptValue,
+    extractMetadataDocumentPrompt,
     extractConfidentPrompt,
     extractMediaProvenance,
     filenameFromContentDisposition,
@@ -8477,6 +9255,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     KREA2_DIAGNOSTIC_TERMS_VERSION,
     mediaCandidateScore,
     metadataProbeCacheKey,
+    selectCompanionMetadataAttachment,
     mergeHereticModelTelemetry,
     normalizeDatasetGuidanceState,
     normalizePromptFeedbackText,
@@ -8485,6 +9264,8 @@ Krea2DiscordCollector.helpers = Object.freeze({
     normalizeStoredSubmissionKey,
     normalizeVisionCacheProfile,
     normalizeVisionExecutionMode,
+    normalizeVisionAnalysisProfile,
+    normalizeVisionPromptCount,
     normalizeVisionPrompt,
     ONLINE_VISION_MODEL_ID,
     ONLINE_VISION_MODEL_LABEL,
