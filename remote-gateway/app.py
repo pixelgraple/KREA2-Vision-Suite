@@ -165,6 +165,19 @@ class AuditCompletion(BaseModel):
     source_url: str = ""
 
 
+class DiscordErrorReport(BaseModel):
+    event_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    model_id: str = Field(pattern=r"^[A-Za-z0-9:._-]{1,200}$")
+    pipeline_id: str = Field(pattern=r"^[A-Za-z0-9:._-]{1,200}$")
+    error_code: str = Field(pattern=r"^[A-Za-z0-9._-]{1,80}$")
+    error_message: str = Field(min_length=1, max_length=2000)
+    stage: str = Field(min_length=1, max_length=200)
+    runtime: str = Field(pattern=r"^(?:local|remote|unknown)$")
+    plugin_version: str = Field(pattern=r"^[A-Za-z0-9._+-]{1,40}$")
+    backend_version: str = Field(pattern=r"^[A-Za-z0-9._+-]{1,40}$")
+    technical_trace: str = Field(default="No traceback was supplied.", max_length=131072)
+
+
 class RevokeRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=240)
 
@@ -176,6 +189,40 @@ class CreditPurchaseRequest(BaseModel):
 
 def clean_text(value: object, maximum: int) -> str:
     return " ".join(str(value or "").split())[:maximum]
+
+
+_ERROR_CREDENTIAL_RE = re.compile(
+    r"(?i)\b(?:token|secret|password|authorization|api[_ -]?key|license[_ -]?token)\s*[:=]\s*[^\s,;]+"
+)
+_ERROR_AUTH_RE = re.compile(r"(?i)(?:Bearer|Krea2License)\s+[A-Za-z0-9._~+/=-]+")
+_ERROR_URL_RE = re.compile(r"https?://[^\s\]\[)>(\"']+")
+_ERROR_WINDOWS_PATH_RE = re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\r\n]+")
+_ERROR_DATA_RE = re.compile(r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+", re.I)
+_ERROR_CONTENT_FIELD_RE = re.compile(
+    r"(?im)\b(?:prompt|prompt_text|model_output|response_content|image_bytes|image_data)\s*[:=]\s*[^\r\n]+"
+)
+_ERROR_IMAGE_FILENAME_RE = re.compile(r"(?i)\b[^\s/\\]+\.(?:png|jpe?g|webp|gif|bmp|avif)\b")
+_ERROR_LONG_BLOB_RE = re.compile(r"\b[A-Za-z0-9+/=_-]{96,}\b")
+_ERROR_DISCORD_ID_RE = re.compile(r"\b[1-9][0-9]{16,21}\b")
+_ERROR_LICENSE_RE = re.compile(r"\blic_[A-Za-z0-9_-]{12,64}\b")
+
+
+def redact_error_report_text(value: object, maximum: int = 131072) -> str:
+    """Preserve the exception chain while removing user content and credentials."""
+
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    text = _ERROR_DATA_RE.sub("[image data removed]", text)
+    text = _ERROR_CONTENT_FIELD_RE.sub("[generated content removed]", text)
+    text = _ERROR_AUTH_RE.sub("[authorization removed]", text)
+    text = _ERROR_CREDENTIAL_RE.sub("[credential removed]", text)
+    text = _ERROR_URL_RE.sub("[URL removed]", text)
+    text = _ERROR_WINDOWS_PATH_RE.sub("[local path removed]", text)
+    text = _ERROR_IMAGE_FILENAME_RE.sub("[image filename removed]", text)
+    text = _ERROR_LICENSE_RE.sub("[license removed]", text)
+    text = _ERROR_DISCORD_ID_RE.sub("[Discord ID removed]", text)
+    text = _ERROR_LONG_BLOB_RE.sub("[opaque data removed]", text)
+    text = "\n".join(line.rstrip() for line in text.splitlines()).strip()
+    return (text or "No traceback was supplied.")[:maximum]
 
 
 def token_hash(salt: str, token: str) -> str:
@@ -233,6 +280,9 @@ class Gateway:
         self._recovery_status = "idle"
         self._activation_lock = asyncio.Lock()
         self._prompt_chat_lock = asyncio.Lock()
+        self._error_report_lock = threading.Lock()
+        self._error_report_seen: dict[str, float] = {}
+        self._error_report_rate: dict[str, list[float]] = {}
         config.database.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -2384,6 +2434,83 @@ class Gateway:
         try: self.http.post(self.config.audit_webhook_url, json={"content": content[:1900], "allowed_mentions": {"parse": []}}, timeout=8)
         except Exception: return
 
+    def post_error_webhook(self, payload: DiscordErrorReport, license_row: sqlite3.Row) -> dict[str, bool]:
+        """Post one redacted text attachment per failed image without charging credits."""
+
+        if not self.config.audit_webhook_url:
+            raise HTTPException(503, "Discord error webhook is not configured.")
+        now = time.monotonic()
+        license_id = str(license_row["license_id"])
+        with self._error_report_lock:
+            self._error_report_seen = {
+                key: created for key, created in self._error_report_seen.items()
+                if now - created < 900
+            }
+            recent = [created for created in self._error_report_rate.get(license_id, []) if now - created < 600]
+            if payload.event_id in self._error_report_seen:
+                return {"accepted": True, "duplicate": True}
+            if len(recent) >= 30:
+                raise HTTPException(429, "Discord error reporting is temporarily rate limited.")
+            recent.append(now)
+            self._error_report_rate[license_id] = recent
+            # Reserve before transport so simultaneous plugin/backend failures
+            # cannot flood the webhook. A failed transport releases the key.
+            self._error_report_seen[payload.event_id] = now
+
+        fields = {
+            "event_id": payload.event_id,
+            "model_id": clean_text(payload.model_id, 200),
+            "pipeline_id": clean_text(payload.pipeline_id, 200),
+            "error_code": clean_text(payload.error_code, 80),
+            "error_message": redact_error_report_text(payload.error_message, 2000),
+            "stage": redact_error_report_text(payload.stage, 200),
+            "runtime": clean_text(payload.runtime, 40),
+            "plugin_version": clean_text(payload.plugin_version, 40),
+            "backend_version": clean_text(payload.backend_version, 40),
+        }
+        report = "\n".join(
+            [
+                "KREA2 Vision Error Report",
+                "=========================",
+                f"Generated UTC: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+                *(f"{key}: {value}" for key, value in fields.items()),
+                "",
+                "Redaction: image bytes, prompts, Discord identity, credentials, URLs, filenames, and local user paths are excluded.",
+                "",
+                "Technical exception chain",
+                "-------------------------",
+                redact_error_report_text(payload.technical_trace),
+                "",
+            ]
+        ).encode("utf-8")
+        filename = f"krea2-vision-error-{payload.event_id[:12]}.txt"
+        summary = (
+            "**KREA2 Vision error report**\n"
+            f"Event: `{payload.event_id}`\n"
+            f"Stage: `{fields['stage'][:160]}`\n"
+            f"Model: `{fields['model_id'][:160]}`"
+        )
+        try:
+            response = self.http.post(
+                self.config.audit_webhook_url,
+                data={
+                    "payload_json": json.dumps(
+                        {"content": summary[:1900], "allowed_mentions": {"parse": []}},
+                        separators=(",", ":"),
+                    )
+                },
+                files={"files[0]": (filename, report, "text/plain; charset=utf-8")},
+                timeout=8,
+                allow_redirects=False,
+            )
+            if response.status_code not in {200, 204}:
+                raise RuntimeError(f"Discord webhook returned HTTP {response.status_code}.")
+        except Exception as exc:
+            with self._error_report_lock:
+                self._error_report_seen.pop(payload.event_id, None)
+            raise HTTPException(503, "Discord error webhook could not accept the report.") from exc
+        return {"accepted": True, "duplicate": False}
+
     def prune_audits(self) -> None:
         with self.connection() as db:
             db.execute("DELETE FROM remote_jobs WHERE completed_at IS NOT NULL AND completed_at < ?", (int(time.time()) - self.config.retention_days * 86400,))
@@ -2532,6 +2659,11 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         license_row = gateway.authenticate(authorization, request_id or "")
         gateway.fail_audit(license_row, request_id or "")
         return {"accepted": True}
+
+    @app.post("/v1/audit/error")
+    def error_report(payload: DiscordErrorReport, authorization: str | None = Header(default=None)) -> dict[str, bool]:
+        license_row = gateway.authenticate_license(authorization)
+        return gateway.post_error_webhook(payload, license_row)
 
     @app.get("/v1/credits/balance")
     def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, int | str | bool]:

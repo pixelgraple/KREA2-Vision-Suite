@@ -101,6 +101,7 @@ def provider_for(settings: Settings, spec: ModelSpec | None = None, telemetry_ca
                 raise RuntimeError("A remote KREA2 license is required for Online API Vision.")
             return RemoteGatewayProvider(
                 base_url=settings.remote_gateway_url,
+                origin_ip=getattr(settings, "remote_gateway_origin_ip", ""),
                 model=selected.provider_model,
                 max_tokens=max_tokens,
                 timeout=settings.vast_serverless_request_timeout_seconds,

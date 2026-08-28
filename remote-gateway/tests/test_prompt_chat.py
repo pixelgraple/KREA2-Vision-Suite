@@ -23,12 +23,12 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 
-def make_gateway(root: Path):
+def make_gateway(root: Path, *, webhook_url: str = "", http=None):
     config = module.Config(
         database=root / "gateway.sqlite3",
         vast_endpoint="vision-endpoint",
         vast_api_key="v" * 64,
-        audit_webhook_url="",
+        audit_webhook_url=webhook_url,
         admin_key="a" * 64,
         request_timeout_seconds=120,
         max_request_bytes=32 * 1024 * 1024,
@@ -40,7 +40,7 @@ def make_gateway(root: Path):
         prompt_chat_endpoint="local-openwebui-coding",
         prompt_chat_timeout_seconds=300,
     )
-    gateway = module.Gateway(config)
+    gateway = module.Gateway(config, http=http or module.requests)
     now = int(time.time())
     token = secrets.token_urlsafe(32)
     with gateway.connection() as db:
@@ -51,6 +51,19 @@ def make_gateway(root: Path):
         gateway._grant_welcome_credits(db, "12345678901234567", now)
         license_row = db.execute("SELECT * FROM licenses WHERE license_id='lic_prompt_editor_test'").fetchone()
     return gateway, license_row
+
+
+class WebhookResponse:
+    status_code = 204
+
+
+class FakeWebhookHttp:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return WebhookResponse()
 
 
 class FakeEndpoint:
@@ -144,6 +157,51 @@ class PromptChatGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as failed:
             gateway._prompt_chat_content(payload)
         self.assertEqual(failed.exception.status_code, 422)
+
+    def test_discord_error_webhook_attaches_redacted_trace_once(self):
+        http = FakeWebhookHttp()
+        gateway, license_row = make_gateway(
+            self.root,
+            webhook_url="https://discord.com/api/webhooks/123/redacted-token",
+            http=http,
+        )
+        payload = module.DiscordErrorReport(
+            event_id="a" * 32,
+            model_id=module.PUBLIC_MODEL_ID,
+            pipeline_id="discord-faithful-v12-interaction-locked-v2",
+            error_code="vision_backend_unavailable",
+            error_message="Remote worker failed",
+            stage="Running remote inference",
+            runtime="remote",
+            plugin_version="0.14.3",
+            backend_version="0.14.3",
+            technical_trace=(
+                'Traceback (most recent call last):\n'
+                '  File "C:\\Users\\kayla\\Documents\\kreainterrogate\\app\\worker.py", line 8\n'
+                'Authorization: Krea2License lic_private_123456789.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+                'prompt_text: a private user prompt\n'
+                'source=https://cdn.discordapp.com/attachments/private/image.png\n'
+                'RuntimeError: worker failed\n'
+            ),
+        )
+
+        first = gateway.post_error_webhook(payload, license_row)
+        second = gateway.post_error_webhook(payload, license_row)
+
+        self.assertEqual(first, {"accepted": True, "duplicate": False})
+        self.assertEqual(second, {"accepted": True, "duplicate": True})
+        self.assertEqual(len(http.calls), 1)
+        url, kwargs = http.calls[0]
+        self.assertEqual(url, "https://discord.com/api/webhooks/123/redacted-token")
+        self.assertFalse(kwargs["allow_redirects"])
+        filename, report, media_type = kwargs["files"]["files[0]"]
+        text = report.decode("utf-8")
+        self.assertTrue(filename.endswith(".txt"))
+        self.assertEqual(media_type, "text/plain; charset=utf-8")
+        self.assertIn("RuntimeError: worker failed", text)
+        self.assertIn("worker.py", text)
+        for forbidden in ("kayla", "lic_private", "private user prompt", "cdn.discordapp.com", "image.png"):
+            self.assertNotIn(forbidden, text)
 
 
 if __name__ == "__main__":

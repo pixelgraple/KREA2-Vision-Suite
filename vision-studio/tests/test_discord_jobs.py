@@ -17,6 +17,30 @@ PROMPT_VARIANTS = [PROMPT, " ".join(["subject"] * 400), " ".join(["scene"] * 400
 
 
 class DiscordVisionJobStoreTests(unittest.TestCase):
+    def test_completed_jobs_accept_one_or_three_prompts_but_never_two(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = DiscordVisionJobStore(Path(temporary), terminal_limit=20)
+            single_id = store.create(HASH, "single.png", model="v2")
+            store.complete(
+                single_id,
+                prompt=PROMPT,
+                prompt_variants=[PROMPT],
+                model="v2",
+                prompt_words=400,
+            )
+            self.assertEqual(store.get(single_id)["prompt_count"], 1)
+
+            rejected_id = store.create("b" * 64, "two.png", model="v2")
+            with self.assertRaisesRegex(ValueError, "one prompt or exactly three"):
+                store.complete(
+                    rejected_id,
+                    prompt=PROMPT,
+                    prompt_variants=PROMPT_VARIANTS[:2],
+                    model="v2",
+                    prompt_words=400,
+                )
+            store.close()
+
     def test_wrapped_model_transport_is_cleaned_on_save_and_legacy_read(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = DiscordVisionJobStore(Path(temporary), terminal_limit=20)
@@ -120,6 +144,9 @@ class DiscordVisionJobStoreTests(unittest.TestCase):
                 store.create("f" * 64, "third.png")
 
             restarted = DiscordVisionJobStore(root, terminal_limit=20, max_active=2)
+            self.assertEqual(restarted.get(first)["status"], "queued")
+            self.assertEqual(restarted.get(second)["status"], "running")
+            self.assertEqual(restarted.recover_active_after_restart(), 2)
             self.assertEqual(restarted.get(first)["status"], "error")
             self.assertEqual(restarted.get(second)["status"], "error")
             self.assertIn("restarted", restarted.get(first)["public_error"].lower())

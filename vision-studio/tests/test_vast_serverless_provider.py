@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import tempfile
 import unittest
 from dataclasses import replace
@@ -14,8 +15,11 @@ from app.config import settings
 from app.models import factory as factory_module
 from app.models.factory import provider_for
 from app.models.remote_access import RemoteAccess
-from app.models.remote_gateway_provider import RemoteGatewayProvider
-from app.models.remote_gateway_provider import RemoteGatewayProvider
+from app.models.remote_gateway_provider import (
+    RemoteGatewayProvider,
+    _PinnedTlsOriginAdapter,
+    fetch_remote_gateway_health,
+)
 from app.models.vast_serverless_provider import (
     VastServerlessProvider,
     VastServerlessProviderError,
@@ -99,7 +103,7 @@ class VastServerlessProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(VastServerlessProviderError, "no worker available"):
                 provider.text("system", "prompt", 0.1)
 
-    def test_remote_gateway_caps_a_stuck_worker_wait(self):
+    def test_remote_gateway_preserves_configured_cold_start_timeout(self):
         access_kwargs={
             "license_id":"lic_" + "x" * 18,
             "license_token":"t" * 48,
@@ -117,7 +121,46 @@ class VastServerlessProviderTests(unittest.TestCase):
             timeout=2700,
             access=RemoteAccess(**access_kwargs),
         )
-        self.assertEqual(provider.timeout, 120.0)
+        self.assertEqual(provider.timeout, 2700.0)
+
+    def test_pinned_origin_enables_bounded_tcp_keepalives(self):
+        adapter = _PinnedTlsOriginAdapter("192.0.2.10", "vision.example.test")
+        options = adapter.poolmanager.connection_pool_kw["socket_options"]
+        self.assertIn((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1), options)
+        for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 4)):
+            option = getattr(socket, name, None)
+            if option is not None:
+                self.assertIn((socket.IPPROTO_TCP, option, value), options)
+
+    def test_remote_gateway_health_returns_secret_free_capacity_state(self):
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "ok": True,
+                    "remote_ready": False,
+                    "remote_cold_start_eligible": True,
+                    "remote_inactive_workers": 1,
+                    "remote_allowed_gpu_names": ["RTX 3090", "RTX 4090"],
+                }
+
+        class Http:
+            calls = []
+
+            @classmethod
+            def get(cls, url, **kwargs):
+                cls.calls.append((url, kwargs))
+                return Response()
+
+        health = fetch_remote_gateway_health(
+            "https://vision.example.test/api/krea2-vision",
+            http=Http,
+        )
+        self.assertTrue(health["remote_cold_start_eligible"])
+        self.assertEqual(health["remote_inactive_workers"], 1)
+        self.assertEqual(Http.calls, [("https://vision.example.test/api/krea2-vision/health", {"timeout": 12})])
 
     def test_catalog_exposes_only_fully_configured_opt_in_remote_model(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -165,6 +208,8 @@ class VastServerlessProviderTests(unittest.TestCase):
         access=RemoteAccess(
             license_id="lic_" + "x" * 18,
             license_token="t" * 48,
+            discord_user_id="123456789012345678",
+            discord_username="test-user",
             request_id="a" * 64,
         )
         with patch.object(factory_module, "RemoteGatewayProvider", return_value="remote") as create:
@@ -172,6 +217,7 @@ class VastServerlessProviderTests(unittest.TestCase):
         kwargs = create.call_args.kwargs
         self.assertEqual(kwargs["model"], spec.provider_model)
         self.assertEqual(kwargs["base_url"], "https://seedframe.xyz/api/krea2-vision")
+        self.assertEqual(kwargs["origin_ip"], settings.remote_gateway_origin_ip)
         self.assertEqual(kwargs["max_tokens"], 2048)
         self.assertEqual(kwargs["access"], access)
 

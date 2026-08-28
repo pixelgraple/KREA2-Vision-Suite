@@ -21,6 +21,7 @@ from PIL import Image
 
 import app.api.analyze as api_module
 from app.config import settings
+from app.models.remote_access import RemoteAccess
 from app.models.vision_provider import ModelReply
 from app.services.discord_vision import (
     AGE_CLEAR,
@@ -65,10 +66,13 @@ from app.services.discord_vision import (
     HereticWarmResidency,
     LocalOllamaDiscordClient,
     SUBJECT_PASS,
+    V2_DIRECT_FIDELITY_SYSTEM,
     _derive_grounding_requirements,
     _anatomy_consensus,
     _anatomy_status,
+    _fail_closed_anatomy_probe,
     _audited_draft_variants,
+    _v2_direct_variants,
     _clean_final_prompt,
     _has_positive_visible_anatomy_evidence,
     _needs_anatomy_verification,
@@ -235,6 +239,12 @@ class FakeHereticProvider:
         self.image_calls+=1
         self.image_prompts.append((system,user))
         self.image_output_budgets.append(_args[2] if len(_args) > 2 else None)
+        if "V2 action/contact probe" in system:
+            return ModelReply(json.dumps({"contact":"Subject B's lips visibly touch the upper inner right buttock beside the intergluteal cleft of Subject A."}))
+        if "V2 Direct Fidelity observer" in system and "prompt_variants" in system:
+            return ModelReply(json.dumps({"prompt_variants":prompt_variants("Prompt: "+prose(187))}))
+        if "V2 Direct Fidelity observer" in system:
+            return ModelReply(json.dumps({"prompt":"Prompt: "+prose(187)}))
         if "one evidence-grounded KREA2 positive prompt" in system:
             return ModelReply(json.dumps({"prompt":prose(400)}))
         if "strict JSON" in system:
@@ -325,22 +335,36 @@ class StubDiscordService:
         self.reproducibility_guidance = None
         self.queue = type("QueueStatus", (), {"status": lambda _self: {"enabled": True, "count": 0, "entries": []}})()
 
-    def describe(self, path, on_progress=None, model=None, guidance="", *, dataset_guidance=False, feedback_context=None):
+    def describe(
+        self,
+        path,
+        on_progress=None,
+        model=None,
+        guidance="",
+        *,
+        dataset_guidance=False,
+        feedback_context=None,
+        analysis_profile="maximum",
+        prompt_variant_count=1,
+    ):
         self.calls += 1
         self.path = Path(path)
         self.model = model
         self.guidance = guidance
         self.dataset_guidance = dataset_guidance
         self.feedback_context = feedback_context
+        self.analysis_profile = analysis_profile
+        self.prompt_variant_count = prompt_variant_count
         if not self.path.exists():
             raise AssertionError("prepared image was missing during inference")
         if on_progress:
             on_progress("queued", "Waiting for shared GPU queue", 1)
             on_progress("running", "Composing the final KREA2 prompt", 0)
         prompt = " ".join(["the"] * 400)
+        variants = prompt_variants(prompt) if analysis_profile != "v2" or prompt_variant_count == 3 else [prompt]
         return DiscordDescribeResponse(
             prompt=prompt,
-            prompt_variants=prompt_variants(prompt),
+            prompt_variants=variants,
             model="test-model",
             prompt_words=400,
             dataset_guidance=(
@@ -362,11 +386,13 @@ class StubDiscordService:
             "next_eligible_job": {"worker": "Discord KREA2 Vision", "eligible_now": True},
         }
 
-    def reproducibility_for(self, model, dataset_guidance=None):
+    def reproducibility_for(self, model, dataset_guidance=None, analysis_profile="maximum"):
         self.reproducibility_guidance = dataset_guidance
+        self.reproducibility_analysis_profile = analysis_profile
         return {
             "schema_version": 1,
             "pipeline_id": PIPELINE_ID,
+            "analysis_profile": analysis_profile,
             "dataset_guidance": (
                 dataset_guidance.model_dump()
                 if isinstance(dataset_guidance, DatasetGuidanceReceipt)
@@ -683,6 +709,18 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertEqual(_anatomy_consensus("VISIBLE_PENIS", "VISIBLE_VULVA"), "NOT_ESTABLISHED")
         with self.assertRaisesRegex(DiscordVisionRejected, "status sentinel"):
             _anatomy_status("The image seems to show a penis.")
+        self.assertEqual(
+            _fail_closed_anatomy_probe(
+                lambda: (_ for _ in ()).throw(
+                    DiscordVisionRejected("missing anatomy status sentinel")
+                )
+            ),
+            "NOT_ESTABLISHED",
+        )
+        self.assertEqual(
+            _anatomy_consensus("VISIBLE_VULVA", "NOT_ESTABLISHED"),
+            "NOT_ESTABLISHED",
+        )
         self.assertIn("do not infer gender identity", HERETIC_ANATOMY_VERIFY_SYSTEM.lower())
 
     def test_positive_anatomy_candidate_ignores_negated_inventory(self):
@@ -1028,6 +1066,34 @@ class DiscordVisionTests(unittest.TestCase):
         with self.assertRaisesRegex(DiscordVisionRejected, "structured"):
             DiscordVisionService._single_heretic_prompt('{"analysis":"not a prompt"')
 
+    def test_fast_compact_validator_accepts_grounded_287_word_prompt(self):
+        raw = json.dumps({"prompt": prose(287)})
+        with self.assertRaisesRegex(DiscordVisionRejected, "287 words"):
+            DiscordVisionService._single_heretic_prompt(raw)
+
+        draft = DiscordVisionService._single_heretic_prompt(
+            raw,
+            {},
+            minimum_words=160,
+        )
+        variants = _audited_draft_variants(
+            draft,
+            {},
+            minimum_words=160,
+        )
+        result = DiscordVisionService._final_prompt(
+            json.dumps({"prompt_variants": variants}),
+            True,
+            "test fast model",
+            enforce_age_gate=False,
+            allow_plain_text=True,
+            required_facts={},
+            minimum_words=160,
+        )
+        self.assertGreaterEqual(result.prompt_words, 287)
+        self.assertLessEqual(result.prompt_words, 320)
+        self.assertEqual(len(result.prompt_variants), 3)
+
     def test_heretic_final_reorders_only_existing_sentences_when_model_repeats(self):
         words = prose(420).split()
         sentences = [" ".join(words[start:start + 70]).rstrip(".") + "." for start in range(0, 420, 70)]
@@ -1293,6 +1359,256 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertLess(pipeline.events.index("warm-retained-before-queue-release"), pipeline.events.index("queue-exit"))
         self.assertTrue(service.warm.status()["active"])
         warm.evict()
+
+    def test_fast_heretic_profile_uses_one_direct_image_call_and_no_secondary_passes(self):
+        pipeline=FakeHereticPipeline()
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        stages=[]
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(
+                image,
+                on_progress=lambda _status,stage,_ahead: stages.append(stage),
+                model="llamacpp::heretic-8b-q8_0",
+                analysis_profile="fast",
+            )
+        self.assertEqual(len(result.prompt_variants),3)
+        self.assertGreaterEqual(result.prompt_words,400)
+        self.assertLessEqual(result.prompt_words,550)
+        self.assertEqual(pipeline.provider.image_calls,1)
+        self.assertEqual(pipeline.provider.text_calls,0)
+        self.assertTrue(any("Fast direct-image interrogation" in stage for stage in stages))
+        self.assertFalse(any("Pass 1 of 5" in stage for stage in stages))
+        reproducibility=service.reproducibility_for(
+            "llamacpp::heretic-8b-q8_0",
+            result.dataset_guidance,
+            "fast",
+        )
+        self.assertEqual(reproducibility["analysis_profile"],"fast")
+        self.assertEqual(reproducibility["full_image_passes"],1)
+        self.assertEqual(reproducibility["detail_crops"],0)
+        self.assertEqual(reproducibility["image_audits"],0)
+
+    def test_v2_direct_fidelity_uses_compact_one_pass_prompt_without_stock_lead(self):
+        pipeline=FakeHereticPipeline()
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        stages=[]
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(
+                image,
+                on_progress=lambda _status,stage,_ahead: stages.append(stage),
+                model="llamacpp::heretic-8b-q8_0",
+                analysis_profile="v2",
+            )
+        self.assertEqual(pipeline.provider.image_calls,2)
+        self.assertEqual(pipeline.provider.text_calls,0)
+        self.assertIn("upper inner right buttock",pipeline.provider.image_prompts[1][1])
+        self.assertEqual(result.prompt,prose(187))
+        self.assertEqual(result.prompt_words,187)
+        self.assertEqual(result.prompt_variants,[result.prompt])
+        self.assertNotIn("This balanced reconstruction",result.prompt)
+        self.assertIn("V2 Direct Fidelity",result.model)
+        self.assertTrue(any("V2 Direct Fidelity" in stage for stage in stages))
+        self.assertLess(len(V2_DIRECT_FIDELITY_SYSTEM),5400)
+        self.assertIn("first 80 words",V2_DIRECT_FIDELITY_SYSTEM)
+        self.assertIn("broad apparent adult age range",V2_DIRECT_FIDELITY_SYSTEM)
+        self.assertIn("photographic imperfections",V2_DIRECT_FIDELITY_SYSTEM)
+        self.assertIn("depth of field",V2_DIRECT_FIDELITY_SYSTEM)
+        interaction_lock=V2_DIRECT_FIDELITY_SYSTEM.lower()
+        for required in (
+            "a mostly hidden body remains a subject",
+            "camera-relative and partner-relative facing",
+            "woman-on-top sexual position",
+            "uncertainty about visible penetration applies only to penetration",
+            "must never erase otherwise unmistakable sexual activity",
+            "never downgrade clear sexual activity into a solo pose",
+            "expression never overrides the defining action",
+            "changes multi-person sexual activity into a solo or nonsexual scene",
+        ):
+            self.assertIn(required,interaction_lock)
+        reproducibility=service.reproducibility_for(
+            "llamacpp::heretic-8b-q8_0",
+            result.dataset_guidance,
+            "v2",
+        )
+        self.assertEqual(reproducibility["analysis_profile"],"v2")
+        self.assertEqual(reproducibility["full_image_passes"],1)
+        self.assertEqual(reproducibility["detail_crops"],1)
+        self.assertEqual(reproducibility["image_audits"],0)
+        self.assertTrue(reproducibility["contact_probe"])
+
+    def test_v2_compatibility_variants_leave_canonical_prompt_unchanged(self):
+        draft=prose(400)
+        variants=_v2_direct_variants(draft)
+        self.assertEqual(variants[0],draft)
+        self.assertEqual(len(set(variants)),3)
+
+    def test_v2_optional_three_variations_use_one_full_frame_generation(self):
+        pipeline=FakeHereticPipeline()
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(
+                image,
+                model="llamacpp::heretic-8b-q8_0",
+                analysis_profile="v2",
+                prompt_variant_count=3,
+            )
+        self.assertEqual(pipeline.provider.image_calls,2)
+        self.assertEqual(len(result.prompt_variants),3)
+        self.assertEqual(len(set(result.prompt_variants)),3)
+        self.assertIn("prompt_variants",pipeline.provider.image_prompts[-1][0])
+        self.assertEqual(pipeline.provider.image_output_budgets[-1],2048)
+
+    def test_v2_remote_finalizes_one_charge_with_exact_prompt_variants(self):
+        class ReceiptProvider(FakeHereticProvider):
+            def __init__(self):
+                super().__init__()
+                self.completed = []
+                self.failed = 0
+
+            def complete_audit(self, variants):
+                self.completed.append(list(variants))
+
+            def fail_audit(self):
+                self.failed += 1
+
+            def with_image_text(self, system, user, *_args):
+                super().with_image_text(system, user, *_args)
+                return ModelReply(json.dumps({"prompt": "Prompt: " + prose(180)}))
+
+        pipeline=FakeHereticPipeline()
+        pipeline.provider=ReceiptProvider()
+        pipeline.spec=ModelSpec(
+            "vast::gemma4-26b-a4b-heretic-q3_k_l",
+            "Online API — Gemma 4 26B-A4B",
+            "vast_serverless",
+            "gemma4-26b-a4b-heretic-q3-k-l",
+            False,
+            8192,
+            2048,
+            18432,
+        )
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        access=RemoteAccess(
+            license_id="lic_"+"a"*24,
+            license_token="t"*48,
+            discord_user_id="1234567890123456789",
+            discord_username="kayla",
+            request_id="d"*64,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(
+                image,
+                model=pipeline.spec.public_id,
+                analysis_profile="v2",
+                remote_access=access,
+            )
+        self.assertEqual(pipeline.provider.image_calls,1)
+        self.assertEqual(pipeline.provider.failed,0)
+        self.assertEqual(pipeline.provider.completed,[result.prompt_variants])
+        self.assertEqual(result.prompt_words,180)
+        self.assertTrue(all(len(item)<1200 for item in result.prompt_variants))
+        self.assertIn("ONLINE API RECEIPT REQUIREMENT",pipeline.provider.image_prompts[0][1])
+        self.assertNotIn("V2 action/contact probe",pipeline.provider.image_prompts[0][0])
+        self.assertIn("one-pass full-frame",result.model)
+        reproducibility=service.reproducibility_for(
+            pipeline.spec.public_id,
+            result.dataset_guidance,
+            "v2",
+        )
+        self.assertEqual(reproducibility["detail_crops"],0)
+        self.assertFalse(reproducibility["contact_probe"])
+
+    def test_v2_remote_repairs_first_response_locally_without_second_inference(self):
+        class WrappedReceiptProvider(FakeHereticProvider):
+            def __init__(self):
+                super().__init__()
+                self.completed = []
+                self.failed = 0
+
+            def with_image_text(self, system, user, *_args):
+                self.image_calls += 1
+                self.image_prompts.append((system, user))
+                self.image_output_budgets.append(_args[2] if len(_args) > 2 else None)
+                return ModelReply(json.dumps({"description": prose(187)}))
+
+            def complete_audit(self, variants):
+                self.completed.append(list(variants))
+
+            def fail_audit(self):
+                self.failed += 1
+
+        pipeline = FakeHereticPipeline()
+        pipeline.provider = WrappedReceiptProvider()
+        pipeline.spec = ModelSpec(
+            "vast::gemma4-26b-a4b-heretic-q3_k_l",
+            "Online API — Gemma 4 26B-A4B",
+            "vast_serverless",
+            "gemma4-26b-a4b-heretic-q3-k-l",
+            False,
+            8192,
+            2048,
+            18432,
+        )
+        service = DiscordVisionService(
+            replace(settings, queue_enabled=True, model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]), []),
+            ollama=FakeOllama([], prose(400)),
+            pipeline=pipeline,
+        )
+        access = RemoteAccess(
+            license_id="lic_" + "a" * 24,
+            license_token="t" * 48,
+            discord_user_id="1234567890123456789",
+            discord_username="kayla",
+            request_id="e" * 64,
+        )
+        stages = []
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.png"
+            image.write_bytes(image_bytes())
+            result = service.describe(
+                image,
+                on_progress=lambda _status, stage, _ahead: stages.append(stage),
+                model=pipeline.spec.public_id,
+                analysis_profile="v2",
+                remote_access=access,
+            )
+
+        self.assertEqual(pipeline.provider.image_calls, 1)
+        self.assertEqual(pipeline.provider.failed, 0)
+        self.assertEqual(pipeline.provider.completed, [result.prompt_variants])
+        self.assertEqual(result.prompt, prose(187))
+        self.assertTrue(any("local format recovery" in stage for stage in stages))
+        self.assertFalse(any("reinspecting" in stage for stage in stages))
 
     def test_legacy_local_vision_does_not_apply_gpu_wait_deadline(self):
         class TimeoutAwareQueue(FakeQueue):
@@ -1603,6 +1919,18 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertEqual(len(set(variants)),3)
         for prompt in variants:
             _validate_required_grounding(prompt,required)
+
+    def test_deterministic_grounding_repair_restores_ground_level_low_angle(self):
+        required={
+            "ground_level_low_angle":
+            "the camera is at ground or floor level with an upward low-angle view"
+        }
+        repaired=_repair_grounding_locked_prompt(variant_prose(0,420),required)
+        self.assertRegex(
+            repaired.lower(),
+            r"camera is at ground or floor level with an upward low-angle view",
+        )
+        _validate_required_grounding(repaired,required)
 
     def test_heretic_ignores_legacy_age_reject_sentinel_and_describes_image(self):
         pipeline=FakeHereticPipeline()
@@ -1966,8 +2294,10 @@ class DiscordVisionApiTests(unittest.TestCase):
         contribution_terms=api_module.CONTRIBUTION_TERMS_VERSION,
         diagnostic_terms=None,
         diagnostic_username=None,
+        analysis_profile="fast",
+        prompt_count=1,
     ):
-        data = {"model": model, "guidance": guidance}
+        data = {"model": model, "guidance": guidance, "analysis_profile": analysis_profile, "prompt_count":str(prompt_count)}
         if dataset_guidance is not None:
             data["dataset_guidance"] = dataset_guidance
         if feedback_context is not None:
@@ -2203,6 +2533,8 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.assertEqual(response.json()["classification"], "usable")
         self.assertEqual(self.service.calls, 1)
         self.assertEqual(self.service.model,"llamacpp::heretic-8b-q8_0")
+        self.assertEqual(self.service.analysis_profile,"fast")
+        self.assertEqual(self.service.reproducibility_analysis_profile,"fast")
         self.assertEqual(len(self.contributor.calls), 1)
         self.assertEqual(threadpool.await_count, 2)
         self.assertIs(threadpool.await_args_list[0].args[0].__self__, self.service)
@@ -2220,6 +2552,72 @@ class DiscordVisionApiTests(unittest.TestCase):
             self.jobs.get(jobs[0]["id"])["reproducibility"]["dataset_guidance"],
             response.json()["dataset_guidance"],
         )
+
+    def test_route_rejects_unknown_analysis_profile(self):
+        with patch.object(api_module,"discord_vision",self.service), patch.object(
+            api_module,"settings",self.configured
+        ):
+            client=TestClient(self.app,client=("127.0.0.1",50000),base_url="http://127.0.0.1:7870")
+            response=self.post(client,analysis_profile="slow-and-unbounded")
+        self.assertEqual(response.status_code,422)
+        self.assertEqual(self.service.calls,0)
+
+    def test_route_accepts_v2_analysis_profile(self):
+        with patch.object(api_module,"discord_vision",self.service), patch.object(
+            api_module,"settings",self.configured
+        ):
+            client=TestClient(self.app,client=("127.0.0.1",50000),base_url="http://127.0.0.1:7870")
+            response=self.post(client,analysis_profile="v2",contribution_terms=None)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.service.analysis_profile,"v2")
+        self.assertEqual(self.service.prompt_variant_count,1)
+
+    def test_route_accepts_three_v2_variations_and_rejects_two(self):
+        with patch.object(api_module,"discord_vision",self.service), patch.object(
+            api_module,"settings",self.configured
+        ):
+            client=TestClient(self.app,client=("127.0.0.1",50000),base_url="http://127.0.0.1:7870")
+            accepted=self.post(client,analysis_profile="v2",prompt_count=3,contribution_terms=None)
+            rejected=self.post(client,analysis_profile="v2",prompt_count=2,contribution_terms=None)
+        self.assertEqual(accepted.status_code,200)
+        self.assertEqual(len(accepted.json()["prompt_variants"]),3)
+        self.assertEqual(rejected.status_code,422)
+
+    def test_v2_studio_route_is_loopback_local_model_only(self):
+        async def dispatch(function,*args,**kwargs):
+            return function(*args,**kwargs)
+
+        local_spec=ModelSpec(
+            "llamacpp::heretic-8b-q8_0",
+            "Heretic — Qwen3-VL 8B Q8_0",
+            "llama_cpp",
+            "qwen3-vl-heretic-8b-q8-0",
+            True,
+            8192,
+            2048,
+            13312,
+        )
+        with patch.object(api_module,"discord_vision",self.service), patch.object(
+            api_module,"settings",self.configured
+        ), patch.object(
+            api_module,"available_model_specs",return_value=[local_spec]
+        ), patch.object(api_module,"run_in_threadpool",new=AsyncMock(side_effect=dispatch)):
+            client=TestClient(self.app,client=("127.0.0.1",50000),base_url="http://127.0.0.1:7870")
+            response=client.post(
+                "/api/v2-describe",
+                data={"model":"llamacpp::heretic-8b-q8_0","guidance":"action first"},
+                files={"image":("sample.png",image_bytes(),"image/png")},
+            )
+            remote=client.post(
+                "/api/v2-describe",
+                data={"model":"vast::gemma4-26b-a4b-heretic-q3_k_l"},
+                files={"image":("sample.png",image_bytes(),"image/png")},
+            )
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers["cache-control"],"no-store")
+        self.assertEqual(self.service.analysis_profile,"v2")
+        self.assertEqual(self.service.guidance,"action first")
+        self.assertEqual(remote.status_code,422)
 
     def test_online_contribution_failure_keeps_prompt_and_marks_job_completed(self):
         async def dispatch(function, *args, **kwargs):
@@ -2284,6 +2682,8 @@ class DiscordVisionApiTests(unittest.TestCase):
                 *,
                 dataset_guidance=False,
                 feedback_context=None,
+                analysis_profile="maximum",
+                prompt_variant_count=1,
             ):
                 self.dataset_guidance = dataset_guidance
                 raise DiscordVisionDatasetUnavailable("private dataset failure")
@@ -2483,7 +2883,7 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.assertNotIn("handoff_nonce", serialized)
         self.assertNotIn(TOKEN, serialized)
 
-    def test_remote_worker_capacity_timeout_is_reported_as_gpu_not_available(self):
+    def test_remote_worker_capacity_timeout_does_not_implicate_local_gpu(self):
         cause = RuntimeError("Timed out after 1201.0s waiting for worker to become ready")
         error = DiscordVisionBackendError("The selected Heretic vision pipeline is unavailable.")
         error.__cause__ = cause
@@ -2493,9 +2893,10 @@ class DiscordVisionApiTests(unittest.TestCase):
             "vast::gemma4-26b-a4b-heretic-q3_k_l",
         )
 
-        self.assertEqual(stage, "GPU not available")
-        self.assertEqual(public_error, "GPU not available")
-        self.assertEqual(http_detail, "GPU not available")
+        self.assertEqual(stage, "Online Vision unavailable")
+        self.assertIn("remote GPU", public_error)
+        self.assertIn("local GPU was not used", public_error)
+        self.assertEqual(http_detail, public_error)
 
     def test_nested_local_capacity_failure_is_actionable_instead_of_generic(self):
         cause = api_module.GpuCapacityError(
@@ -2536,7 +2937,18 @@ class DiscordVisionApiTests(unittest.TestCase):
                 super().__init__()
                 self.error = error
 
-            def describe(self, path, on_progress=None, model=None, guidance="", *, dataset_guidance=False, feedback_context=None):
+            def describe(
+                self,
+                path,
+                on_progress=None,
+                model=None,
+                guidance="",
+                *,
+                dataset_guidance=False,
+                feedback_context=None,
+                analysis_profile="maximum",
+                prompt_variant_count=1,
+            ):
                 if on_progress:
                     on_progress("running", "Pass 1 of 3", 0)
                 raise self.error
@@ -2636,6 +3048,40 @@ class DiscordVisionApiTests(unittest.TestCase):
                 },
             )
         self.assertEqual(response.status_code, 503)
+
+    def test_operational_error_route_posts_redacted_trace_to_remote_webhook(self):
+        operational = Mock()
+        operational.submit_safely.return_value = True
+        webhook = Mock()
+        webhook.submit_safely.return_value = True
+        with patch.object(api_module, "krea2_operational_error_reporter", operational), patch.object(
+            api_module, "remote_discord_error_reporter", webhook
+        ), patch.object(api_module, "settings", self.configured):
+            local = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
+            response = local.post(
+                "/api/discord-errors",
+                headers={
+                    "X-Krea2-Vision-Token": TOKEN,
+                    "X-Krea2-Collector-Version": "0.14.3",
+                    "X-Krea2-Remote-License-Id": "lic_error_report_test",
+                    "X-Krea2-Remote-License-Token": "t" * 64,
+                },
+                json={
+                    "event_id": "a" * 32,
+                    "model_id": "vast::gemma4-26b-a4b-heretic-q3_k_l",
+                    "error_code": "plugin_vision_request_failed",
+                    "error_message": "Remote worker failed",
+                    "stage": "Submitting the Discord image",
+                    "technical_trace": "Error: failed at https://private.invalid/image.png token=secret-value",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["webhook_attachment"])
+        kwargs = webhook.submit_safely.call_args.kwargs
+        self.assertIn("[URL removed]", kwargs["technical_trace"])
+        self.assertIn("[credential removed]", kwargs["technical_trace"])
+        self.assertNotIn("private.invalid", kwargs["technical_trace"])
+        self.assertNotIn("secret-value", kwargs["technical_trace"])
 
 
 if __name__ == "__main__":

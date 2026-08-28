@@ -133,8 +133,20 @@ class DiscordVisionJobStore:
                 "CREATE INDEX IF NOT EXISTS discord_vision_jobs_updated "
                 "ON discord_vision_jobs(updated DESC)"
             )
-            now = time.time()
-            db.execute(
+
+    def recover_active_after_restart(self) -> int:
+        """Fail only work abandoned by an actual Vision server restart.
+
+        Constructing a store is intentionally side-effect free beyond schema
+        initialization. Test discovery, management scripts and read-only API
+        imports may all instantiate this class while the live server is still
+        processing a job; treating those imports as a restart corrupts the
+        active job's dashboard state.
+        """
+
+        now = time.time()
+        with self.session() as db:
+            cursor = db.execute(
                 """
                 UPDATE discord_vision_jobs
                 SET status='error', stage='Vision restarted before this job completed',
@@ -144,6 +156,7 @@ class DiscordVisionJobStore:
                 """,
                 (now, now),
             )
+            return max(0, int(cursor.rowcount or 0))
 
     def create(
         self,
@@ -243,8 +256,8 @@ class DiscordVisionJobStore:
                 raise ValueError("Completed Discord Vision prompt variations must be bounded non-empty text.")
             cleaned_variants.append(cleaned)
         if cleaned_variants:
-            if len(cleaned_variants)!=3 or len(set(cleaned_variants))!=3:
-                raise ValueError("Completed Discord Vision jobs require exactly three distinct prompt variations.")
+            if len(cleaned_variants) not in {1,3} or len(set(cleaned_variants))!=len(cleaned_variants):
+                raise ValueError("Completed Discord Vision jobs require one prompt or exactly three distinct prompt variations.")
             cleaned_prompt=cleaned_variants[0]
         else:
             cleaned_variants=[cleaned_prompt]

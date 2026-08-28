@@ -35,7 +35,11 @@ from ..services.discord_jobs import DiscordVisionJobStore
 from ..services.discord_sessions import DiscordVisionSessionStore
 from ..models.remote_access import RemoteAccess
 from ..models.llama_cpp_provider import LlamaCppProviderError
-from ..models.remote_gateway_provider import RemoteGatewayProviderError
+from ..models.remote_gateway_provider import (
+    RemoteGatewayErrorReporter,
+    RemoteGatewayProviderError,
+    fetch_remote_gateway_health,
+)
 from ..services.model_catalog import available_model_specs, public_model_statuses
 from ..services.model_downloads import ModelDownloadBusy, ModelDownloadError, ModelDownloadManager
 from ..services.release_updates import ReleaseUpdateManager, SuiteUpdateBusy, SuiteUpdateError
@@ -51,6 +55,7 @@ from ..services.krea2_diagnostics import (
     Krea2OperationalErrorReporter,
     sanitize_operational_error,
 )
+from ..services.discord_error_reports import exception_trace, redact_technical_trace
 
 router=APIRouter(prefix="/api")
 pipeline=StudioPipeline(settings); presets=PresetStore(ROOT); discord_vision=DiscordVisionService(settings)
@@ -78,6 +83,14 @@ krea2_operational_error_reporter=(
     if len(settings.discord_vision_token.encode("utf-8")) >= 32
     else None
 )
+remote_discord_error_reporter=(
+    RemoteGatewayErrorReporter(
+        base_url=settings.remote_gateway_url,
+        origin_ip=settings.remote_gateway_origin_ip,
+    )
+    if settings.remote_gateway_url
+    else None
+)
 BACKEND_VERSION=(ROOT / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
 log=logging.getLogger("studio.api")
 
@@ -103,14 +116,18 @@ def backend_public_failure(exc: Exception, requested_model: str) -> tuple[str,st
     if capacity_error is not None:
         public=f"GPU not available: {sanitize_operational_error(str(capacity_error))}"
         return "GPU not available",public,public
-    if "gpu not available" in lowered:
-        return "GPU not available","GPU not available","GPU not available"
     if requested_model.startswith("vast::"):
+        if "gpu not available" in lowered:
+            public="Online Vision could not reach its remote GPU. Your local GPU was not used."
+            return "Online Vision unavailable",public,public
         if ("timed out" in lowered or "timeout" in lowered) and ("worker" in lowered or "ready" in lowered or "queue" in lowered):
-            return "GPU not available","GPU not available","GPU not available"
+            public="Online Vision timed out while waiting for its remote GPU. Your local GPU was not used."
+            return "Online Vision unavailable",public,public
         actionable=next((item for item in chain if isinstance(item,RemoteGatewayProviderError)),exc)
         public=f"Remote Vision error: {sanitize_operational_error(str(actionable))}"
         return "Remote Vision failed",public,public
+    if "gpu not available" in lowered:
+        return "GPU not available","GPU not available","GPU not available"
     actionable=next((item for item in chain if isinstance(item,LlamaCppProviderError)),exc)
     public=f"Local Vision error: {sanitize_operational_error(str(actionable))}"
     return (
@@ -162,7 +179,7 @@ def require_discord_vision_session(
     idempotency_key: str | None,
     collector_version: str | None,
     model: str,
-) -> None:
+) -> object:
     if len(configured.encode("utf-8")) < 32:
         raise HTTPException(503,"Discord vision is not configured.")
     require_loopback(request,"Discord vision accepts literal loopback clients only.")
@@ -249,6 +266,41 @@ def schedule_operational_error(
         backend_version=BACKEND_VERSION,
     )
 
+def schedule_discord_error_report(
+    *,
+    event_id: str | None,
+    model_id: str,
+    plugin_version: str | None,
+    error_code: str,
+    error_message: str,
+    stage: str,
+    technical_trace: str,
+    license_id: str,
+    license_token: str,
+) -> None:
+    """Queue one redacted .txt report through the gateway-owned webhook."""
+
+    if remote_discord_error_reporter is None:
+        return
+    normalized_event=str(event_id or "").strip().lower()
+    if len(normalized_event) != 32 or any(ch not in "0123456789abcdef" for ch in normalized_event):
+        normalized_event=secrets.token_hex(16)
+    start_background_task(
+        remote_discord_error_reporter.submit_safely,
+        license_id=str(license_id or ""),
+        license_token=str(license_token or ""),
+        event_id=normalized_event,
+        model_id=model_id or "unknown",
+        pipeline_id=PIPELINE_ID,
+        error_code=error_code,
+        error_message=sanitize_operational_error(error_message,2000),
+        stage=sanitize_operational_error(stage,200),
+        runtime="remote" if str(model_id).startswith("vast::") else "local",
+        plugin_version=str(plugin_version or "unknown"),
+        backend_version=BACKEND_VERSION,
+        technical_trace=redact_technical_trace(technical_trace),
+    )
+
 def start_background_task(function, **kwargs) -> None:
     threading.Thread(target=function,kwargs=kwargs,daemon=True,name="krea2-diagnostic-upload").start()
 
@@ -323,6 +375,8 @@ class DiscordSessionRequest(BaseModel):
     model:str
     remote_license_id:str=""
     remote_license_token:str=""
+    remote_discord_user_id:str=""
+    remote_discord_username:str=""
     source_url:str=""
 
 class DiscordOperationalErrorRequest(BaseModel):
@@ -331,6 +385,7 @@ class DiscordOperationalErrorRequest(BaseModel):
     error_code:str
     error_message:str
     stage:str
+    technical_trace:str="No plugin traceback was supplied."
 
 @router.post("/discord-errors")
 def discord_operational_error(
@@ -338,28 +393,50 @@ def discord_operational_error(
     request:Request,
     token:Annotated[str|None,Header(alias="X-Krea2-Vision-Token")]=None,
     collector_version:Annotated[str|None,Header(alias="X-Krea2-Collector-Version")]=None,
+    remote_license_id:Annotated[str|None,Header(alias="X-Krea2-Remote-License-Id")]=None,
+    remote_license_token:Annotated[str|None,Header(alias="X-Krea2-Remote-License-Token")]=None,
 ):
     require_discord_vision_auth(request,token,settings.discord_vision_token)
     if len(payload.event_id) != 32 or any(ch not in "0123456789abcdef" for ch in payload.event_id):
         raise HTTPException(422,"Operational event ID is invalid.")
-    if not (1 <= len(payload.model_id) <= 200 and 1 <= len(payload.error_code) <= 80 and 1 <= len(payload.error_message) <= 2000 and 1 <= len(payload.stage) <= 200):
+    if not (1 <= len(payload.model_id) <= 200 and 1 <= len(payload.error_code) <= 80 and 1 <= len(payload.error_message) <= 2000 and 1 <= len(payload.stage) <= 200 and 1 <= len(payload.technical_trace) <= 131072):
         raise HTTPException(422,"Operational error fields are invalid.")
-    if krea2_operational_error_reporter is None:
-        raise HTTPException(503,"Operational error reporting is unavailable.")
-    accepted=krea2_operational_error_reporter.submit_safely(
-        event_id=payload.event_id,
-        model_id=payload.model_id,
-        pipeline_id=PIPELINE_ID,
-        error_code=payload.error_code,
-        error_message=payload.error_message,
-        stage=payload.stage,
-        runtime="remote" if payload.model_id.startswith("vast::") else "local",
-        plugin_version=str(collector_version or "unknown"),
-        backend_version=BACKEND_VERSION,
-    )
-    if not accepted:
+    operational_accepted=False
+    if krea2_operational_error_reporter is not None:
+        operational_accepted=krea2_operational_error_reporter.submit_safely(
+            event_id=payload.event_id,
+            model_id=payload.model_id,
+            pipeline_id=PIPELINE_ID,
+            error_code=payload.error_code,
+            error_message=payload.error_message,
+            stage=payload.stage,
+            runtime="remote" if payload.model_id.startswith("vast::") else "local",
+            plugin_version=str(collector_version or "unknown"),
+            backend_version=BACKEND_VERSION,
+        )
+    webhook_accepted=False
+    if remote_discord_error_reporter is not None and remote_license_id and remote_license_token:
+        webhook_accepted=remote_discord_error_reporter.submit_safely(
+            license_id=remote_license_id,
+            license_token=remote_license_token,
+            event_id=payload.event_id,
+            model_id=payload.model_id,
+            pipeline_id=PIPELINE_ID,
+            error_code=payload.error_code,
+            error_message=sanitize_operational_error(payload.error_message,2000),
+            stage=sanitize_operational_error(payload.stage,200),
+            runtime="remote" if payload.model_id.startswith("vast::") else "local",
+            plugin_version=str(collector_version or "unknown"),
+            backend_version=BACKEND_VERSION,
+            technical_trace=redact_technical_trace(payload.technical_trace),
+        )
+    if not operational_accepted and not webhook_accepted:
         raise HTTPException(503,"Operational error reporting is temporarily unavailable.")
-    return {"accepted":True,"privacy":"no image, prompt, Discord identity, URL, filename, or local path collected"}
+    return {
+        "accepted":True,
+        "webhook_attachment":webhook_accepted,
+        "privacy":"no image, prompt, Discord identity, URL, filename, credential, or local user path collected",
+    }
 
 @router.post("/discord-session")
 def issue_discord_session(
@@ -378,6 +455,8 @@ def issue_discord_session(
             remote_access=RemoteAccess(
                 license_id=payload.remote_license_id.strip(),
                 license_token=payload.remote_license_token.strip(),
+                discord_user_id=payload.remote_discord_user_id.strip(),
+                discord_username=" ".join(payload.remote_discord_username.split()),
                 request_id=payload.idempotency_key.strip().lower(),
                 source_url=payload.source_url.strip(),
             )
@@ -404,6 +483,8 @@ async def discord_describe(
     guidance:str=Form(""),
     dataset_guidance:str=Form("0"),
     feedback_context:str=Form(""),
+    analysis_profile:str=Form("fast"),
+    prompt_count:int=Form(1),
     job_id:str=Form(""),
     contribution_terms:str=Form(""),
     diagnostic_terms:str=Form(""),
@@ -439,6 +520,12 @@ async def discord_describe(
     path=None
     try:
         requested_guidance=" ".join(guidance.split())
+        requested_analysis_profile=analysis_profile.strip().casefold()
+        if requested_analysis_profile not in {"fast","maximum","v2"}:
+            raise HTTPException(422,"Vision analysis profile must be fast, maximum, or v2.")
+        requested_prompt_count=int(prompt_count)
+        if requested_prompt_count not in {1,3}:
+            raise HTTPException(422,"Vision prompt count must be one or three.")
         requested_dataset_guidance=strict_form_flag(dataset_guidance,"dataset_guidance")
         try:
             requested_feedback_context=parse_feedback_context(
@@ -486,10 +573,9 @@ async def discord_describe(
         describe_kwargs={
             "dataset_guidance":requested_dataset_guidance,
             "feedback_context":requested_feedback_context,
+            "analysis_profile":requested_analysis_profile,
+            "prompt_variant_count":requested_prompt_count,
         }
-        # Keep the local-only invocation contract unchanged.  Besides avoiding
-        # needless data flow, this lets existing local integrations stay
-        # isolated from the remote-license mechanism.
         if vision_session.remote_access is not None:
             describe_kwargs["remote_access"]=vision_session.remote_access
         result=await run_in_threadpool(
@@ -504,7 +590,7 @@ async def discord_describe(
             try:
                 if krea2_contributor is None:
                     raise Krea2ContributionError("Online Krea2 contribution provenance is not configured.")
-                progress("running","Submitting all three prompts to the online Krea2 dataset",0)
+                progress("running",f"Submitting {len(result.prompt_variants)} prompt{'s' if len(result.prompt_variants) != 1 else ''} to the online Krea2 dataset",0)
                 await run_in_threadpool(krea2_contributor.submit,result)
             except Krea2ContributionError as exc:
                 # Dataset contribution is an optional, disclosed side effect. A
@@ -523,11 +609,17 @@ async def discord_describe(
                 raise DiscordVisionCancelled("The Discord Vision job was cancelled.")
             reproducibility_method=getattr(discord_vision,"reproducibility_for",None)
             reproducibility=(
-                track_job(reproducibility_method,requested_model,result.dataset_guidance)
+                track_job(
+                    reproducibility_method,
+                    requested_model,
+                    result.dataset_guidance,
+                    requested_analysis_profile,
+                )
                 if callable(reproducibility_method)
                 else None
             )
             if isinstance(reproducibility,dict):
+                reproducibility["prompt_variant_count"]=len(result.prompt_variants)
                 track_job(discord_jobs.set_reproducibility,active_job_id,reproducibility)
             track_job(
                 discord_jobs.complete,
@@ -545,6 +637,8 @@ async def discord_describe(
         raise HTTPException(409,"Discord Vision job was cancelled.") from exc
     except DiscordVisionDatasetUnavailable as exc:
         schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="dataset_guidance_unavailable",error_message=str(exc),stage="Selecting eight Krea2 writing-style examples")
+        if vision_session.remote_access is not None:
+            schedule_discord_error_report(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="dataset_guidance_unavailable",error_message=str(exc),stage="Selecting eight Krea2 writing-style examples",technical_trace=exception_trace(exc),license_id=vision_session.remote_access.license_id,license_token=vision_session.remote_access.license_token)
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"dataset_guidance_unavailable","Krea2 dataset guidance is unavailable.","Selecting eight Krea2 writing-style examples",exc)
         log.warning("Krea2 dataset guidance was requested but unavailable (%s)",exc)
         if active_job_id:
@@ -574,6 +668,8 @@ async def discord_describe(
         raise HTTPException(422,"Adult-only status could not be confirmed after rechecking the image.") from exc
     except DiscordVisionRejected as exc:
         schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="output_validation_failed",error_message=str(exc),stage="Validating the audited final prompt set")
+        if vision_session.remote_access is not None:
+            schedule_discord_error_report(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="output_validation_failed",error_message=str(exc),stage="Validating the audited final prompt set",technical_trace=exception_trace(exc),license_id=vision_session.remote_access.license_id,license_token=vision_session.remote_access.license_token)
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"output_validation_failed","Heretic output remained unusable after automatic repair.","Validating the audited final prompt set",exc)
         log.warning(
             "heretic output remained unusable after repair job=%s model=%s image_sha256=%s reason=%s",
@@ -593,6 +689,8 @@ async def discord_describe(
         raise HTTPException(502,"Heretic returned unusable output twice; no prompt was saved.") from exc
     except (DiscordVisionBackendError,ForgeHandoffError,SharedGpuUnavailableError) as exc:
         schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_backend_unavailable",error_message=str(exc) or type(exc).__name__,stage="Acquiring or running the selected Vision backend")
+        if vision_session.remote_access is not None:
+            schedule_discord_error_report(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_backend_unavailable",error_message=str(exc) or type(exc).__name__,stage="Acquiring or running the selected Vision backend",technical_trace=exception_trace(exc),license_id=vision_session.remote_access.license_id,license_token=vision_session.remote_access.license_token)
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_backend_unavailable",str(exc) or type(exc).__name__,"Acquiring or running the selected Vision backend",exc)
         cause=exc.__cause__
         failure_stage,public_error,http_detail=backend_public_failure(exc,requested_model)
@@ -614,6 +712,8 @@ async def discord_describe(
         raise HTTPException(503,http_detail) from exc
     except Exception as exc:
         schedule_operational_error(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_internal_error",error_message=f"{type(exc).__name__}: {exc}",stage="Running the local Vision pipeline")
+        if vision_session.remote_access is not None:
+            schedule_discord_error_report(event_id=active_job_id,model_id=requested_model,plugin_version=collector_version,error_code="vision_internal_error",error_message=f"{type(exc).__name__}: {exc}",stage="Running the local Vision pipeline",technical_trace=exception_trace(exc),license_id=vision_session.remote_access.license_id,license_token=vision_session.remote_access.license_token)
         schedule_failure_diagnostic(krea2_diagnostic_reporter,path,active_job_id,diagnostics_enabled,diagnostic_username,requested_model,collector_version,"vision_internal_error",f"{type(exc).__name__}: {exc}","Running the local Vision pipeline",exc)
         log.error("discord vision failed (%s)",type(exc).__name__)
         if active_job_id:
@@ -625,6 +725,71 @@ async def discord_describe(
                 public_error="The local Vision pipeline failed safely.",
             )
         raise HTTPException(500,"Local vision pipeline failed safely.") from exc
+    finally:
+        if work is not None:
+            work.cleanup()
+
+
+@router.post("/v2-describe",response_model=DiscordDescribeResponse)
+async def v2_describe(
+    request:Request,
+    response:Response,
+    image:UploadFile=File(...),
+    model:str=Form(""),
+    guidance:str=Form(""),
+    prompt_count:int=Form(1),
+):
+    """Private loopback entrypoint for the merged Studio's V2 experiment.
+
+    This deliberately supports installed local llama.cpp models only. The paid
+    Serverless path remains bound to BetterDiscord's one-use licensed session,
+    so adding the tab cannot reserve credits or weaken that boundary.
+    """
+
+    require_loopback(request,"V2 Direct Fidelity accepts literal loopback clients only.")
+    if not suite_updates.accepting_new_jobs():
+        raise HTTPException(503,"A verified KREA2 Vision Suite update is being installed. Retry shortly.")
+    requested_guidance=" ".join(guidance.split())
+    if len(requested_guidance)>600:
+        raise HTTPException(422,"V2 emphasis exceeds 600 characters.")
+    requested_prompt_count=int(prompt_count)
+    if requested_prompt_count not in {1,3}:
+        raise HTTPException(422,"V2 prompt count must be one or three.")
+    local_models={
+        spec.public_id
+        for spec in available_model_specs(settings)
+        if spec.backend=="llama_cpp" and spec.public_id in HERETIC_MODEL_IDS
+    }
+    requested_model=model.strip() or settings.model
+    if requested_model not in local_models:
+        raise HTTPException(422,"Choose an installed local llama.cpp Vision model for V2.")
+    work=None
+    try:
+        work,path,_=await prepared_upload(image)
+        result=await run_in_threadpool(
+            discord_vision.describe,
+            path,
+            None,
+            requested_model,
+            requested_guidance,
+            analysis_profile="v2",
+            prompt_variant_count=requested_prompt_count,
+        )
+        response.headers["Cache-Control"]="no-store"
+        return result
+    except HTTPException:
+        raise
+    except DiscordVisionSafetyRejected as exc:
+        raise HTTPException(422,"Adult-only status could not be confirmed from the image.") from exc
+    except DiscordVisionRejected as exc:
+        log.warning("V2 Direct Fidelity output remained unusable after bounded recovery (%s)",exc)
+        raise HTTPException(502,"V2 returned unusable output; no prompt was saved.") from exc
+    except (DiscordVisionBackendError,ForgeHandoffError,SharedGpuUnavailableError) as exc:
+        _,_,detail=backend_public_failure(exc,requested_model)
+        raise HTTPException(503,detail) from exc
+    except Exception as exc:
+        log.exception("V2 Direct Fidelity failed")
+        raise HTTPException(500,"V2 Direct Fidelity failed safely.") from exc
     finally:
         if work is not None:
             work.cleanup()
@@ -676,6 +841,32 @@ def public_settings(): return {"backend":settings.backend,"model":settings.model
 @router.get("/models")
 def public_models():
     return {"models":public_model_statuses(settings)}
+
+@router.get("/remote-health")
+def public_remote_health(request:Request,response:Response):
+    require_loopback(request,"Remote Vision capacity is available on literal loopback only.")
+    response.headers["Cache-Control"]="no-store"
+    if not settings.remote_gateway_url:
+        return {
+            "ok":True,
+            "configured":False,
+            "remote_ready":False,
+            "remote_cold_start_eligible":False,
+            "remote_status":"Online API is not configured.",
+        }
+    try:
+        return fetch_remote_gateway_health(
+            settings.remote_gateway_url,
+            origin_ip=settings.remote_gateway_origin_ip,
+        )
+    except RemoteGatewayProviderError as exc:
+        return {
+            "ok":True,
+            "configured":True,
+            "remote_ready":False,
+            "remote_cold_start_eligible":False,
+            "remote_status":str(exc),
+        }
 
 @router.get("/discord-models")
 def public_discord_models(request:Request,response:Response):

@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.14.0
+# Krea2 Discord Vision v0.14.3
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
@@ -19,7 +19,7 @@ During first-run setup, the user can enable **Automatically contribute my three 
 
 **Share failed Vision diagnostics with Krea2** is a separate setting that defaults to **off** and has its own disclosure. If explicitly enabled, failed requests only may send the source image, Discord username, model/pipeline, error/stage, versions, anonymous installation digest, and an available partial or audited prompt to the owner-only Seedframe diagnostics console. Successful requests are never sent through this channel, and a diagnostic upload failure can never turn a Vision result into an error.
 
-Privacy-minimal operational error reporting is required and separate from that rich diagnostic option. It reports only an anonymous installation digest, event/model/pipeline, sanitized error and stage, runtime, and versions. It never sends an image or image hash, prompt, Discord identity, URL, filename, or local path. Delivery uses the authenticated loopback broker with a direct canonical Seedframe fallback; pending retries are bounded and memory-only.
+Mandatory technical error reporting is separate from that rich diagnostic option. Each unique failed image posts one downloadable, redacted `.txt` traceback to the owner-only Discord webhook and retains privacy-minimal operational fields in Seedframe. Reports contain the exception chain, event/model/pipeline, sanitized error and stage, runtime, and software versions; they never contain an image or image hash, prompt/model output, Discord identity, credentials, URL, image filename, or local user path. Delivery uses the authenticated loopback broker with a licensed remote-gateway fallback; pending retries are bounded and memory-only, duplicate backend/plugin reports are suppressed for 15 minutes, and reporting never spends Vision credits.
 
 The model/VRAM installer, shared FIFO status, durable local job history, pagination, cancel, prompt copying, and model-used evidence remain. Legacy sidecars, exports, and unrelated persistent prompt tools are disabled.
 
@@ -107,7 +107,7 @@ Heretic/uncensored variants reduce model-level refusals. The local project still
   "prompt_variants": ["...Prompt 1...", "...Prompt 2...", "...Prompt 3..."],
   "model": "...",
   "prompt_words": 384,
-  "pipeline_id": "discord-faithful-v9-external-support-wardrobe-lock",
+  "pipeline_id": "discord-faithful-v12-interaction-locked-v2",
   "dataset_guidance": {
     "enabled": true,
     "status": "applied",

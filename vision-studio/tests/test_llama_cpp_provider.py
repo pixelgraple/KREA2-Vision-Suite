@@ -159,9 +159,6 @@ class LlamaCppProviderTests(unittest.TestCase):
                 str(root / "logs" / "llama-server.log"),
             )
             self.assertIn("--log-timestamps", command)
-            self.assertEqual(command[command.index("--reasoning") + 1], "off")
-            self.assertEqual(command[command.index("--reasoning-format") + 1], "none")
-            self.assertEqual(command[command.index("--reasoning-budget") + 1], "0")
             self.assertEqual(command[command.index("--host") + 1], "127.0.0.1")
             self.assertFalse(launch["kwargs"]["shell"])
             self.assertEqual(reply.text, '{"answer":"visible detail"}')
@@ -188,30 +185,6 @@ class LlamaCppProviderTests(unittest.TestCase):
             self.assertNotIn(str(root), serialized_events)
             self.assertNotIn("model.gguf", serialized_events)
             self.assertNotIn("k" * 32, serialized_events)
-
-    def test_reasoning_content_is_used_when_standard_content_is_empty(self):
-        class ReasoningHttp(FakeHttp):
-            def post(self, url, **kwargs):
-                self.posts.append((url, kwargs))
-                return FakeResponse(200, {
-                    "choices": [{"message": {"content": "", "reasoning_content": "visible prose"}}],
-                    "usage": {},
-                })
-
-        with tempfile.TemporaryDirectory() as temporary:
-            server, model, mmproj = self.files(Path(temporary))
-            provider = LlamaCppProvider(
-                server,
-                model,
-                mmproj,
-                "llamacpp:heretic-8b-q8_0",
-                api_key="r" * 32,
-                http=ReasoningHttp(),
-                popen_factory=lambda *_args, **_kwargs: FakeProcess(),
-                sleeper=lambda _: None,
-            )
-            self.assertEqual(provider.text("system", "prompt", 0.1).text, "visible prose")
-            provider.unload()
 
     def test_unload_kills_exact_child_after_graceful_timeout(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -50,6 +50,8 @@ class RemoteGatewayProviderTests(unittest.TestCase):
         self.access = RemoteAccess(
             license_id="lic_" + "x" * 18,
             license_token="t" * 48,
+            discord_user_id="12345678901234567",
+            discord_username="tester",
             request_id="a" * 64,
             source_url="https://cdn.discordapp.com/attachments/123/456/source.png",
         )
@@ -94,7 +96,7 @@ class RemoteGatewayProviderTests(unittest.TestCase):
 
     def test_fails_fast_on_a_gateway_disconnect_without_replaying_the_image(self):
         self.provider.http = _TransientHttp()
-        with self.assertRaisesRegex(RemoteGatewayProviderError, "Remote GPU not available"):
+        with self.assertRaisesRegex(RemoteGatewayProviderError, "remote Vision gateway could not be reached"):
             self.provider.text("system", "describe", 0.1, 64)
         self.assertEqual(len(self.provider.http.calls), 1)
         for _, request in self.provider.http.calls:

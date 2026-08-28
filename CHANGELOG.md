@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.3 - 2026-08-28
+
+- Posts one owner-only Discord webhook message with a downloadable, redacted `.txt` traceback for each unique failed Discord Vision image.
+- Captures Python exception chains in Vision Studio and JavaScript stacks for plugin-only download, queue, session, and transport failures.
+- Excludes image bytes and hashes, prompts/model output, Discord identity, credentials, URLs, image filenames, and local user paths from automatic reports.
+- Suppresses duplicate backend/plugin reports for 15 minutes, rate-limits authenticated reporters, and keeps error reporting outside all Vision-credit accounting paths.
+- Keeps the Discord webhook credential only on the remote gateway; neither BetterDiscord nor the local Studio receives or stores the webhook token.
+- Advances BetterDiscord and Vision Studio to the V12 interaction-locked V2 prompt contract, including direct preservation of clearly visible adult interaction topology, pose, camera angle, lighting, shadows, and detailed wardrobe.
+
 ## 0.14.0 - 2026-08-28
 
 - Adds a Discord-native **Qwen Prompt Editor** popup backed by the pinned `heretic-3.8-q4-cloud` Vast model.

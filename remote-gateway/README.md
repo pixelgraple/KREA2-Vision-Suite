@@ -24,6 +24,14 @@ license ID, claimed Discord ID/display name, selected model, request ID, optiona
 Discord CDN attachment reference, and the three generated prompt variants. It
 never stores image bytes. `KREA2_GATEWAY_AUDIT_RETENTION_DAYS` defaults to 30.
 
+Authenticated `POST /v1/audit/error` reports do not reserve or charge credits.
+They create one owner-only Discord webhook message with a downloadable `.txt`
+attachment per event ID. The report keeps the exception chain and software
+stage/version data while removing images, prompts/model output, Discord IDs,
+credentials, URLs, image filenames, and local user paths. Duplicate event IDs
+are suppressed for 15 minutes and each license is limited to 30 new reports per
+10 minutes.
+
 ## Required private environment
 
 Create `/data/krea2-vision-gateway/gateway.env` outside the repository:
