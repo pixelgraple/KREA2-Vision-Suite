@@ -6,7 +6,7 @@ import unittest
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from app.config import settings
 from app.models import factory as factory_module
@@ -321,7 +321,11 @@ class PipelineSelectionTests(unittest.TestCase):
             capacity, current = runner._capacity_for(active, spec)
         self.assertEqual(current.free_mb, 29607)
         self.assertEqual(capacity["free_vram_mb_after_handoff"], 29607)
-        sleep.assert_called_once_with(0.5)
+        # Other background scheduler threads share Python's ``time`` module and
+        # may make their own short sleeps while this mock is active. Verify the
+        # handoff settle delay itself exactly once without coupling this test to
+        # unrelated scheduler timing on slower hosted runners.
+        self.assertEqual(sleep.call_args_list.count(call(0.5)), 1)
 
     def test_gemma12_adaptive_capacity_keeps_reserve_without_requiring_full_gpu_profile(self):
         runner = self.runner()
