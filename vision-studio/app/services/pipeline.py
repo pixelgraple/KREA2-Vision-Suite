@@ -4,6 +4,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from time import monotonic as _handoff_monotonic
+from time import sleep as _handoff_sleep
 from typing import Callable
 from ..config import Settings, ROOT
 from ..models.factory import llama_cpp_runtime_profile, provider_for
@@ -146,7 +148,10 @@ class StudioPipeline:
         measured = max(0, int(previous.get("peak_delta_mb") or 0))
         requirements = gpu_capacity_requirements(active_settings, spec, measured)
         required = int(requirements["required_vram_mb"])
-        deadline = time.monotonic() + min(30.0, max(5.0, active_settings.forge_unload_timeout_seconds))
+        deadline = _handoff_monotonic() + min(
+            30.0,
+            max(5.0, active_settings.forge_unload_timeout_seconds),
+        )
         while True:
             try:
                 current = query_gpu_memory()
@@ -154,9 +159,12 @@ class StudioPipeline:
                 raise GpuCapacityError(
                     "GPU memory could not be verified after Forge handoff; local Vision stopped safely."
                 ) from exc
-            if current.free_mb + VRAM_ADMISSION_JITTER_MB >= required or time.monotonic() >= deadline:
+            if (
+                current.free_mb + VRAM_ADMISSION_JITTER_MB >= required
+                or _handoff_monotonic() >= deadline
+            ):
                 break
-            time.sleep(0.5)
+            _handoff_sleep(0.5)
         capacity = {
             **requirements,
             "free_vram_mb_after_handoff": current.free_mb,

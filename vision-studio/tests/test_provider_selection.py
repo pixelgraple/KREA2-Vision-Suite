@@ -6,7 +6,7 @@ import unittest
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 from app.config import settings
 from app.models import factory as factory_module
@@ -296,8 +296,8 @@ class PipelineSelectionTests(unittest.TestCase):
                 return_value=GpuMemory(32607, 20607, 12000, 1.0),
             ),
             patch.object(pipeline_module, "provider_for") as create,
-            patch.object(pipeline_module.time, "monotonic", side_effect=[0.0, 31.0]),
-            patch.object(pipeline_module.time, "sleep") as sleep,
+            patch.object(pipeline_module, "_handoff_monotonic", side_effect=[0.0, 31.0]),
+            patch.object(pipeline_module, "_handoff_sleep") as sleep,
         ):
             with self.assertRaisesRegex(GpuCapacityError, "17408 MiB"):
                 with runner._provider_slot(active, spec, lambda _message: None):
@@ -316,16 +316,12 @@ class PipelineSelectionTests(unittest.TestCase):
             GpuMemory(32607, 3000, 29607, 2.0),
         ]
         with patch.object(pipeline_module, "query_gpu_memory", side_effect=readings), patch.object(
-            pipeline_module.time, "sleep"
+            pipeline_module, "_handoff_sleep"
         ) as sleep:
             capacity, current = runner._capacity_for(active, spec)
         self.assertEqual(current.free_mb, 29607)
         self.assertEqual(capacity["free_vram_mb_after_handoff"], 29607)
-        # Other background scheduler threads share Python's ``time`` module and
-        # may make their own short sleeps while this mock is active. Verify the
-        # handoff settle delay itself exactly once without coupling this test to
-        # unrelated scheduler timing on slower hosted runners.
-        self.assertEqual(sleep.call_args_list.count(call(0.5)), 1)
+        sleep.assert_called_once_with(0.5)
 
     def test_gemma12_adaptive_capacity_keeps_reserve_without_requiring_full_gpu_profile(self):
         runner = self.runner()
@@ -356,8 +352,8 @@ class PipelineSelectionTests(unittest.TestCase):
                 "query_gpu_memory",
                 return_value=GpuMemory(32607, 24507, 8100, 1.0),
             ),
-            patch.object(pipeline_module.time, "monotonic", side_effect=[0.0, 31.0]),
-            patch.object(pipeline_module.time, "sleep") as sleep,
+            patch.object(pipeline_module, "_handoff_monotonic", side_effect=[0.0, 31.0]),
+            patch.object(pipeline_module, "_handoff_sleep") as sleep,
         ):
             with self.assertRaisesRegex(GpuCapacityError, "at least 8192 MiB"):
                 runner._capacity_for(active, spec)
@@ -391,8 +387,8 @@ class PipelineSelectionTests(unittest.TestCase):
                 "query_gpu_memory",
                 return_value=GpuMemory(32607, 15264, 17343, 1.0),
             ),
-            patch.object(pipeline_module.time, "monotonic", side_effect=[0.0, 31.0]),
-            patch.object(pipeline_module.time, "sleep") as sleep,
+            patch.object(pipeline_module, "_handoff_monotonic", side_effect=[0.0, 31.0]),
+            patch.object(pipeline_module, "_handoff_sleep") as sleep,
         ):
             with self.assertRaisesRegex(GpuCapacityError, "64 MiB measurement tolerance"):
                 runner._capacity_for(active, spec)
