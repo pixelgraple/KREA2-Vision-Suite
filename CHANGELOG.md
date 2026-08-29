@@ -2,8 +2,15 @@
 
 ## Unreleased
 
-- Adds a complete Qwen 3.8 Prompt Changer guide covering natural-language workflows, precise edit patterns, multi-turn behavior, image-versus-text limitations, one-credit settlement and refunds, privacy, request validation, cold starts, troubleshooting, and the authenticated technical contract.
-- Makes the Prompt Changer visible in the main README and links the BetterDiscord documentation to the full guide.
+## 0.15.0 - 2026-08-28
+
+- Adds **Region Inpaint Prompt Correction** to every completed BetterDiscord Vision prompt.
+- Lets the user draw a precise rectangular mask, explain the mistake, inspect only that crop through the configured Vision provider, and ask Qwen 3.8 to rewrite the complete prompt without changing unrelated details.
+- Shows the current prompt, selected-pixel evidence, and proposed correction side by side, with explicit Adopt, Copy, and Continue in Qwen actions; no correction is adopted automatically.
+- Uses natural-resolution crop coordinates, a ten-percent context border, high-quality resampling, and a 1,600-pixel bound for useful detail without resending the full source image.
+- Preserves the shared Forge/KreaForge/Vision FIFO, aborts work when the result closes, and keeps masks, evidence, and proposals out of persistent plugin settings.
+- Preflights and explains the exact credit contract: Online Vision region correction is three credits for the successful crop inspection plus one for the successful Qwen rewrite; local Vision uses only the one-credit Qwen rewrite. Each failed stage retains its own automatic refund.
+- Adds a complete Region Inpaint guide and a complete Qwen 3.8 Prompt Changer guide covering workflows, billing, privacy, limits, and troubleshooting.
 
 ## 0.14.6 - 2026-08-28
 

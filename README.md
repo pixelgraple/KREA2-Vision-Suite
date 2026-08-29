@@ -32,6 +32,7 @@ Online inference means the selected image and bounded request metadata must leav
 - [Platform support](#platform-support)
 - [Download and install](#download-and-install)
 - [Qwen 3.8 Prompt Changer](#qwen-38-prompt-changer)
+- [Region Inpaint Prompt Correction](#region-inpaint-prompt-correction)
 - [How the Vision pipeline works](#how-the-vision-pipeline-works)
 - [How the three prompts are written](#how-the-three-prompts-are-written)
 - [Optional eight-example KREA2 guidance](#optional-eight-example-krea2-guidance)
@@ -50,6 +51,7 @@ Online inference means the selected image and bounded request metadata must leav
 - Queues multiple jobs and reports queued, running, completed, and failed work.
 - Shows the exact requested and completed model for every result.
 - Includes a conversational **Qwen 3.8 Prompt Changer** that can revise any part of an existing prompt through natural-language instructions.
+- Adds **Region Inpaint Prompt Correction** for selecting the exact pixels a prompt got wrong and proposing a surgical full-prompt rewrite.
 - Produces three different prompts that reconstruct the same visible image with balanced, subject/pose, and scene/light emphasis.
 - Audits subject count, pose, visible anatomy, clothing, expression, camera placement, lighting, and scene layout before returning prompts.
 - Supports local llama.cpp multimodal models and an optional operator-configured Vast Serverless worker.
@@ -62,7 +64,7 @@ The supported product is intentionally focused on Discord image interrogation. T
 
 | Feature | Windows 10/11 | Linux | macOS |
 |---|---:|---:|---:|
-| BetterDiscord magnifier, metadata/YAML prompts, Prompt History, and Qwen Prompt Editor | Supported | Supported | Supported |
+| BetterDiscord magnifier, metadata/YAML prompts, Prompt History, Qwen Prompt Editor, and region correction | Supported | Supported | Supported |
 | Online API Vision | Supported | Supported | Supported |
 | Automated installation | Full PowerShell installer | Portable shell installer | Portable shell installer |
 | Local Ollama/llama.cpp Vision | Supported and verified | Supported with manual configuration | Experimental/manual |
@@ -75,7 +77,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.14.6-win64.zip](releases/Krea2VisionSuite-v0.14.6-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.15.0-win64.zip](releases/Krea2VisionSuite-v0.15.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -119,6 +121,14 @@ The editor is available from the KREA2 Vision header, completed Vision results, 
 Qwen edits text only—it does not receive the source image. Users should explicitly correct any image fact the original prompt got wrong. Conversation content is forwarded for inference but is not stored in the KREA2 gateway database; the recoverable draft lives only in the current Discord session.
 
 See the complete [Qwen 3.8 Prompt Changer guide](docs/QWEN_38_PROMPT_CHANGER.md) for workflows, dozens of editable attributes, example instructions, multi-turn usage, credit behavior, privacy, reliability controls, cold-start behavior, troubleshooting, the technical request contract, and the difference between Prompt Changer and Vision interrogation.
+
+## Region Inpaint Prompt Correction
+
+When a generated prompt is close but one visible area is wrong, open the completed result and select **Inpaint prompt region**. Draw a box around the problem, explain the correction in ordinary language, and select **Inspect region and rewrite prompt**. Vision analyzes the selected pixels with a small context border; Qwen then proposes a complete KREA2 prompt that changes the affected facts while preserving unrelated subject, pose, outfit, camera, lighting, and scene details.
+
+The current prompt, proposed prompt, and literal region evidence remain visible for review. Nothing is replaced automatically: select **Adopt correction**, copy the proposal, or continue it in the Qwen Prompt Editor. Online mode costs three credits for a successful crop inspection and one credit for the successful rewrite. With local Vision, only the successful Qwen rewrite costs one Online API credit. Each reservation retains its existing automatic failure/cancellation refund behavior.
+
+The feature sends the selected crop to the configured Vision provider, not the full source image a second time. Selection state and prompt proposals remain session-only in Discord. Current-session results use the retained source preview; older history entries may use their smaller local history thumbnail. See the [complete region-inpaint guide](docs/REGION_INPAINT_PROMPT_CORRECTION.md).
 
 ## How the Vision pipeline works
 
