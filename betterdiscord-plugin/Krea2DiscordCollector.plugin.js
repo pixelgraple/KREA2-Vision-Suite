@@ -1091,6 +1091,42 @@ function isCurrentDiagnosticReceipt(receipt) {
         Number(receipt.acceptedAt) > 0
     );
 }
+
+function buildConfirmationModalContent(api, paragraphs = [], bullets = []) {
+    const safeParagraphs = paragraphs.map(value => String(value || "").trim()).filter(Boolean);
+    const safeBullets = bullets.map(value => String(value || "").trim()).filter(Boolean);
+    const React = api?.React || globalThis.BdApi?.React;
+    if (!React?.createElement) {
+        // BetterDiscord officially accepts strings and mixed arrays of strings
+        // as confirmation content. Keep this fallback valid even when a test or
+        // alternate client build does not expose its React helper.
+        return [
+            ...safeParagraphs,
+            ...safeBullets.map(text => `• ${text}`)
+        ];
+    }
+    const children = safeParagraphs.map((text, index) => React.createElement(
+        "p",
+        {key: `paragraph-${index}`},
+        text
+    ));
+    if (safeBullets.length) {
+        children.push(React.createElement(
+            "ul",
+            {key: "bullets"},
+            ...safeBullets.map((text, index) => React.createElement(
+                "li",
+                {key: `bullet-${index}`},
+                text
+            ))
+        ));
+    }
+    return React.createElement(
+        "div",
+        {style: {lineHeight: 1.55, color: "var(--text-normal)"}},
+        ...children
+    );
+}
 const VISION_SIDECAR_SCHEMA_VERSION = 3;
 const KREA2_GUIDANCE_SAMPLE_COUNT = 8;
 const HISTORY_ROOT_ID = "krea2-discord-history-root";
@@ -8754,18 +8790,14 @@ class Krea2DiscordCollector {
 
     confirmCreditPurchase(status, purpose = "image") {
         return new Promise(resolve => {
-            const content = document.createElement("div");
-            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
-            const lead = document.createElement("p");
             const promptChat = purpose === "prompt-chat";
-            lead.textContent = promptChat
+            const lead = promptChat
                 ? `Qwen Prompt Editor needs 1 credit per successful reply. You have ${status.available_credits} credits remaining.`
                 : `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
-            const detail = document.createElement("p");
-            detail.textContent = promptChat
+            const detail = promptChat
                 ? "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 1,200 successful Prompt Editor replies; a failed reply is automatically refunded."
                 : "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
-            content.append(lead, detail);
+            const content = buildConfirmationModalContent(this.api, [lead, detail]);
             this.api.UI.showConfirmationModal("Purchase Online API credits", content, {
                 confirmText: "Open Bitcoin checkout", cancelText: "Use Local GPU", danger: false,
                 onConfirm: () => resolve(true), onCancel: () => resolve(false)
@@ -8775,17 +8807,13 @@ class Krea2DiscordCollector {
 
     confirmRemoteOAuth() {
         return new Promise(resolve => {
-            const content = document.createElement("div");
-            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
-            const lead = document.createElement("p");
-            lead.textContent = "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a revocable account license, grant 120 introductory credits, and enforce its terms and rate limits.";
-            const list = document.createElement("ul");
-            for (const text of [
+            const content = buildConfirmationModalContent(this.api, [
+                "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a revocable account license, grant 120 introductory credits, and enforce its terms and rate limits."
+            ], [
                 "Discord handles the sign-in. KREA2 never receives your Discord password.",
                 "Only Discord's basic identify permission is requested to verify the account.",
                 "Local GPU mode remains private and never requires a Discord sign-in."
-            ]) { const item = document.createElement("li"); item.textContent = text; list.append(item); }
-            content.append(lead, list);
+            ]);
             this.api.UI.showConfirmationModal("Connect Discord for Online API", content, {
                 confirmText: "Connect Discord", cancelText: "Use Local GPU", danger: false,
                 onConfirm: () => resolve(true), onCancel: () => resolve(false)
@@ -9710,21 +9738,13 @@ class Krea2DiscordCollector {
 
     confirmDiagnosticReceipt() {
         return new Promise(resolve => {
-            const content = document.createElement("div");
-            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
-            const lead = document.createElement("p");
-            lead.textContent = "When enabled, only failed KREA2 Vision requests send a diagnostic report to Seedframe so the product owner can reproduce and repair launch failures.";
-            const list = document.createElement("ul");
-            for (const text of [
+            const content = buildConfirmationModalContent(this.api, [
+                "When enabled, only failed KREA2 Vision requests send a diagnostic report to Seedframe so the product owner can reproduce and repair launch failures."
+            ], [
                 "Sends on failure only: the source image, your current Discord username, requested model and pipeline, error code/message/stage, plugin/backend versions, an anonymous installation digest, and a partial or audited prompt only when one exists.",
                 "Never sends: Discord account, server, channel or message IDs; Discord URLs; filenames; local paths; Vision tokens; queue credentials; successful images; or successful prompts.",
                 "Reports and images are restricted to the Seedframe owner console. Turn this setting off at any time to stop future reports."
-            ]) {
-                const item = document.createElement("li");
-                item.textContent = text;
-                list.append(item);
-            }
-            content.append(lead, list);
+            ]);
             this.api.UI.showConfirmationModal("Share failed Vision diagnostics with Krea2?", content, {
                 confirmText: "I agree",
                 cancelText: "Keep failures local",
@@ -9751,21 +9771,13 @@ class Krea2DiscordCollector {
 
     confirmPrivacyReceipt() {
         return new Promise(resolve => {
-            const content = document.createElement("div");
-            content.style.cssText = "line-height:1.55;color:var(--text-normal)";
-            const lead = document.createElement("p");
-            lead.textContent = "When enabled, every successful Vision request contributes its three generated prompt texts to Krea2. The local Vision broker submits them without exposing a reusable Seedframe credential to BetterDiscord.";
-            const list = document.createElement("ul");
-            for (const text of [
+            const content = buildConfirmationModalContent(this.api, [
+                "When enabled, every successful Vision request contributes its three generated prompt texts to Krea2. The local Vision broker submits them without exposing a reusable Seedframe credential to BetterDiscord."
+            ], [
                 "Sends: the three generated prompts, model and pipeline identifiers, contribution contract version, and anonymous installation provenance.",
                 "Never sends: image bytes, image hashes, signed CDN URLs, Discord IDs, filenames, local paths, Vision tokens, queue tickets, reviews, collections, or model evidence.",
                 "You can revoke this receipt at any time in Vision Tools → Privacy receipt."
-            ]) {
-                const item = document.createElement("li");
-                item.textContent = text;
-                list.append(item);
-            }
-            content.append(lead, list);
+            ]);
             this.api.UI.showConfirmationModal("Contribute generated prompts to Krea2?", content, {
                 confirmText: "I agree",
                 cancelText: "Keep local only",
@@ -10833,6 +10845,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     base64Url,
     buildVisionCacheProfile,
     buildVisionMultipartBody,
+    buildConfirmationModalContent,
     classifyPromptMetadata,
     comparisonPromptSidecarPath,
     cosineSimilarity,
