@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.16.0
+# Krea2 Discord Vision v0.16.1
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 

@@ -79,7 +79,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.16.0-win64.zip](releases/Krea2VisionSuite-v0.16.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.16.1-win64.zip](releases/Krea2VisionSuite-v0.16.1-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat

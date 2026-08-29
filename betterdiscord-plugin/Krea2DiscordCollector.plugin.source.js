@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.16.0
+ * @version 0.16.1
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.16.0";
+const PLUGIN_VERSION = "0.16.1";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";

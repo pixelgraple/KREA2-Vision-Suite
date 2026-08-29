@@ -539,6 +539,104 @@ def _flatten_heretic_prompt_labels(text: str) -> str:
     ).strip()
 
 
+def _recover_v2_structured_prompt_prose(text: str) -> str:
+    """Flatten a model-authored prompt checklist without inventing new facts.
+
+    Gemma occasionally places JSON, YAML-style fields, Markdown headings, or
+    bullets *inside* the otherwise valid top-level ``prompt`` string.  The
+    strict first-pass validator correctly rejects that shape, but feeding the
+    unchanged string through the same validator was a no-op.  This bounded
+    local recovery keeps only textual leaf values, removes presentation syntax,
+    and joins the original observations into prose.  It never calls the model
+    again and never supplies facts that were not present in the paid response.
+    """
+
+    parts: list[str] = []
+    ignored_keys = {
+        "pose_check",
+        "negative",
+        "negative_prompt",
+        "metadata",
+        "parameters",
+        "settings",
+        "analysis",
+        "reasoning",
+    }
+
+    def append_text(value: str, depth: int) -> None:
+        candidate = unwrap_model_transport(value).strip()
+        if not candidate:
+            return
+        if depth < 4 and candidate.startswith(("{", "[")):
+            try:
+                nested = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                nested = None
+            if isinstance(nested, (dict, list)):
+                collect(nested, depth + 1)
+                return
+
+        cleaned_lines: list[str] = []
+        pending_label = ""
+        for raw_line in candidate.splitlines():
+            line = raw_line.strip()
+            if not line or re.fullmatch(r"[-=_*`]{3,}", line):
+                continue
+            line = re.sub(r"^#{1,6}\s*", "", line).strip()
+            line = re.sub(r"^(?:[-*•]\s+|\d+[.)]\s+)", "", line).strip()
+            line = line.strip("` ")
+            label_match = re.match(
+                r"^(?:\*\*)?([A-Za-z][A-Za-z _/-]{1,40})(?:\*\*)?\s*:\s*(.*)$",
+                line,
+            )
+            if label_match is not None:
+                label = label_match.group(1).strip()
+                remainder = label_match.group(2).strip()
+                if remainder:
+                    line = f"{label} — {remainder}"
+                else:
+                    pending_label = label
+                    continue
+            elif pending_label:
+                line = f"{pending_label} — {line}"
+                pending_label = ""
+            if line:
+                cleaned_lines.append(line)
+        cleaned = " ".join(cleaned_lines).strip().strip("[]{}")
+        if cleaned:
+            parts.append(cleaned)
+
+    def collect(value: object, depth: int = 0) -> None:
+        if depth > 5:
+            return
+        if isinstance(value, str):
+            append_text(value, depth)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
+                if normalized_key in ignored_keys:
+                    continue
+                if isinstance(child, (str, dict, list)):
+                    collect(child, depth + 1)
+            return
+        if isinstance(value, list):
+            for child in value[:64]:
+                if isinstance(child, (str, dict, list)):
+                    collect(child, depth + 1)
+
+    collect(str(text or ""))
+    recovered_parts: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        marker = re.sub(r"\W+", " ", part.casefold()).strip()
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        recovered_parts.append(part.rstrip(" ,;:-") + ("" if part.rstrip().endswith((".", "!", "?")) else "."))
+    return re.sub(r"\s+", " ", " ".join(recovered_parts)).strip()
+
+
 def _recover_truncated_prompt_string(candidate: str) -> str:
     """Recover only the JSON `prompt` string from a token-capped object.
 
@@ -2096,6 +2194,11 @@ class DiscordVisionService:
 
         if not recovered_prompt and recovered_variants:
             recovered_prompt = recovered_variants[0]
+        recovered_prompt = _recover_v2_structured_prompt_prose(recovered_prompt)
+        if not recovered_prompt:
+            raise DiscordVisionRejected(
+                "The Online API returned structured output without recoverable prompt prose."
+            )
         draft = DiscordVisionService._v2_direct_prompt(
             json.dumps({"prompt": recovered_prompt}, ensure_ascii=False)
         )

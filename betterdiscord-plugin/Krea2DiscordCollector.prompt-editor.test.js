@@ -6,7 +6,7 @@ const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
 
-assert.match(source, /@version 0\.16\.0/);
+assert.match(source, /@version 0\.16\.1/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /brandPromptEditor\.textContent = "✦ Qwen Prompt Editor"/);
 assert.match(source, /brandPromptEditor\.addEventListener\("click", \(\) => this\.openPromptEditor\("", root\.ownerDocument \|\| document\)\)/);

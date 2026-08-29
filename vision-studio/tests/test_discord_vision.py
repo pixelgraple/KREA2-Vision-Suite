@@ -1768,6 +1768,77 @@ class DiscordVisionTests(unittest.TestCase):
         self.assertTrue(any("local format recovery" in stage for stage in stages))
         self.assertFalse(any("reinspecting" in stage for stage in stages))
 
+    def test_v2_remote_flattens_nested_structured_prompt_without_second_inference(self):
+        class StructuredReceiptProvider(FakeHereticProvider):
+            def __init__(self):
+                super().__init__()
+                self.completed = []
+                self.failed = 0
+
+            def with_image_text(self, system, user, *_args):
+                self.image_calls += 1
+                self.image_prompts.append((system, user))
+                sections = {
+                    "subject": "Subject: " + prose(42),
+                    "pose": "## Pose\n- " + prose(44),
+                    "wardrobe": "Wardrobe:\n" + prose(44),
+                    "camera_and_light": [prose(42), prose(42)],
+                }
+                return ModelReply(json.dumps({"prompt": json.dumps(sections)}))
+
+            def complete_audit(self, variants):
+                self.completed.append(list(variants))
+
+            def fail_audit(self):
+                self.failed += 1
+
+        pipeline = FakeHereticPipeline()
+        pipeline.provider = StructuredReceiptProvider()
+        pipeline.spec = ModelSpec(
+            "vast::gemma4-26b-a4b-heretic-q3_k_l",
+            "Online API — Gemma 4 26B-A4B",
+            "vast_serverless",
+            "gemma4-26b-a4b-heretic-q3-k-l",
+            False,
+            8192,
+            2048,
+            18432,
+        )
+        service = DiscordVisionService(
+            replace(settings, queue_enabled=True, model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]), []),
+            ollama=FakeOllama([], prose(400)),
+            pipeline=pipeline,
+        )
+        access = RemoteAccess(
+            license_id="lic_" + "a" * 24,
+            license_token="t" * 48,
+            discord_user_id="1234567890123456789",
+            discord_username="kayla",
+            request_id="f" * 64,
+        )
+        stages = []
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.png"
+            image.write_bytes(image_bytes())
+            result = service.describe(
+                image,
+                on_progress=lambda _status, stage, _ahead: stages.append(stage),
+                model=pipeline.spec.public_id,
+                analysis_profile="v2",
+                remote_access=access,
+            )
+
+        self.assertEqual(pipeline.provider.image_calls, 1)
+        self.assertEqual(pipeline.provider.failed, 0)
+        self.assertEqual(pipeline.provider.completed, [result.prompt_variants])
+        self.assertGreaterEqual(result.prompt_words, 160)
+        self.assertNotIn("{", result.prompt)
+        self.assertNotIn("##", result.prompt)
+        self.assertTrue(any("local format recovery" in stage for stage in stages))
+        self.assertFalse(any("reinspecting" in stage for stage in stages))
+
     def test_legacy_local_vision_does_not_apply_gpu_wait_deadline(self):
         class TimeoutAwareQueue(FakeQueue):
             def __init__(self, events):

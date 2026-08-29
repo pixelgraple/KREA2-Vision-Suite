@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.16.1 - 2026-08-29
+
+- Fixed V2 Online API results that placed a JSON/checklist, YAML-style fields, Markdown headings, or bullets inside the returned prompt string.
+- The local recovery now deterministically preserves and joins the model's existing textual image facts instead of re-running the same strict validator against unchanged structured text.
+- Recovery performs no second model inference and therefore adds no second Vision charge.
+
 ## 0.16.0 - 2026-08-28
 
 - Adds a V2 **Pose Inspector** backed by the model's same-call subject/support ledger: posture, pelvic support, left/right foot weight-bearing surfaces, knee/hip geometry, other support, and camera view.
