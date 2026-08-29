@@ -107,7 +107,7 @@ assert.doesNotMatch(source, /\["V2", "v2"\]/);
 assert.match(source, /v2Toggle\.setAttribute\("role", "switch"\)/);
 assert.match(source, /Use V2 Direct Fidelity/);
 assert.match(source, /storedSettings\.visionAnalysisProfileVersion\) \|\| 0\) < 3/);
-assert.match(source, /output\.append\(variantTabs, prompt, feedback, editVariant, auditVariant, inpaintVariant, copyVariant, inpaintPanel\)/);
+assert.match(source, /output\.append\(variantTabs, prompt, feedback, editVariant, auditVariant, copyVariant\)/);
 assert.match(source, /variants\.length === 1\s*\? \["Prompt"\]/);
 assert.match(source, /Generate three V2 prompt variations/);
 

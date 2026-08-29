@@ -6,7 +6,7 @@ const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"), "utf8");
 
-assert.match(source, /@version 0\.16\.1/);
+assert.match(source, /@version 0\.16\.2/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /brandPromptEditor\.textContent = "✦ Qwen Prompt Editor"/);
 assert.match(source, /brandPromptEditor\.addEventListener\("click", \(\) => this\.openPromptEditor\("", root\.ownerDocument \|\| document\)\)/);
@@ -15,7 +15,7 @@ assert.match(source, /editVariant\.textContent = "✦ Edit this prompt with Qwen
 assert.match(source, /edit\.addEventListener\("click", \(\) => this\.openPromptEditor\(candidates\[selectedIndex\]\.prompt, modalDocument\)\)/);
 assert.match(source, /async ensureRemoteCredits\(signal, purpose = "image"\)/);
 assert.match(source, /async remoteCreditStatus\(license, signal, purpose = "image"\)/);
-assert.match(source, /if \(purpose === "prompt-chat" \|\| purpose === "region-inpaint"\)/);
+assert.match(source, /if \(purpose === "prompt-chat"\)/);
 assert.match(source, /if \(!validPromptBalance\(status\)\) status = await fetchStatus\(true\)/);
 assert.match(source, /Qwen Prompt Editor credit information is still updating/);
 assert.match(source, /this\.remoteCreditStatus\(license, signal, purpose\)/);

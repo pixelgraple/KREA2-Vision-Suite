@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.16.2 - 2026-08-29
+
+- Removes Region Inpaint Prompt Correction, its mask-and-rewrite interface, and its combined four-credit preflight path.
+- Keeps ordinary full-image interrogation, Qwen Prompt Editor, and the separate Describe region inspection tool unchanged.
+
 ## 0.16.1 - 2026-08-29
 
 - Fixed V2 Online API results that placed a JSON/checklist, YAML-style fields, Markdown headings, or bullets inside the returned prompt string.

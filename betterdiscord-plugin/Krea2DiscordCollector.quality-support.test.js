@@ -62,8 +62,8 @@ const preflight = remotePreflightSummary({
     estimated_wait_seconds_min: 25,
     estimated_wait_seconds_max: 120,
     failed_or_cancelled_refunded: true
-}, "region-inpaint");
-assert.equal(preflight.cost, 4);
+}, "image");
+assert.equal(preflight.cost, 3);
 assert.match(preflight.text, /25–120s estimate/);
 assert.match(preflight.text, /Failed or cancelled work is refunded/);
 

@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.16.1
+ * @version 0.16.2
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -979,7 +979,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata, extractPromptFrom
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.16.1";
+const PLUGIN_VERSION = "0.16.2";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -2187,20 +2187,6 @@ const CSS = `
 .krea2-region-stage { position: relative; display: inline-block; max-width: 100%; margin: 10px 0; cursor: crosshair; }
 .krea2-region-canvas { display: block; max-width: 100%; max-height: 460px; border: 1px solid #343a45; border-radius: 10px; background: #0d0f13; }
 .krea2-region-note { color: #a8b0bd; -webkit-text-fill-color: #a8b0bd; font-size: 10px; }
-.krea2-region-inpaint { display: grid; gap: 11px; margin-top: 12px; padding: 13px; border: 1px solid #364052; border-radius: 12px; background: #11151c; }
-.krea2-region-inpaint[hidden] { display: none; }
-.krea2-region-inpaint-title { margin: 0; color: #f3f5f7; font-size: 14px; }
-.krea2-region-inpaint-instruction { box-sizing: border-box; width: 100%; min-height: 76px; resize: vertical; padding: 10px 12px; border: 1px solid #343b48; border-radius: 9px; color: #f3f5f7; -webkit-text-fill-color: #f3f5f7; background: #0d1015; font: 500 11px/1.5 system-ui,sans-serif; }
-.krea2-region-inpaint-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.krea2-region-inpaint-results[hidden],
-.krea2-region-inpaint-result[hidden],
-.krea2-region-inpaint .krea2-workshop-toolbar[hidden] { display: none; }
-.krea2-region-inpaint-result { min-width: 0; padding: 10px; border: 1px solid #303744; border-radius: 9px; background: #0d1015; }
-.krea2-region-inpaint-result > strong { display: block; margin-bottom: 7px; color: #aeb7c6; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
-.krea2-region-inpaint-text { max-height: 260px; overflow: auto; color: #e7ebf1; font: 500 10px/1.52 ui-monospace,SFMono-Regular,Consolas,monospace; white-space: pre-wrap; }
-.krea2-region-inpaint-status { min-height: 17px; color: #a8b0bd; font-size: 10px; line-height: 1.45; }
-.krea2-region-inpaint-status[data-state="error"] { color: #ffb4b8; }
-.krea2-region-inpaint-status[data-state="success"] { color: #a9edc1; }
 .krea2-quality-panel { display: grid; gap: 10px; margin-top: 14px; padding: 13px; border: 1px solid #354153; border-radius: 11px; background: #111720; }
 .krea2-quality-panel h3 { margin: 0; color: #f2f5f8; font-size: 13px; }
 .krea2-quality-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
@@ -2325,7 +2311,6 @@ const CSS = `
     .krea2-compare-grid,
     .krea2-meta-grid,
     .krea2-health-grid,
-    .krea2-region-inpaint-results { grid-template-columns: 1fr; }
     .krea2-quality-grid { grid-template-columns: 1fr; }
     .krea2-diagnostic-row { grid-template-columns: 1fr; gap: 3px; }
     .krea2-review-form, .krea2-score-grid, .krea2-repro-grid { grid-template-columns: 1fr; }
@@ -3988,9 +3973,9 @@ function remotePreflightSummary(status, purpose = "image") {
     const state = String(status?.worker_state || "checking").replace(/[^a-z0-9 -]/gi, " ").trim() || "checking";
     const minimum = Math.max(0, Math.trunc(Number(status?.estimated_wait_seconds_min) || 0));
     const maximum = Math.max(minimum, Math.trunc(Number(status?.estimated_wait_seconds_max) || minimum));
-    const imageCost = Math.max(0, Math.trunc(Number(status?.credits_per_image) || 3));
     const editCost = Math.max(0, Math.trunc(Number(status?.credits_per_prompt_chat) || 1));
-    const cost = purpose === "region-inpaint" ? imageCost + editCost : purpose === "prompt-chat" ? editCost : imageCost;
+    const imageCost = Math.max(0, Math.trunc(Number(status?.credits_per_image) || 3));
+    const cost = purpose === "prompt-chat" ? editCost : imageCost;
     const wait = maximum ? `${minimum}–${maximum}s estimate` : "wait estimate unavailable";
     const refund = status?.failed_or_cancelled_refunded === false
         ? "Review credit terms before submitting."
@@ -6583,7 +6568,6 @@ class Krea2DiscordCollector {
         let currentJob = null;
         let savedOriginal = null;
         let thumbnailObjectUrl = null;
-        let regionPreviewObjectUrl = null;
         const overlay = modalDocument.createElement("div");
         overlay.id = HISTORY_MODAL_ID;
         overlay.setAttribute("role", "presentation");
@@ -6616,8 +6600,6 @@ class Krea2DiscordCollector {
             detailPollTimer = null;
             controller.abort();
             thumbnailObjectUrl = null;
-            if (regionPreviewObjectUrl) this.revokeObjectUrl(regionPreviewObjectUrl);
-            regionPreviewObjectUrl = null;
             modalDocument.removeEventListener("keydown", onKey);
             overlay.remove();
             if (this.historyModalCleanup === cleanup) this.historyModalCleanup = null;
@@ -6658,16 +6640,11 @@ class Krea2DiscordCollector {
 
         const renderCurrentJob = async () => {
             if (!currentJob || controller.signal.aborted) return;
-            if (regionPreviewObjectUrl) this.revokeObjectUrl(regionPreviewObjectUrl);
-            regionPreviewObjectUrl = null;
             heading.textContent = historyJobTitle(currentJob);
             savedOriginal = await this.findSavedOriginalPathAsync(currentJob.image_hash);
             thumbnailObjectUrl = await this.loadHistoryThumbnailUrl(currentJob.image_hash);
             if (controller.signal.aborted) return;
-            body.replaceChildren(this.createHistoryDetailBody(currentJob, modalDocument, thumbnailObjectUrl, objectUrl => {
-                if (regionPreviewObjectUrl && regionPreviewObjectUrl !== objectUrl) this.revokeObjectUrl(regionPreviewObjectUrl);
-                regionPreviewObjectUrl = objectUrl;
-            }, controller.signal));
+            body.replaceChildren(this.createHistoryDetailBody(currentJob, modalDocument, thumbnailObjectUrl));
             const active = isHistoryJobActive(currentJob);
             cancelJob.disabled = !active || currentJob.cancel_requested;
             cancelJob.textContent = currentJob.cancel_requested ? "Cancellation requested" : "Cancel job";
@@ -6705,10 +6682,7 @@ class Krea2DiscordCollector {
                 requested_model: retryModel,
                 model: retryModel
             };
-            body.replaceChildren(this.createHistoryDetailBody(retryingJob, modalDocument, thumbnailObjectUrl, objectUrl => {
-                if (regionPreviewObjectUrl && regionPreviewObjectUrl !== objectUrl) this.revokeObjectUrl(regionPreviewObjectUrl);
-                regionPreviewObjectUrl = objectUrl;
-            }, controller.signal));
+            body.replaceChildren(this.createHistoryDetailBody(retryingJob, modalDocument, thumbnailObjectUrl));
             try {
                 const generated = await this.retrySavedHistoryImage(currentJob, savedOriginal, elapsed => { retry.textContent = `Running ${elapsed} · ${retryModelName}`; }, retryModel);
                 currentJob = {
@@ -6785,7 +6759,7 @@ class Krea2DiscordCollector {
         await refreshOpenJob();
     }
 
-    createHistoryDetailBody(job, modalDocument = document, thumbnailUrl = null, onRegionPreview = null, parentSignal = null) {
+    createHistoryDetailBody(job, modalDocument = document, thumbnailUrl = null) {
         const fragment = modalDocument.createDocumentFragment();
         const modelEvidence = historyModelEvidence(job);
         const grid = modalDocument.createElement("div");
@@ -6851,16 +6825,6 @@ class Krea2DiscordCollector {
             missing.textContent = "The locally cached history thumbnail is unavailable.";
             sourceFrame.append(missing);
         }
-        const showSelectedRegion = objectUrl => {
-            if (!objectUrl) return;
-            const thumbnail = modalDocument.createElement("img");
-            thumbnail.className = "krea2-history-source-image";
-            thumbnail.src = objectUrl;
-            thumbnail.alt = `Selected region for ${historyJobTitle(job)}`;
-            sourceLabel.textContent = "Selected region";
-            sourceFrame.replaceChildren(thumbnail);
-            onRegionPreview?.(objectUrl);
-        };
         source.append(sourceLabel, sourceFrame);
         const output = modalDocument.createElement("div");
         output.className = "krea2-history-output";
@@ -6886,17 +6850,6 @@ class Krea2DiscordCollector {
             auditVariant.type = "button";
             auditVariant.className = "krea2-history-action";
             auditVariant.textContent = "? Ask Qwen about this prompt · 1 credit";
-            const inpaintVariant = modalDocument.createElement("button");
-            inpaintVariant.type = "button";
-            inpaintVariant.className = "krea2-history-action";
-            inpaintVariant.textContent = "◎ Inpaint prompt region";
-            inpaintVariant.disabled = !thumbnailUrl;
-            inpaintVariant.title = thumbnailUrl
-                ? "Mask one image region, inspect its pixels, and surgically correct this prompt"
-                : "The local source preview is unavailable for region correction";
-            const inpaintPanel = modalDocument.createElement("section");
-            inpaintPanel.className = "krea2-region-inpaint";
-            inpaintPanel.hidden = true;
             const feedback = modalDocument.createElement("div");
             feedback.className = "krea2-prompt-feedback";
             const feedbackButtons = modalDocument.createElement("div");
@@ -6956,32 +6909,6 @@ class Krea2DiscordCollector {
             });
             editVariant.addEventListener("click", () => this.openPromptEditor(variants[selectedVariant], modalDocument));
             auditVariant.addEventListener("click", () => this.openPromptAudit(variants[selectedVariant], modalDocument));
-            inpaintVariant.addEventListener("click", () => {
-                if (!thumbnailUrl) return;
-                if (!inpaintPanel.hidden) {
-                    inpaintPanel.hidden = true;
-                    inpaintVariant.textContent = "◎ Inpaint prompt region";
-                    return;
-                }
-                inpaintPanel.hidden = false;
-                inpaintVariant.textContent = "Hide region inpaint";
-                inpaintPanel.replaceChildren();
-                const targetVariantIndex = selectedVariant;
-                this.buildRegionInpaintPanel(inpaintPanel, {
-                    sourceUrl: thumbnailUrl,
-                    modalDocument,
-                    parentSignal,
-                    getCurrentPrompt: () => variants[targetVariantIndex],
-                    onAdopt: revised => {
-                        variants[targetVariantIndex] = revised;
-                        if (selectedVariant === targetVariantIndex) {
-                            prompt.value = revised;
-                            refreshFeedback();
-                        }
-                    },
-                    showSelectedRegion
-                });
-            });
             like.addEventListener("click", () => {
                 try {
                     this.savePromptFeedback(variants[selectedVariant], "liked", "", job);
@@ -7004,7 +6931,7 @@ class Krea2DiscordCollector {
             feedback.append(feedbackButtons, feedbackStatus);
             selectVariant(0);
             output.append(label);
-            output.append(variantTabs, prompt, feedback, editVariant, auditVariant, inpaintVariant, copyVariant, inpaintPanel);
+            output.append(variantTabs, prompt, feedback, editVariant, auditVariant, copyVariant);
         }
         else {
             if (isHistoryJobActive(job)) {
@@ -7098,7 +7025,7 @@ class Krea2DiscordCollector {
         const pipeline = String(job?.reproducibility?.pipeline_id || VISION_PIPELINE_ID);
         const origin = profile === "v2" ? "Vision V2 Direct Fidelity" : profile === "maximum" ? "Vision Maximum detail" : profile === "fast" ? "Vision Fast" : "Vision result or imported metadata";
         const text = modalDocument.createElement("div");
-        text.textContent = `Origin: ${origin} · Pipeline: ${pipeline} · Model: ${job.model || job.requested_model || "unknown"}. Qwen edits and region corrections remain explicit user actions; no hidden text, links, or settings are added to copied prompts.`;
+        text.textContent = `Origin: ${origin} · Pipeline: ${pipeline} · Model: ${job.model || job.requested_model || "unknown"}. Qwen edits remain explicit user actions; no hidden text, links, or settings are added to copied prompts.`;
         const links = modalDocument.createElement("div");
         links.className = "krea2-provenance-links";
         for (const [label, url] of [["GitHub source", PROJECT_LINKS.github], ["BabeGenerator.ink", PROJECT_LINKS.babegenerator]]) {
@@ -7173,275 +7100,6 @@ class Krea2DiscordCollector {
         actions.append(copyId, download);
         panel.append(actions);
         return panel;
-    }
-
-    buildRegionInpaintPanel(panel, {sourceUrl, modalDocument, parentSignal = null, getCurrentPrompt, onAdopt, showSelectedRegion = null}) {
-        const title = modalDocument.createElement("h3");
-        title.className = "krea2-region-inpaint-title";
-        title.textContent = "Region Inpaint Prompt Correction";
-        const selectedModel = effectiveVisionModel(this.settings);
-        const onlineVision = selectedModel === ONLINE_VISION_MODEL_ID;
-        const note = modalDocument.createElement("div");
-        note.className = "krea2-region-note";
-        note.textContent = onlineVision
-            ? "Drag a box over the pixels that are wrong, explain the correction, then review the proposed full prompt. Online mode uses 3 credits for the crop inspection plus 1 credit only after the Qwen rewrite succeeds. Nothing is adopted automatically."
-            : "Drag a box over the pixels that are wrong, explain the correction, then review the proposed full prompt. Local Vision inspects the crop through the shared GPU FIFO; only the successful Qwen rewrite costs 1 Online API credit. Nothing is adopted automatically.";
-        const stage = modalDocument.createElement("div");
-        stage.className = "krea2-region-stage";
-        const canvas = modalDocument.createElement("canvas");
-        canvas.className = "krea2-region-canvas";
-        stage.append(canvas);
-        const instruction = modalDocument.createElement("textarea");
-        instruction.className = "krea2-region-inpaint-instruction";
-        instruction.maxLength = 800;
-        instruction.placeholder = "What is wrong here? Example: She is standing with her left foot on the skateboard and her right foot on the pavement; do not describe her as sitting.";
-        const toolbar = modalDocument.createElement("div");
-        toolbar.className = "krea2-workshop-toolbar";
-        const run = modalDocument.createElement("button");
-        run.type = "button";
-        run.className = "krea2-history-action";
-        run.dataset.primary = "true";
-        run.textContent = "Inspect region and rewrite prompt";
-        run.disabled = true;
-        const clear = modalDocument.createElement("button");
-        clear.type = "button";
-        clear.className = "krea2-history-action";
-        clear.textContent = "Clear mask";
-        toolbar.append(run, clear);
-        const status = modalDocument.createElement("div");
-        status.className = "krea2-region-inpaint-status";
-        status.textContent = "Draw a region mask and describe the correction. The original prompt remains unchanged until you select Adopt correction.";
-        const results = modalDocument.createElement("div");
-        results.className = "krea2-region-inpaint-results";
-        results.hidden = true;
-        const beforeCard = modalDocument.createElement("article");
-        beforeCard.className = "krea2-region-inpaint-result";
-        const beforeLabel = modalDocument.createElement("strong");
-        beforeLabel.textContent = "Current prompt";
-        const beforeText = modalDocument.createElement("div");
-        beforeText.className = "krea2-region-inpaint-text";
-        beforeCard.append(beforeLabel, beforeText);
-        const afterCard = modalDocument.createElement("article");
-        afterCard.className = "krea2-region-inpaint-result";
-        const afterLabel = modalDocument.createElement("strong");
-        afterLabel.textContent = "Proposed corrected prompt";
-        const afterText = modalDocument.createElement("div");
-        afterText.className = "krea2-region-inpaint-text";
-        afterCard.append(afterLabel, afterText);
-        results.append(beforeCard, afterCard);
-        const evidenceCard = modalDocument.createElement("article");
-        evidenceCard.className = "krea2-region-inpaint-result";
-        evidenceCard.hidden = true;
-        const evidenceLabel = modalDocument.createElement("strong");
-        evidenceLabel.textContent = "Vision evidence from selected pixels";
-        const evidenceText = modalDocument.createElement("div");
-        evidenceText.className = "krea2-region-inpaint-text";
-        evidenceCard.append(evidenceLabel, evidenceText);
-        const resultActions = modalDocument.createElement("div");
-        resultActions.className = "krea2-workshop-toolbar";
-        resultActions.hidden = true;
-        const adopt = modalDocument.createElement("button");
-        adopt.type = "button";
-        adopt.className = "krea2-history-action";
-        adopt.dataset.primary = "true";
-        adopt.textContent = "Adopt correction";
-        const copy = modalDocument.createElement("button");
-        copy.type = "button";
-        copy.className = "krea2-history-action";
-        copy.textContent = "Copy proposed prompt";
-        const continueEditing = modalDocument.createElement("button");
-        continueEditing.type = "button";
-        continueEditing.className = "krea2-history-action";
-        continueEditing.textContent = "Continue in Qwen Editor";
-        resultActions.append(adopt, copy, continueEditing);
-        panel.append(title, note, stage, instruction, toolbar, status, results, evidenceCard, resultActions);
-
-        const view = modalDocument.defaultView || window;
-        const image = new view.Image();
-        let selection = null;
-        let dragStart = null;
-        let proposedPrompt = "";
-        const setStatus = (text, state = "idle") => {
-            status.textContent = text;
-            status.dataset.state = state;
-        };
-        const refreshRunState = () => {
-            run.disabled = !selection || selection.w < 24 || selection.h < 24 || instruction.value.trim().length < 2;
-        };
-        const redraw = () => {
-            if (!canvas.width || !canvas.height || !image.complete) return;
-            const context = canvas.getContext("2d");
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            context.drawImage(image, 0, 0, canvas.width, canvas.height);
-            if (!selection) return;
-            context.save();
-            context.fillStyle = "rgba(7, 10, 16, .54)";
-            context.fillRect(0, 0, canvas.width, canvas.height);
-            context.clearRect(selection.x, selection.y, selection.w, selection.h);
-            context.drawImage(image, selection.x, selection.y, selection.w, selection.h, selection.x, selection.y, selection.w, selection.h);
-            context.strokeStyle = "#ff9d57";
-            context.lineWidth = Math.max(2, canvas.width / 450);
-            context.setLineDash([Math.max(5, canvas.width / 100), Math.max(3, canvas.width / 160)]);
-            context.strokeRect(selection.x, selection.y, selection.w, selection.h);
-            context.restore();
-        };
-        image.onload = () => {
-            const scale = Math.min(1, 900 / Math.max(image.naturalWidth, image.naturalHeight));
-            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-            redraw();
-        };
-        image.onerror = () => setStatus("The source preview could not be decoded for region inpaint.", "error");
-        image.src = sourceUrl;
-        const point = event => {
-            const rect = canvas.getBoundingClientRect();
-            return {
-                x: Math.max(0, Math.min(canvas.width, (event.clientX - rect.left) * canvas.width / rect.width)),
-                y: Math.max(0, Math.min(canvas.height, (event.clientY - rect.top) * canvas.height / rect.height))
-            };
-        };
-        canvas.addEventListener("pointerdown", event => {
-            dragStart = point(event);
-            selection = {x: dragStart.x, y: dragStart.y, w: 0, h: 0};
-            canvas.setPointerCapture?.(event.pointerId);
-            refreshRunState();
-            redraw();
-        });
-        canvas.addEventListener("pointermove", event => {
-            if (!dragStart) return;
-            const current = point(event);
-            selection = {
-                x: Math.min(dragStart.x, current.x),
-                y: Math.min(dragStart.y, current.y),
-                w: Math.abs(current.x - dragStart.x),
-                h: Math.abs(current.y - dragStart.y)
-            };
-            refreshRunState();
-            redraw();
-        });
-        const finishDrag = () => { dragStart = null; };
-        canvas.addEventListener("pointerup", finishDrag);
-        canvas.addEventListener("pointercancel", finishDrag);
-        instruction.addEventListener("input", refreshRunState);
-        clear.addEventListener("click", () => {
-            selection = null;
-            dragStart = null;
-            proposedPrompt = "";
-            results.hidden = true;
-            evidenceCard.hidden = true;
-            resultActions.hidden = true;
-            setStatus("Mask cleared. Draw a new region and describe the correction.");
-            refreshRunState();
-            redraw();
-        });
-        adopt.addEventListener("click", () => {
-            if (!proposedPrompt) return;
-            onAdopt?.(proposedPrompt);
-            beforeText.textContent = proposedPrompt;
-            adopt.disabled = true;
-            setStatus("The corrected prompt is now active for this result. It remains session-only until copied.", "success");
-        });
-        copy.addEventListener("click", () => void this.copyProductText(proposedPrompt, modalDocument));
-        continueEditing.addEventListener("click", () => {
-            if (proposedPrompt) this.openPromptEditor(proposedPrompt, modalDocument);
-        });
-        run.addEventListener("click", async () => {
-            const currentPrompt = String(getCurrentPrompt?.() || "").trim().slice(0, 18000);
-            const request = instruction.value.trim().slice(0, 800);
-            if (!selection || selection.w < 24 || selection.h < 24 || request.length < 2) return;
-            if (currentPrompt.length < 20) return setStatus("A complete current prompt is required before region correction.", "error");
-            const controller = new AbortController();
-            const abortFromParent = () => controller.abort();
-            if (parentSignal?.aborted) controller.abort();
-            else parentSignal?.addEventListener?.("abort", abortFromParent, {once: true});
-            this.controllers.add(controller);
-            run.disabled = true;
-            clear.disabled = true;
-            instruction.disabled = true;
-            adopt.disabled = false;
-            proposedPrompt = "";
-            results.hidden = true;
-            evidenceCard.hidden = true;
-            resultActions.hidden = true;
-            try {
-                setStatus(`Checking the ${onlineVision ? "4-credit online" : "1-credit local-Vision"} region-inpaint contract…`);
-                await this.ensureRemoteCredits(controller.signal, onlineVision ? "region-inpaint" : "prompt-chat");
-                const scaleX = image.naturalWidth / canvas.width;
-                const scaleY = image.naturalHeight / canvas.height;
-                const selectedX = selection.x * scaleX;
-                const selectedY = selection.y * scaleY;
-                const selectedWidth = selection.w * scaleX;
-                const selectedHeight = selection.h * scaleY;
-                const padding = Math.max(8, Math.round(Math.max(selectedWidth, selectedHeight) * 0.1));
-                const sourceX = Math.max(0, Math.floor(selectedX - padding));
-                const sourceY = Math.max(0, Math.floor(selectedY - padding));
-                const sourceRight = Math.min(image.naturalWidth, Math.ceil(selectedX + selectedWidth + padding));
-                const sourceBottom = Math.min(image.naturalHeight, Math.ceil(selectedY + selectedHeight + padding));
-                const sourceWidth = Math.max(24, sourceRight - sourceX);
-                const sourceHeight = Math.max(24, sourceBottom - sourceY);
-                const outputScale = Math.min(1, 1600 / Math.max(sourceWidth, sourceHeight));
-                const crop = modalDocument.createElement("canvas");
-                crop.width = Math.max(24, Math.round(sourceWidth * outputScale));
-                crop.height = Math.max(24, Math.round(sourceHeight * outputScale));
-                const cropContext = crop.getContext("2d", {alpha: false});
-                cropContext.imageSmoothingEnabled = true;
-                cropContext.imageSmoothingQuality = "high";
-                cropContext.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, crop.width, crop.height);
-                const blob = await new Promise((resolve, reject) => crop.toBlob(
-                    value => value ? resolve(value) : reject(new Error("Could not encode the selected inpaint region.")),
-                    "image/png"
-                ));
-                const cropPreviewUrl = view.URL.createObjectURL(blob);
-                showSelectedRegion?.(cropPreviewUrl);
-                const bytes = Buffer.from(await blob.arrayBuffer());
-                const guidance = `This is a user-masked crop for prompt correction. Inspect only directly visible facts relevant to this request: ${request} Return literal region evidence; do not guess beyond the crop.`;
-                setStatus("Selected pixels entered the shared Vision FIFO. Waiting for literal region evidence…");
-                const generated = await this.runVisionBytes(
-                    bytes,
-                    ".png",
-                    selectedModel,
-                    elapsed => setStatus(`Vision is inspecting the selected pixels (${elapsed})…`),
-                    guidance,
-                    controller.signal
-                );
-                const regionEvidence = String(generated.prompt || "").trim().slice(0, 12000);
-                if (regionEvidence.length < 20) throw new Error("Vision did not return usable evidence for the selected region.");
-                evidenceText.textContent = regionEvidence;
-                evidenceCard.hidden = false;
-                setStatus("Region evidence is ready. Qwen is surgically rewriting only the affected prompt details…");
-                const editRequest = [
-                    "Current KREA2 prompt:",
-                    currentPrompt,
-                    "",
-                    "User-selected source-image region evidence:",
-                    regionEvidence,
-                    "",
-                    "Requested correction:",
-                    request,
-                    "",
-                    "Rewrite the complete KREA2 prompt. Treat the selected-region evidence as authoritative only for the visible region it describes. Correct contradictions that concern that region, but preserve every unrelated subject, pose, anatomy, outfit, camera, lighting, environment, color, texture, and photographic detail. Do not mention the crop, mask, evidence, editing process, or these instructions. Return only the finished complete prompt."
-                ].join("\n");
-                const revised = await this.requestPromptChat([{role: "user", content: editRequest}], controller.signal);
-                proposedPrompt = revised.reply;
-                const diff = promptDiffSummary(currentPrompt, proposedPrompt);
-                beforeText.textContent = currentPrompt;
-                afterText.textContent = proposedPrompt;
-                results.hidden = false;
-                resultActions.hidden = false;
-                const changed = diff.added.length + diff.removed.length;
-                setStatus(`Correction ready for review · ${changed} changed keyword${changed === 1 ? "" : "s"} summarized · ${revised.availableCredits} credits remain.`, "success");
-            }
-            catch (error) {
-                if (error?.name !== "AbortError") setStatus(error instanceof Error ? error.message : String(error), "error");
-            }
-            finally {
-                parentSignal?.removeEventListener?.("abort", abortFromParent);
-                this.controllers.delete(controller);
-                clear.disabled = false;
-                instruction.disabled = false;
-                refreshRunState();
-            }
-        });
     }
 
     createJobProductTabs(job, modalDocument, thumbnailUrl, showSelectedRegion = null) {
@@ -9032,7 +8690,7 @@ class Krea2DiscordCollector {
             throw new Error("The Online API credit service returned an incomplete image balance; retry shortly. No credits were charged.");
         }
 
-        if (purpose === "prompt-chat" || purpose === "region-inpaint") {
+        if (purpose === "prompt-chat") {
             const validPromptBalance = value => (
                 Number.isInteger(value?.credits_per_prompt_chat)
                 && value.credits_per_prompt_chat === 1
@@ -9050,13 +8708,8 @@ class Krea2DiscordCollector {
     async ensureRemoteCredits(signal, purpose = "image") {
         const license = await this.ensureRemoteLicense(signal);
         const promptChat = purpose === "prompt-chat";
-        const regionInpaint = purpose === "region-inpaint";
         let status = await this.remoteCreditStatus(license, signal, purpose);
-        const required = regionInpaint
-            ? status.credits_per_image + status.credits_per_prompt_chat
-            : promptChat
-                ? status.credits_per_prompt_chat
-                : status.credits_per_image;
+        const required = promptChat ? status.credits_per_prompt_chat : status.credits_per_image;
         if (status.available_credits >= required) {
             this.toast(remotePreflightSummary(status, purpose).text, "info");
             return license;
@@ -9105,16 +8758,11 @@ class Krea2DiscordCollector {
             content.style.cssText = "line-height:1.55;color:var(--text-normal)";
             const lead = document.createElement("p");
             const promptChat = purpose === "prompt-chat";
-            const regionInpaint = purpose === "region-inpaint";
-            lead.textContent = regionInpaint
-                ? `Online region inpaint needs 4 credits: 3 for the selected-region Vision inspection and 1 for the successful Qwen rewrite. You have ${status.available_credits} credits remaining.`
-                : promptChat
+            lead.textContent = promptChat
                 ? `Qwen Prompt Editor needs 1 credit per successful reply. You have ${status.available_credits} credits remaining.`
                 : `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
             const detail = document.createElement("p");
-            detail.textContent = regionInpaint
-                ? "Purchase 1,200 credits for $20 USD paid in Bitcoin. A failed Vision inspection refunds its 3-credit reservation, and a failed Qwen rewrite refunds its separate 1-credit reservation."
-                : promptChat
+            detail.textContent = promptChat
                 ? "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 1,200 successful Prompt Editor replies; a failed reply is automatically refunded."
                 : "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
             content.append(lead, detail);

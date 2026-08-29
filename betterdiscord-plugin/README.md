@@ -1,4 +1,4 @@
-# Krea2 Discord Vision v0.16.1
+# Krea2 Discord Vision v0.16.2
 
 The public plugin does not check for, download, or install updates. To update, download the next complete Windows ZIP from the official GitHub repository, verify its published SHA-256 when available, extract it, and run **`START HERE - INSTALL.bat`**. Existing verified models and local settings are preserved.
 
@@ -8,8 +8,6 @@ This BetterDiscord plugin adds two independent tools to exact Discord image atta
 - the top-right image magnifier holds request bytes in memory, queues one shared-GPU Vision job, and returns one grounded V2 prompt by default or three variations when enabled, without saving the full-resolution image.
 
 The Krea2 Vision header and every usable prompt result also expose **Qwen Prompt Editor**. Paste or open a complete KREA2 prompt, describe the pose, wardrobe, camera, lighting, setting, or wording change you want, and adopt or copy Qwen's revised prompt. Each successful edit reply costs one Online API credit. Opening, closing, copying, or clearing the editor costs nothing, and a failed request is refunded automatically. A recovery draft exists only in memory for the current Discord session, so a background image completion cannot destroy work in progress; it is never written to disk or stored by the KREA2 gateway. See the complete [Qwen 3.8 Prompt Changer guide](../docs/QWEN_38_PROMPT_CHANGER.md) for detailed workflows, examples, privacy, billing, limits, and troubleshooting.
-
-Completed prompts also expose **Inpaint prompt region**. Draw a box around a wrong or missing visual detail, explain what needs correction, and review a proposed full-prompt rewrite. Vision inspects only the selected crop, Qwen preserves unrelated prompt details, and the original prompt is not replaced until **Adopt correction** is selected. Online Vision uses three credits for a successful region inspection plus one credit for a successful Qwen rewrite; local Vision uses only the one Qwen credit. See [Region Inpaint Prompt Correction](../docs/REGION_INPAINT_PROMPT_CORRECTION.md).
 
 Every new V2 result includes a **Pose Inspector** with the model's same-call body/support receipt and a local contradiction check. **Ask Qwen about this prompt** answers read-only questions about the prompt for one credit per successful answer; it cannot silently rewrite or adopt the prompt. Online requests show worker state, an estimated wait range, successful cost, balance, and refund protection before submission. The **Diagnostics** view provides a support ID and downloadable redacted report for failed jobs.
 
