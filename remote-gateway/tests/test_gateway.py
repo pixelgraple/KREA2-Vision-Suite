@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app as gateway_module
@@ -199,6 +200,94 @@ class GatewayTests(unittest.TestCase):
         gateway._set_activation_floor_async.assert_awaited_once_with(1.0)
         gateway._restore_activation_floor.assert_awaited_once()
         self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 117)
+
+    def test_scale_down_transition_queues_image_until_route_is_ready(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = Config(
+            gateway.config.database, "endpoint", "v" * 24, "", gateway.config.admin_key, 1200,
+            12 * 1024 * 1024, 30, gateway.config.discord_client_id, gateway.config.discord_client_secret,
+            gateway.config.discord_redirect_uri, gateway.config.license_signing_key,
+        )
+
+        transitioning = {
+            "workergroup_attached": True, "controller_verified": True,
+            "unhealthy_workers": 0, "disallowed_workers": 0,
+            "ready_workers": 0, "controller_ready_workers": 0,
+            "inactive_workers": 0, "starting_workers": 0,
+            "worker_count": 0, "cold_start_eligible": False,
+            "recovery_status": "healthy",
+        }
+        routed = {
+            **transitioning, "ready_workers": 1, "controller_ready_workers": 1,
+            "worker_count": 1,
+        }
+        readiness_calls = 0
+
+        async def remote_readiness():
+            nonlocal readiness_calls
+            readiness_calls += 1
+            return routed if readiness_calls >= 3 else transitioning
+
+        async def routed_request(_client, _endpoint, _payload, _deadline, *, before_send, **_kwargs):
+            # The route callback is the first point at which billing is allowed.
+            row = gateway.authenticate_license(self.headers(license, "a" * 64)["Authorization"])
+            self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+            await before_send()
+            self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+            return {"ok": True, "response": {"choices": [{"message": {"content": "transition-ok"}}]}}
+
+        class EmptyEndpoint:
+            id = 123
+            async def get_workers(self): return []
+
+        class EmptyClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): return False
+            async def get_endpoint(self, _name): return EmptyEndpoint()
+            async def find_workergroup_for_endpoint(self, _endpoint_id): return 456
+
+        original = gateway_module.CoroutineServerless
+        gateway_module.CoroutineServerless = lambda **_kwargs: EmptyClient()
+        gateway.remote_readiness = remote_readiness
+        gateway._prepared_activation_machine_ids = lambda: set()
+        gateway._set_activation_floor_async = AsyncMock()
+        gateway._restore_activation_floor = AsyncMock()
+        gateway._fast_routed_request = routed_request
+        try:
+            response = self.client.post(
+                "/v1/chat/completions", headers=self.headers(license, "a" * 64),
+                json={"model":"gemma4-26b-a4b-heretic-q3-k-l","messages":[{"role":"user","content":"x"}],"temperature":0,"max_tokens":32},
+            )
+        finally:
+            gateway_module.CoroutineServerless = original
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(readiness_calls, 3)
+        gateway._set_activation_floor_async.assert_awaited_once_with(1.0)
+        gateway._restore_activation_floor.assert_awaited_once()
+        row = gateway.authenticate_license(self.headers(license, "a" * 64)["Authorization"])
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+
+    def test_warming_admission_keeps_controller_and_gpu_policy_fail_closed(self):
+        gateway = self.app.state.gateway
+        transitioning = {
+            "workergroup_attached": True, "controller_verified": True,
+            "unhealthy_workers": 0, "disallowed_workers": 0,
+            "ready_workers": 0, "inactive_workers": 0,
+            "cold_start_eligible": False,
+        }
+        gateway._require_remote_capacity(transitioning, allow_warming=True)
+
+        unsafe_snapshots = [
+            {**transitioning, "workergroup_attached": False},
+            {**transitioning, "controller_verified": False},
+            {**transitioning, "unhealthy_workers": 1},
+            {**transitioning, "disallowed_workers": 1},
+        ]
+        for readiness in unsafe_snapshots:
+            with self.subTest(readiness=readiness):
+                with self.assertRaises(HTTPException):
+                    gateway._require_remote_capacity(readiness, allow_warming=True)
 
     def test_signed_settlement_webhook_credits_once(self):
         license = self.enroll()

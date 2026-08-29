@@ -1596,6 +1596,7 @@ class Gateway:
         readiness: dict[str, Any],
         *,
         require_ready: bool = False,
+        allow_warming: bool = False,
     ) -> None:
         """Apply the same controller/GPU policy at every admission boundary."""
 
@@ -1642,6 +1643,14 @@ class Gateway:
             int(readiness.get("ready_workers") or 0) > 0
             or readiness.get("cold_start_eligible") is True
         ):
+            if allow_warming:
+                # Vast briefly exposes a policy-clean worker as neither READY
+                # nor inactive while it moves from active compute back to cold
+                # standby.  This is an admissible scheduling transition, not a
+                # missing pool.  Let the image enter the existing bounded route
+                # activation below; that route still has to become READY before
+                # any credits are reserved or inference bytes are sent.
+                return
             raise HTTPException(
                 503,
                 "Remote GPU cold capacity is still being prepared; no credits were reserved. Retry shortly or use Local GPU.",
@@ -2138,7 +2147,7 @@ class Gateway:
             self._preflight_credit_balance(db, license_row)
         self._instance_readiness_until = 0.0
         readiness = await self.remote_readiness()
-        self._require_remote_capacity(readiness)
+        self._require_remote_capacity(readiness, allow_warming=True)
         # The image's own route is the cold-worker wake signal. Do not issue a
         # redundant text probe first: that doubled cold latency and, worse,
         # waiting for READY before creating a route could never wake an inactive
@@ -2166,7 +2175,7 @@ class Gateway:
                     self._preflight_credit_balance(db, license_row)
                 self._instance_readiness_until = 0.0
                 readiness = await self.remote_readiness()
-                self._require_remote_capacity(readiness)
+                self._require_remote_capacity(readiness, allow_warming=True)
                 candidates: set[int] = set()
                 if (
                     int(readiness.get("ready_workers") or 0) == 0
