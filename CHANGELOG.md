@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.16.0 - 2026-08-28
+
+- Adds a V2 **Pose Inspector** backed by the model's same-call subject/support ledger: posture, pelvic support, left/right foot weight-bearing surfaces, knee/hip geometry, other support, and camera view.
+- Preserves the bounded pose receipt in private local history without storing raw evidence, pixels, Discord identity, URLs, or paths.
+- Adds deterministic prompt contradiction checks for pose/support, subject count, camera angle, gaze/facing, day/night light, clothing state, and accidental extra-limb language.
+- Adds **Ask Qwen about this prompt**, a read-only natural-language audit for pose, contradictions, and missing detail. It costs one credit only after a valid answer and never rewrites or adopts a prompt.
+- Adds visible prompt provenance and official GitHub/BabeGenerator links. No hidden text, tracking, settings, or links are injected into generated or copied prompts.
+- Adds remote preflight receipts with worker state, bounded wait estimate, successful cost, current balance, and explicit automatic failure/cancellation refund behavior.
+- Renames the Errors view to **Diagnostics** and adds failure stage, explanation, support ID, worker/credit guidance, retry recommendation, synthetic-test labeling, Copy support ID, and a downloadable privacy-redacted report.
+
 ## 0.15.0 - 2026-08-28
 
 - Adds **Region Inpaint Prompt Correction** to every completed BetterDiscord Vision prompt.

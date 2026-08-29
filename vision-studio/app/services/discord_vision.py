@@ -442,6 +442,10 @@ class DiscordDescribeResponse(BaseModel):
     )
     model: str = Field(min_length=1, max_length=160)
     prompt_words: int = Field(ge=V2_PROMPT_MIN_WORDS, le=PROMPT_MAX_WORDS)
+    # V2 already asks the image model for a compact support/pose ledger before
+    # it writes prose. Preserve that verified, bounded ledger for the local
+    # Pose Inspector instead of silently throwing it away after correction.
+    pose_check: dict[str, object] | None = None
 
 
 def _words(text: str) -> list[str]:
@@ -2473,7 +2477,18 @@ class DiscordVisionService:
                             "against this one licensed image charge. Do not pad with unsupported facts."
                         )
 
+                    latest_pose_check: dict[str, object] | None = None
+
                     def validate_v2(raw: str) -> tuple[DiscordDescribeResponse, list[str]]:
+                        nonlocal latest_pose_check
+                        try:
+                            pose_payload = json.loads(unwrap_model_transport(raw))
+                        except (json.JSONDecodeError, TypeError):
+                            pose_payload = None
+                        if isinstance(pose_payload, dict):
+                            parsed_pose_check = _v2_pose_check(pose_payload.get("pose_check"))
+                            if parsed_pose_check is not None:
+                                latest_pose_check = parsed_pose_check
                         raw = _v2_pose_locked_payload(raw, triple_variants)
                         model_label = (
                             f"{spec.label} — V2 Direct Fidelity (one-pass full-frame direct observation)"
@@ -2491,6 +2506,7 @@ class DiscordVisionService:
                                 maximum_words=V2_PROMPT_MAX_WORDS,
                             ).model_copy(update={
                                 "dataset_guidance": dataset_guidance_receipt(dataset_guidance, feedback_context),
+                                "pose_check": latest_pose_check,
                             })
                             audit_variants = list(response.prompt_variants)
                         else:
@@ -2502,6 +2518,7 @@ class DiscordVisionService:
                                 model=model_label,
                                 prompt_words=len(_words(draft)),
                                 dataset_guidance=dataset_guidance_receipt(dataset_guidance, feedback_context),
+                                pose_check=latest_pose_check,
                             )
                         return response, audit_variants
 

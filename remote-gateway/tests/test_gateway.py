@@ -110,6 +110,34 @@ class GatewayTests(unittest.TestCase):
             entries = db.execute("SELECT entry_kind,delta_credits FROM credit_ledger WHERE discord_user_id=? ORDER BY entry_id", (row["discord_user_id"],)).fetchall()
         self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 120), ("image_reservation", -3), ("image_refund", 3)])
 
+    def test_credit_balance_includes_secret_free_wait_and_refund_preflight(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+
+        async def remote_readiness():
+            return {
+                "ready_workers": 0,
+                "inactive_workers": 1,
+                "starting_workers": 0,
+                "worker_count": 1,
+                "cold_start_eligible": True,
+                "reason": "Remote GPU cold worker is prepared and inactive.",
+            }
+
+        gateway.remote_readiness = remote_readiness
+        response = self.client.get(
+            "/v1/credits/balance",
+            headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        status = response.json()
+        self.assertEqual(status["worker_state"], "cold-standby")
+        self.assertEqual(status["credits_per_image"], 3)
+        self.assertTrue(status["credits_charged_on_success"])
+        self.assertTrue(status["failed_or_cancelled_refunded"])
+        self.assertGreaterEqual(status["estimated_wait_seconds_max"], status["estimated_wait_seconds_min"])
+        self.assertNotIn("vast_api_key", status)
+
     def test_sleeping_attached_worker_group_accepts_one_cold_start_request(self):
         license = self.enroll()
         gateway = self.app.state.gateway

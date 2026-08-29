@@ -2666,8 +2666,38 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         return gateway.post_error_webhook(payload, license_row)
 
     @app.get("/v1/credits/balance")
-    def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, int | str | bool]:
-        return gateway.credit_status(gateway.authenticate_license(authorization))
+    async def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        status: dict[str, Any] = gateway.credit_status(
+            gateway.authenticate_license(authorization)
+        )
+        readiness = await gateway.remote_readiness()
+        ready = int(readiness.get("ready_workers") or 0)
+        inactive = int(readiness.get("inactive_workers") or 0)
+        starting = int(readiness.get("starting_workers") or 0)
+        if ready:
+            worker_state, wait_min, wait_max = "ready", 10, 45
+        elif inactive and readiness.get("cold_start_eligible"):
+            worker_state, wait_min, wait_max = "cold-standby", 25, max(
+                60, int(gateway.config.activation_deadline_seconds)
+            )
+        elif starting or int(readiness.get("worker_count") or 0):
+            worker_state, wait_min, wait_max = "warming", 30, max(
+                90, int(gateway.config.bootstrap_deadline_seconds)
+            )
+        else:
+            worker_state, wait_min, wait_max = "preparing", 60, max(
+                120, int(gateway.config.bootstrap_deadline_seconds)
+            )
+        status.update({
+            "worker_state": worker_state,
+            "worker_status": clean_text(readiness.get("reason") or "Remote capacity is being checked.", 240),
+            "estimated_wait_seconds_min": wait_min,
+            "estimated_wait_seconds_max": wait_max,
+            "credits_charged_on_success": True,
+            "failed_or_cancelled_refunded": True,
+            "remote_max_workers": 5,
+        })
+        return status
 
     @app.post("/v1/credits/purchase")
     def credit_purchase(payload: CreditPurchaseRequest, authorization: str | None = Header(default=None)) -> dict[str, str | int]:

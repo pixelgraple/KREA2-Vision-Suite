@@ -624,6 +624,10 @@ async def discord_describe(
             )
             if isinstance(reproducibility,dict):
                 reproducibility["prompt_variant_count"]=len(result.prompt_variants)
+                if isinstance(result.pose_check,dict):
+                    # This is a bounded support ledger, not raw model evidence:
+                    # no pixels, prompts, Discord identity, URLs, or paths.
+                    reproducibility["pose_check"]=result.pose_check
                 track_job(discord_jobs.set_reproducibility,active_job_id,reproducibility)
             track_job(
                 discord_jobs.complete,

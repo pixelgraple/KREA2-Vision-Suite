@@ -34,7 +34,21 @@ const response = variants => JSON.stringify({
     prompt: variants[0],
     prompt_variants: variants,
     model: "V2 test model",
-    prompt_words: 180
+    prompt_words: 180,
+    pose_check: {
+        subject_count: 1,
+        primary_posture: "standing",
+        pelvis_support: "not_supported",
+        pelvis_support_surface: "none",
+        left_foot_weight_bearing: true,
+        left_foot_surface: "skateboard deck",
+        right_foot_weight_bearing: true,
+        right_foot_surface: "asphalt",
+        knee_flexion: "slight",
+        hip_height_relative_to_knees: "above",
+        other_weight_bearing_support: "none",
+        camera_view: "steep overhead selfie"
+    }
 });
 
 assert.equal(DEFAULT_SETTINGS.v2ThreePromptVariations, false);
@@ -64,7 +78,9 @@ assert.notEqual(
 
 const one = [prompt("One.")];
 const three = [prompt("Balanced."), prompt("Subject and pose."), prompt("Scene and light.")];
-assert.equal(parseVisionPromptResponse(response(one), {expectedPromptCount: 1}).prompt_variants.length, 1);
+const parsedOne = parseVisionPromptResponse(response(one), {expectedPromptCount: 1});
+assert.equal(parsedOne.prompt_variants.length, 1);
+assert.equal(parsedOne.pose_check.primary_posture, "standing");
 assert.equal(parseVisionPromptResponse(response(three), {expectedPromptCount: 3}).prompt_variants.length, 3);
 assert.throws(() => parseVisionPromptResponse(response(one), {expectedPromptCount: 3}), /exactly three|when 3 were requested/);
 assert.throws(() => parseVisionPromptResponse(response(three.slice(0, 2)), {expectedPromptCount: 1}), /when 1 were requested/);
@@ -91,7 +107,7 @@ assert.doesNotMatch(source, /\["V2", "v2"\]/);
 assert.match(source, /v2Toggle\.setAttribute\("role", "switch"\)/);
 assert.match(source, /Use V2 Direct Fidelity/);
 assert.match(source, /storedSettings\.visionAnalysisProfileVersion\) \|\| 0\) < 3/);
-assert.match(source, /output\.append\(variantTabs, prompt, feedback, editVariant, inpaintVariant, copyVariant, inpaintPanel\)/);
+assert.match(source, /output\.append\(variantTabs, prompt, feedback, editVariant, auditVariant, inpaintVariant, copyVariant, inpaintPanel\)/);
 assert.match(source, /variants\.length === 1\s*\? \["Prompt"\]/);
 assert.match(source, /Generate three V2 prompt variations/);
 

@@ -1153,6 +1153,7 @@ class DiscordVisionTests(unittest.TestCase):
                 "prompt_variants",
                 "model",
                 "prompt_words",
+                "pose_check",
             },
         )
         self.assertEqual(result.pipeline_id, PIPELINE_ID)
@@ -1483,6 +1484,52 @@ class DiscordVisionTests(unittest.TestCase):
         validated=DiscordVisionService._v2_direct_prompt(locked)
         self.assertGreaterEqual(len(_words(validated)),160)
         self.assertLessEqual(len(_words(validated)),520)
+
+    def test_v2_result_preserves_the_same_call_pose_receipt_for_history(self):
+        class PoseReceiptProvider(FakeHereticProvider):
+            def with_image_text(self, system, user, *_args):
+                if "V2 Direct Fidelity observer" in system:
+                    self.image_calls += 1
+                    self.image_prompts.append((system, user))
+                    return ModelReply(json.dumps({
+                        "pose_check": {
+                            "subject_count": 1,
+                            "primary_posture": "standing",
+                            "pelvis_support": "not_supported",
+                            "pelvis_support_surface": "none",
+                            "left_foot_weight_bearing": True,
+                            "left_foot_surface": "a skateboard deck",
+                            "right_foot_weight_bearing": True,
+                            "right_foot_surface": "asphalt pavement",
+                            "knee_flexion": "slight",
+                            "hip_height_relative_to_knees": "above",
+                            "other_weight_bearing_support": "none",
+                            "camera_view": "a steep overhead selfie angle",
+                        },
+                        "prompt": "A single adult woman stands while balancing over a skateboard. " + prose(180),
+                    }))
+                return super().with_image_text(system, user, *_args)
+
+        pipeline=FakeHereticPipeline()
+        pipeline.provider=PoseReceiptProvider()
+        service=DiscordVisionService(
+            replace(settings,queue_enabled=True,model=LEGACY_MODEL_ID),
+            queue=FakeQueue([]),
+            handoff=FakeHandoff(FakeQueue([]),[]),
+            ollama=FakeOllama([],prose(400)),
+            pipeline=pipeline,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            image=Path(temporary)/"image.png"; image.write_bytes(image_bytes())
+            result=service.describe(
+                image,
+                model="llamacpp::heretic-8b-q8_0",
+                analysis_profile="v2",
+            )
+        self.assertIsNotNone(result.pose_check)
+        self.assertEqual(result.pose_check["primary_posture"],"standing")
+        self.assertEqual(result.pose_check["left_foot_surface"],"a skateboard deck")
+        self.assertIn("pelvis and buttocks are unsupported",result.prompt)
 
     def test_v2_pose_ledger_preserves_visibly_supported_sitting(self):
         raw=json.dumps({
@@ -2623,6 +2670,7 @@ class DiscordVisionApiTests(unittest.TestCase):
                 "prompt_variants",
                 "model",
                 "prompt_words",
+                "pose_check",
             },
         )
         self.assertEqual(response.json()["pipeline_id"], PIPELINE_ID)

@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.15.0
+ * @version 0.16.0
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.15.0";
+const PLUGIN_VERSION = "0.16.0";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -144,6 +144,7 @@ const HISTORY_ROOT_ID = "krea2-discord-history-root";
 const HISTORY_MODAL_ID = "krea2-discord-history-modal";
 const SOURCE_PROMPT_MODAL_ID = "krea2-discord-source-prompt-modal";
 const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal";
+const PROMPT_AUDIT_MODAL_ID = "krea2-discord-prompt-audit-modal";
 const PRODUCT_MODAL_ID = "krea2-discord-product-modal";
 const ONBOARDING_MODAL_ID = "krea2-discord-onboarding-modal";
 const ONBOARDING_VERSION = 9;
@@ -327,6 +328,10 @@ const ONLINE_VISION_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l";
 const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB remote GPU)";
 const REMOTE_GATEWAY_URL = "https://seedframe.xyz/api/krea2-vision";
 const TRUSTED_CHECKOUT_HOSTS = new Set(["bitcoin.seedframe.xyz", "bitcoin.zoo-chat.org"]);
+const PROJECT_LINKS = Object.freeze({
+    github: "https://github.com/pixelgraple/KREA2-Vision-Suite",
+    babegenerator: "https://babegenerator.ink/"
+});
 const VISION_EXECUTION_OPTIONS = Object.freeze([
     ["Local GPU — use an installed model on this computer", "local"],
     ["Online API — Gemma 4 26B-A4B on the private remote worker (Discord sign-in required)", "online"]
@@ -791,7 +796,9 @@ const CSS = `
 #${SOURCE_PROMPT_MODAL_ID} button,
 #${SOURCE_PROMPT_MODAL_ID} textarea,
 #${PROMPT_EDITOR_MODAL_ID} button,
-#${PROMPT_EDITOR_MODAL_ID} textarea {
+#${PROMPT_AUDIT_MODAL_ID} button,
+#${PROMPT_EDITOR_MODAL_ID} textarea,
+#${PROMPT_AUDIT_MODAL_ID} textarea {
     color: inherit;
     -webkit-text-fill-color: currentColor;
 }
@@ -1112,6 +1119,7 @@ const CSS = `
 #${HISTORY_MODAL_ID},
 #${SOURCE_PROMPT_MODAL_ID},
 #${PROMPT_EDITOR_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
+#${PROMPT_AUDIT_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10001; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
 .krea2-history-dialog { width: min(760px, 92vw); max-height: min(760px, 88vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #343a45; border-radius: 14px; color: var(--krea2-text); background: #17191f; box-shadow: 0 28px 90px rgba(0,0,0,.62); }
 .krea2-history-dialog[data-source-prompt="true"] { width: min(900px, 94vw); }
 .krea2-history-dialog[data-prompt-editor="true"] { width: min(920px, 94vw); max-height: min(860px, 92vh); }
@@ -1240,6 +1248,29 @@ const CSS = `
 .krea2-region-inpaint-status { min-height: 17px; color: #a8b0bd; font-size: 10px; line-height: 1.45; }
 .krea2-region-inpaint-status[data-state="error"] { color: #ffb4b8; }
 .krea2-region-inpaint-status[data-state="success"] { color: #a9edc1; }
+.krea2-quality-panel { display: grid; gap: 10px; margin-top: 14px; padding: 13px; border: 1px solid #354153; border-radius: 11px; background: #111720; }
+.krea2-quality-panel h3 { margin: 0; color: #f2f5f8; font-size: 13px; }
+.krea2-quality-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+.krea2-quality-fact { min-width: 0; padding: 8px 9px; border: 1px solid #2d3542; border-radius: 8px; background: #171c24; }
+.krea2-quality-fact span { display: block; color: #8f99a9; font-size: 8px; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
+.krea2-quality-fact strong { display: block; margin-top: 4px; overflow-wrap: anywhere; color: #e8edf3; font-size: 10px; line-height: 1.4; }
+.krea2-audit-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.krea2-audit-item { padding: 8px 10px; border: 1px solid #604b2c; border-radius: 8px; color: #f5d49b; background: #282015; font-size: 10px; line-height: 1.45; }
+.krea2-audit-item[data-severity="error"] { border-color: #6e343b; color: #ffb8bd; background: #2b171b; }
+.krea2-audit-clear { color: #a9edc1; font-size: 10px; }
+.krea2-provenance { margin-top: 12px; border: 1px solid #303946; border-radius: 10px; background: #141920; }
+.krea2-provenance summary { padding: 10px 12px; color: #d9e0e9; cursor: pointer; font-size: 10px; font-weight: 750; }
+.krea2-provenance-body { display: grid; gap: 7px; padding: 0 12px 12px; color: #aab4c2; font-size: 9.5px; line-height: 1.45; }
+.krea2-provenance-links { display: flex; flex-wrap: wrap; gap: 7px; }
+.krea2-provenance-links button { min-height: 28px; padding: 5px 9px; border: 1px solid #3a4352; border-radius: 7px; color: #e9edf3; background: #20252d; cursor: pointer; font-size: 9px; font-weight: 700; }
+.krea2-diagnostic-center { display: grid; gap: 11px; padding: 14px; border: 1px solid #65363d; border-radius: 11px; background: #27171b; }
+.krea2-diagnostic-center[data-synthetic="true"] { border-color: #5b4a2d; background: #261f15; }
+.krea2-diagnostic-title { color: #ffccd0; font-size: 14px; font-weight: 800; }
+.krea2-diagnostic-center[data-synthetic="true"] .krea2-diagnostic-title { color: #f2d49b; }
+.krea2-diagnostic-row { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 10px; color: #d7dce4; font-size: 10px; line-height: 1.45; }
+.krea2-diagnostic-row span { color: #9ba5b4; font-weight: 700; }
+.krea2-diagnostic-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.krea2-preflight { padding: 9px 11px; border: 1px solid #35513f; border-radius: 8px; color: #b9e8c9; background: #132219; font-size: 10px; line-height: 1.45; }
 .krea2-meta-grid,
 .krea2-health-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .krea2-info-card { padding: 11px; border: 1px solid #343a45; border-radius: 9px; color: #dfe3e9; -webkit-text-fill-color: #dfe3e9; background: #1d2027; font-size: 10px; line-height: 1.5; }
@@ -1342,6 +1373,8 @@ const CSS = `
     .krea2-meta-grid,
     .krea2-health-grid,
     .krea2-region-inpaint-results { grid-template-columns: 1fr; }
+    .krea2-quality-grid { grid-template-columns: 1fr; }
+    .krea2-diagnostic-row { grid-template-columns: 1fr; gap: 3px; }
     .krea2-review-form, .krea2-score-grid, .krea2-repro-grid { grid-template-columns: 1fr; }
 }
 `;
@@ -1447,6 +1480,12 @@ function filterExternalUrl(raw, purpose) {
     else if (purpose === "checkout") {
         if (!TRUSTED_CHECKOUT_HOSTS.has(parsed.hostname)) {
             return {ok: false, error: "The payment link is not from an approved Krea2 checkout host."};
+        }
+    }
+    else if (purpose === "project") {
+        const approved = new Set(Object.values(PROJECT_LINKS));
+        if (!approved.has(parsed.toString())) {
+            return {ok: false, error: "The project link is not on the KREA2 Vision allowlist."};
         }
     }
     else {
@@ -2588,7 +2627,10 @@ function parseVisionPromptResponse(rawText, {expectedPromptCount = null, expecte
         expectedEnabled: expectedDatasetGuidance,
         expectedFeedbackDigest
     });
-    return {
+    const poseCheck = state.pose_check === null || state.pose_check === undefined
+        ? null
+        : normalizePoseCheck(state.pose_check);
+    const result = {
         prompt,
         prompt_variants: promptVariants,
         model,
@@ -2596,6 +2638,8 @@ function parseVisionPromptResponse(rawText, {expectedPromptCount = null, expecte
         pipeline_id: pipelineId,
         dataset_guidance: datasetGuidance
     };
+    if (poseCheck) result.pose_check = poseCheck;
+    return result;
 }
 
 function parseStudioErrorDetail(rawText) {
@@ -2849,6 +2893,165 @@ function filterHistoryJobs(jobs, filter) {
     return list;
 }
 
+function normalizePoseCheck(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Vision pose receipt is invalid.");
+    const text = (value, maximum = 120) => String(value ?? "").normalize("NFKC")
+        .replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, maximum);
+    const posture = text(raw.primary_posture, 32).toLowerCase().replace(/\s+/g, "_");
+    const postureValues = new Set(["standing", "sitting", "kneeling", "crouching", "squatting", "on_all_fours", "reclining", "lying", "visually_uncertain"]);
+    if (!postureValues.has(posture)) throw new Error("Vision pose receipt has an invalid posture.");
+    const pelvisSupport = text(raw.pelvis_support, 32).toLowerCase().replace(/\s+/g, "_");
+    if (!["supported", "not_supported", "not_visible"].includes(pelvisSupport)) throw new Error("Vision pose receipt has invalid pelvic support.");
+    const optionalBoolean = value => value === true ? true : value === false ? false : null;
+    return Object.freeze({
+        subject_count: Math.max(0, Math.min(12, Math.trunc(Number(raw.subject_count) || 0))),
+        primary_posture: posture,
+        pelvis_support: pelvisSupport,
+        pelvis_support_surface: text(raw.pelvis_support_surface),
+        left_foot_weight_bearing: optionalBoolean(raw.left_foot_weight_bearing),
+        left_foot_surface: text(raw.left_foot_surface),
+        right_foot_weight_bearing: optionalBoolean(raw.right_foot_weight_bearing),
+        right_foot_surface: text(raw.right_foot_surface),
+        knee_flexion: text(raw.knee_flexion, 24).toLowerCase().replace(/\s+/g, "_"),
+        hip_height_relative_to_knees: text(raw.hip_height_relative_to_knees, 24).toLowerCase().replace(/\s+/g, "_"),
+        other_weight_bearing_support: text(raw.other_weight_bearing_support),
+        camera_view: text(raw.camera_view)
+    });
+}
+
+function auditPromptContradictions(prompt, poseCheck = null) {
+    const text = String(prompt || "").normalize("NFKC").replace(/\s+/g, " ").trim();
+    if (!text) return [];
+    const lower = text.toLowerCase();
+    const issues = [];
+    const add = (code, message, severity = "warning") => {
+        if (!issues.some(item => item.code === code)) issues.push(Object.freeze({code, message, severity}));
+    };
+    const has = pattern => pattern.test(lower);
+    const receipt = poseCheck ? normalizePoseCheck(poseCheck) : null;
+
+    if (receipt?.subject_count === 1 && has(/\b(?:standing|stands)\b/) && has(/\b(?:sitting|seated|sits)\b/)) {
+        add("standing-and-sitting", "One subject is described as both standing and sitting.", "error");
+    }
+    if (receipt?.primary_posture === "standing" && has(/\b(?:sitting|seated|sits)\b/)) {
+        add("pose-vs-receipt", "Prompt says sitting, but the image pose receipt says standing.", "error");
+    }
+    if (receipt?.primary_posture === "sitting" && has(/\b(?:standing|stands)\b/)) {
+        add("pose-vs-receipt", "Prompt says standing, but the image pose receipt says sitting.", "error");
+    }
+    if (receipt?.primary_posture === "sitting" && receipt.pelvis_support !== "supported") {
+        add("unsupported-sitting", "Sitting is claimed without visible pelvic support.", "error");
+    }
+    if (receipt?.primary_posture === "standing" && receipt.pelvis_support === "supported") {
+        add("supported-standing", "Standing conflicts with the receipt's supported pelvis.", "error");
+    }
+    if (has(/\b(?:facing away|back (?:toward|to) (?:the )?camera)\b/) && has(/\b(?:looking directly at|direct eye contact with|gazing directly at) (?:the )?camera\b/)) {
+        add("view-gaze-conflict", "The body faces away while the prompt also claims direct camera gaze; verify the head turn.");
+    }
+    if (has(/\b(?:high-angle|high angle|overhead|bird'?s-eye)\b/) && has(/\b(?:low-angle|low angle|worm'?s-eye)\b/)) {
+        add("camera-angle-conflict", "Both high-angle and low-angle camera positions are specified.", "error");
+    }
+    if (has(/\b(?:midday|bright daylight|daytime|sunlit day)\b/) && has(/\b(?:midnight|nighttime|moonlit night|after dark)\b/)) {
+        add("time-light-conflict", "Daylight and nighttime lighting are both specified.");
+    }
+    if (has(/\b(?:fully clothed|completely clothed)\b/) && has(/\b(?:fully nude|completely nude|naked)\b/)) {
+        add("clothing-state-conflict", "The same prompt specifies both fully clothed and fully nude.", "error");
+    }
+    if (has(/\b(?:three arms|four arms|three legs|four legs|extra arm|extra leg|extra limb)\b/)) {
+        add("extra-limb-language", "The prompt contains extra-limb language; verify that it is intentional.");
+    }
+    if (receipt?.subject_count > 0) {
+        const subjectMatches = lower.match(/\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:adult )?(?:people|persons|subjects|women|men)\b/g) || [];
+        for (const match of subjectMatches) {
+            const token = match.split(/\s+/)[0];
+            const numbers = {one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10};
+            const count = Number(token) || numbers[token];
+            if (count && count !== receipt.subject_count) add("subject-count-conflict", `Prompt subject count (${count}) conflicts with the image receipt (${receipt.subject_count}).`, "error");
+        }
+    }
+    return issues;
+}
+
+function diagnosticForHistoryJob(job) {
+    const id = /^[a-f0-9]{16,64}$/i.test(String(job?.id || "")) ? String(job.id).toLowerCase() : "unavailable";
+    const message = String(job?.public_error || job?.stage || "No public error was recorded.").replace(/\s+/g, " ").trim().slice(0, 1000);
+    const stage = String(job?.stage || "Unknown stage").replace(/\s+/g, " ").trim().slice(0, 300);
+    const requestedModel = String(job?.requested_model || job?.model || "Unknown model").replace(/\s+/g, " ").trim().slice(0, 200);
+    const combined = `${stage} ${message}`.toLowerCase();
+    let code = "vision_job_failed";
+    let recommendation = "Retry once. If it fails again, download this redacted report and send the support ID.";
+    if (/ready|warming|cold|capacity|gpu/.test(combined)) {
+        code = "remote_gpu_capacity";
+        recommendation = "The remote worker was unavailable or warming. Wait for Ready/Cold standby, then retry; no successful image charge should remain.";
+    }
+    else if (/unusable|validation|schema|prompt/.test(combined)) {
+        code = "output_validation_failed";
+        recommendation = "Retry once with V2. If repeated, keep the support ID so the model output validator can be reviewed.";
+    }
+    else if (/cancel/.test(combined)) {
+        code = "cancelled";
+        recommendation = "No action is needed. Start a new request when ready.";
+    }
+    else if (/request id|different image|idempot/.test(combined)) {
+        code = "request_identity_conflict";
+        recommendation = "Retry the image; the plugin will issue a fresh request ID. Repeated failures should be reported with this support ID.";
+    }
+    const synthetic = /synthetic|smoke[_ -]?test|route proof|plugin_transport_smoke_test/.test(combined);
+    const remote = requestedModel.startsWith("vast::") || /remote|online api/.test(combined);
+    return Object.freeze({
+        support_id: id,
+        error_code: synthetic ? "synthetic_test" : code,
+        stage,
+        message,
+        model: requestedModel,
+        worker_state: /warming|cold|ready|capacity|gpu/.test(combined) ? "See failure stage; live state may have changed" : "Not implicated by this error",
+        credit_outcome: remote ? "Protected: failed/cancelled remote requests are refunded automatically; successful requests alone are charged" : "Local GPU request: no Online API image credits",
+        recommendation,
+        synthetic
+    });
+}
+
+function buildRedactedDiagnosticReport(job) {
+    const diagnostic = diagnosticForHistoryJob(job);
+    return [
+        "KREA2 Vision local diagnostic report",
+        "====================================",
+        `Generated UTC: ${new Date().toISOString()}`,
+        `Support ID: ${diagnostic.support_id}`,
+        `Error code: ${diagnostic.error_code}`,
+        `Stage: ${diagnostic.stage}`,
+        `Model: ${diagnostic.model}`,
+        `Worker state: ${diagnostic.worker_state}`,
+        `Credit outcome: ${diagnostic.credit_outcome}`,
+        `Message: ${diagnostic.message}`,
+        `Recommendation: ${diagnostic.recommendation}`,
+        `Synthetic test: ${diagnostic.synthetic ? "yes" : "no"}`,
+        "",
+        "Redaction: image bytes, prompts, Discord identity, credentials, URLs, filenames, image hashes, and local paths are excluded."
+    ].join("\r\n");
+}
+
+function remotePreflightSummary(status, purpose = "image") {
+    const state = String(status?.worker_state || "checking").replace(/[^a-z0-9 -]/gi, " ").trim() || "checking";
+    const minimum = Math.max(0, Math.trunc(Number(status?.estimated_wait_seconds_min) || 0));
+    const maximum = Math.max(minimum, Math.trunc(Number(status?.estimated_wait_seconds_max) || minimum));
+    const imageCost = Math.max(0, Math.trunc(Number(status?.credits_per_image) || 3));
+    const editCost = Math.max(0, Math.trunc(Number(status?.credits_per_prompt_chat) || 1));
+    const cost = purpose === "region-inpaint" ? imageCost + editCost : purpose === "prompt-chat" ? editCost : imageCost;
+    const wait = maximum ? `${minimum}–${maximum}s estimate` : "wait estimate unavailable";
+    const refund = status?.failed_or_cancelled_refunded === false
+        ? "Review credit terms before submitting."
+        : "Failed or cancelled work is refunded; only successful work is charged.";
+    return Object.freeze({
+        worker_state: state,
+        wait_min_seconds: minimum,
+        wait_max_seconds: maximum,
+        cost,
+        available_credits: Math.max(0, Math.trunc(Number(status?.available_credits) || 0)),
+        text: `Remote worker: ${state} · ${wait} · ${cost} credit${cost === 1 ? "" : "s"} on success · ${Math.max(0, Math.trunc(Number(status?.available_credits) || 0))} available. ${refund}`
+    });
+}
+
 function historyJobMatchesModel(job, modelId) {
     if (!modelId || modelId === "all") return true;
     const model = String(job?.model || "").toLowerCase();
@@ -3060,6 +3263,10 @@ function safeReproducibility(raw) {
         try { clean.dataset_guidance = normalizeDatasetGuidanceState(raw.dataset_guidance); }
         catch { /* Older history rows may predate dataset-guidance receipts. */ }
     }
+    if (raw.pose_check && typeof raw.pose_check === "object" && !Array.isArray(raw.pose_check)) {
+        try { clean.pose_check = normalizePoseCheck(raw.pose_check); }
+        catch { /* Older rows may not have a valid V2 support ledger. */ }
+    }
     return clean;
 }
 
@@ -3261,6 +3468,7 @@ class Krea2DiscordCollector {
         this.historyModalCleanup = null;
         this.sourcePromptModalCleanup = null;
         this.promptEditorCleanup = null;
+        this.promptAuditCleanup = null;
         this.promptEditorDraft = null;
         this.feedbackModalCleanup = null;
         this.lastPathname = "";
@@ -3417,6 +3625,8 @@ class Krea2DiscordCollector {
         this.sourcePromptModalCleanup = null;
         this.promptEditorCleanup?.();
         this.promptEditorCleanup = null;
+        this.promptAuditCleanup?.();
+        this.promptAuditCleanup = null;
         this.promptEditorDraft = null;
         this.feedbackModalCleanup?.();
         this.feedbackModalCleanup = null;
@@ -3445,6 +3655,7 @@ class Krea2DiscordCollector {
         document.getElementById(HISTORY_MODAL_ID)?.remove();
         document.getElementById(SOURCE_PROMPT_MODAL_ID)?.remove();
         document.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
+        document.getElementById(PROMPT_AUDIT_MODAL_ID)?.remove();
         document.getElementById(PRODUCT_MODAL_ID)?.remove();
         document.getElementById(ONBOARDING_MODAL_ID)?.remove();
         for (const controller of this.controllers) controller.abort();
@@ -4055,7 +4266,7 @@ class Krea2DiscordCollector {
         const tabs = document.createElement("div");
         tabs.className = "krea2-history-tabs";
         tabs.setAttribute("role", "tablist");
-        for (const [label, filter] of [["Interrogate", "interrogate"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Errors", "errors"]]) {
+        for (const [label, filter] of [["Interrogate", "interrogate"], ["Recent", "recent"], ["Done", "completed"], ["Queue", "queued"], ["Diagnostics", "errors"]]) {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "krea2-history-tab";
@@ -5718,6 +5929,10 @@ class Krea2DiscordCollector {
             editVariant.type = "button";
             editVariant.className = "krea2-history-action";
             editVariant.textContent = "✦ Edit this prompt with Qwen";
+            const auditVariant = modalDocument.createElement("button");
+            auditVariant.type = "button";
+            auditVariant.className = "krea2-history-action";
+            auditVariant.textContent = "? Ask Qwen about this prompt · 1 credit";
             const inpaintVariant = modalDocument.createElement("button");
             inpaintVariant.type = "button";
             inpaintVariant.className = "krea2-history-action";
@@ -5787,6 +6002,7 @@ class Krea2DiscordCollector {
                 catch { this.toast("Discord could not copy the selected prompt.", "error"); }
             });
             editVariant.addEventListener("click", () => this.openPromptEditor(variants[selectedVariant], modalDocument));
+            auditVariant.addEventListener("click", () => this.openPromptAudit(variants[selectedVariant], modalDocument));
             inpaintVariant.addEventListener("click", () => {
                 if (!thumbnailUrl) return;
                 if (!inpaintPanel.hidden) {
@@ -5835,17 +6051,175 @@ class Krea2DiscordCollector {
             feedback.append(feedbackButtons, feedbackStatus);
             selectVariant(0);
             output.append(label);
-            output.append(variantTabs, prompt, feedback, editVariant, inpaintVariant, copyVariant, inpaintPanel);
+            output.append(variantTabs, prompt, feedback, editVariant, auditVariant, inpaintVariant, copyVariant, inpaintPanel);
         }
         else {
-            const message = modalDocument.createElement("div");
-            message.className = isHistoryJobActive(job) ? "krea2-history-stage" : "krea2-history-error";
-            message.textContent = job.public_error || job.stage || (isHistoryJobActive(job) ? "Waiting for the local Vision worker…" : "This job has no saved prompt.");
-            output.append(message);
+            if (isHistoryJobActive(job)) {
+                const message = modalDocument.createElement("div");
+                message.className = "krea2-history-stage";
+                message.textContent = job.stage || "Waiting for the local Vision worker…";
+                output.append(message);
+            }
+            else {
+                output.append(this.createDiagnosticCenter(job, modalDocument));
+            }
         }
         result.append(source, output);
         fragment.append(result);
+        if (job.prompt) {
+            fragment.append(this.createPoseAndContradictionPanel(job, modalDocument));
+            fragment.append(this.createPromptProvenancePanel(job, modalDocument));
+        }
         return fragment;
+    }
+
+    createPoseAndContradictionPanel(job, modalDocument = document) {
+        const panel = modalDocument.createElement("section");
+        panel.className = "krea2-quality-panel";
+        const title = modalDocument.createElement("h3");
+        title.textContent = "Pose Inspector & contradiction check";
+        panel.append(title);
+        const pose = job?.reproducibility?.pose_check || null;
+        if (pose) {
+            const receipt = normalizePoseCheck(pose);
+            const grid = modalDocument.createElement("div");
+            grid.className = "krea2-quality-grid";
+            const facts = [
+                ["Subjects", String(receipt.subject_count)],
+                ["Body state", receipt.primary_posture.replaceAll("_", " ")],
+                ["Pelvis support", `${receipt.pelvis_support.replaceAll("_", " ")}${receipt.pelvis_support_surface ? ` · ${receipt.pelvis_support_surface}` : ""}`],
+                ["Left foot", `${receipt.left_foot_weight_bearing === true ? "weight-bearing" : receipt.left_foot_weight_bearing === false ? "not weight-bearing" : "not visible"} · ${receipt.left_foot_surface || "unknown surface"}`],
+                ["Right foot", `${receipt.right_foot_weight_bearing === true ? "weight-bearing" : receipt.right_foot_weight_bearing === false ? "not weight-bearing" : "not visible"} · ${receipt.right_foot_surface || "unknown surface"}`],
+                ["Knees / hips", `${receipt.knee_flexion.replaceAll("_", " ")} · hips ${receipt.hip_height_relative_to_knees.replaceAll("_", " ")} knees`],
+                ["Other support", receipt.other_weight_bearing_support || "none"],
+                ["Camera view", receipt.camera_view || "not recorded"]
+            ];
+            for (const [label, value] of facts) {
+                const item = modalDocument.createElement("div");
+                item.className = "krea2-quality-fact";
+                const span = modalDocument.createElement("span");
+                span.textContent = label;
+                const strong = modalDocument.createElement("strong");
+                strong.textContent = value;
+                item.append(span, strong);
+                grid.append(item);
+            }
+            panel.append(grid);
+        }
+        else {
+            const note = modalDocument.createElement("div");
+            note.className = "krea2-history-model-proof-note";
+            note.textContent = "A structured pose receipt was not stored for this older or non-V2 job. New V2 results preserve it automatically.";
+            panel.append(note);
+        }
+        const issues = auditPromptContradictions(job.prompt, pose);
+        if (!issues.length) {
+            const clear = modalDocument.createElement("div");
+            clear.className = "krea2-audit-clear";
+            clear.textContent = "✓ No obvious deterministic contradictions found. This is a local consistency check, not a second image interpretation.";
+            panel.append(clear);
+        }
+        else {
+            const list = modalDocument.createElement("ul");
+            list.className = "krea2-audit-list";
+            for (const issue of issues) {
+                const item = modalDocument.createElement("li");
+                item.className = "krea2-audit-item";
+                item.dataset.severity = issue.severity;
+                item.textContent = issue.message;
+                list.append(item);
+            }
+            panel.append(list);
+        }
+        return panel;
+    }
+
+    createPromptProvenancePanel(job, modalDocument = document) {
+        const details = modalDocument.createElement("details");
+        details.className = "krea2-provenance";
+        const summary = modalDocument.createElement("summary");
+        summary.textContent = "Prompt provenance (visible; never injected into the prompt)";
+        const body = modalDocument.createElement("div");
+        body.className = "krea2-provenance-body";
+        const profile = String(job?.reproducibility?.analysis_profile || "unknown");
+        const pipeline = String(job?.reproducibility?.pipeline_id || VISION_PIPELINE_ID);
+        const origin = profile === "v2" ? "Vision V2 Direct Fidelity" : profile === "maximum" ? "Vision Maximum detail" : profile === "fast" ? "Vision Fast" : "Vision result or imported metadata";
+        const text = modalDocument.createElement("div");
+        text.textContent = `Origin: ${origin} · Pipeline: ${pipeline} · Model: ${job.model || job.requested_model || "unknown"}. Qwen edits and region corrections remain explicit user actions; no hidden text, links, or settings are added to copied prompts.`;
+        const links = modalDocument.createElement("div");
+        links.className = "krea2-provenance-links";
+        for (const [label, url] of [["GitHub source", PROJECT_LINKS.github], ["BabeGenerator.ink", PROJECT_LINKS.babegenerator]]) {
+            const button = modalDocument.createElement("button");
+            button.type = "button";
+            button.textContent = label;
+            button.addEventListener("click", () => {
+                try { this.openVerifiedExternal(url, "project"); }
+                catch (error) { this.toast(error instanceof Error ? error.message : String(error), "error"); }
+            });
+            links.append(button);
+        }
+        body.append(text, links);
+        details.append(summary, body);
+        return details;
+    }
+
+    createDiagnosticCenter(job, modalDocument = document) {
+        const diagnostic = diagnosticForHistoryJob(job);
+        const panel = modalDocument.createElement("section");
+        panel.className = "krea2-diagnostic-center";
+        panel.dataset.synthetic = diagnostic.synthetic ? "true" : "false";
+        const title = modalDocument.createElement("div");
+        title.className = "krea2-diagnostic-title";
+        title.textContent = diagnostic.synthetic ? "Synthetic route test — no user image failed" : "Failure diagnostics";
+        panel.append(title);
+        for (const [label, value] of [
+            ["Support ID", diagnostic.support_id],
+            ["Error code", diagnostic.error_code],
+            ["Failed stage", diagnostic.stage],
+            ["Explanation", diagnostic.message],
+            ["Worker state", diagnostic.worker_state],
+            ["Credits / refund", diagnostic.credit_outcome],
+            ["Recommended next step", diagnostic.recommendation]
+        ]) {
+            const row = modalDocument.createElement("div");
+            row.className = "krea2-diagnostic-row";
+            const span = modalDocument.createElement("span");
+            span.textContent = label;
+            const valueNode = modalDocument.createElement("div");
+            valueNode.textContent = value;
+            row.append(span, valueNode);
+            panel.append(row);
+        }
+        const actions = modalDocument.createElement("div");
+        actions.className = "krea2-diagnostic-actions";
+        const copyId = modalDocument.createElement("button");
+        copyId.type = "button";
+        copyId.className = "krea2-history-action";
+        copyId.textContent = "Copy support ID";
+        copyId.addEventListener("click", async () => {
+            try {
+                await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(diagnostic.support_id);
+                copyId.textContent = "Copied";
+                setTimeout(() => { if (copyId.isConnected) copyId.textContent = "Copy support ID"; }, 1200);
+            }
+            catch { this.toast("Discord could not copy the support ID.", "error"); }
+        });
+        const download = modalDocument.createElement("button");
+        download.type = "button";
+        download.className = "krea2-history-action";
+        download.textContent = "Download redacted .txt";
+        download.addEventListener("click", () => {
+            const view = modalDocument.defaultView || window;
+            const url = view.URL.createObjectURL(new view.Blob([buildRedactedDiagnosticReport(job)], {type: "text/plain;charset=utf-8"}));
+            const anchor = modalDocument.createElement("a");
+            anchor.href = url;
+            anchor.download = `krea2-diagnostic-${diagnostic.support_id.slice(0, 12)}.txt`;
+            anchor.click();
+            setTimeout(() => view.URL.revokeObjectURL(url), 1000);
+        });
+        actions.append(copyId, download);
+        panel.append(actions);
+        return panel;
     }
 
     buildRegionInpaintPanel(panel, {sourceUrl, modalDocument, parentSignal = null, getCurrentPrompt, onAdopt, showSelectedRegion = null}) {
@@ -7167,6 +7541,171 @@ class Krea2DiscordCollector {
         });
     }
 
+    openPromptAudit(initialPrompt, modalDocument = document) {
+        const auditedPrompt = String(initialPrompt || "").trim().slice(0, 18000);
+        if (auditedPrompt.length < 20) {
+            this.toast("Open a completed prompt before asking Qwen to audit it.", "error");
+            return;
+        }
+        this.promptAuditCleanup?.();
+        modalDocument.getElementById(PROMPT_AUDIT_MODAL_ID)?.remove();
+        const controller = new AbortController();
+        let busy = false;
+        const overlay = modalDocument.createElement("div");
+        overlay.id = PROMPT_AUDIT_MODAL_ID;
+        const dialog = modalDocument.createElement("section");
+        dialog.className = "krea2-history-dialog";
+        dialog.setAttribute("role", "dialog");
+        dialog.setAttribute("aria-modal", "true");
+        dialog.setAttribute("aria-label", "Ask Qwen about this prompt");
+        const head = modalDocument.createElement("div");
+        head.className = "krea2-history-dialog-head";
+        const heading = modalDocument.createElement("h2");
+        heading.textContent = "Ask Qwen about this prompt";
+        const close = modalDocument.createElement("button");
+        close.type = "button";
+        close.className = "krea2-history-icon";
+        close.textContent = "×";
+        close.setAttribute("aria-label", "Close prompt audit");
+        head.append(heading, close);
+        const body = modalDocument.createElement("div");
+        body.className = "krea2-history-dialog-body krea2-prompt-editor-body";
+        const explanation = modalDocument.createElement("div");
+        explanation.className = "krea2-prompt-editor-explanation";
+        explanation.textContent = "Ask a question about the current prompt without rewriting it. Qwen can identify the pose, contradictions, weak details, or missing reconstruction facts. Each successful answer costs 1 credit; opening, typing, and failed requests are free.";
+        const preflight = modalDocument.createElement("div");
+        preflight.className = "krea2-preflight";
+        preflight.textContent = "Checking worker, wait estimate, and credit protection…";
+        const presets = modalDocument.createElement("div");
+        presets.className = "krea2-workshop-toolbar";
+        const question = modalDocument.createElement("textarea");
+        question.className = "krea2-prompt-editor-instruction";
+        question.maxLength = 4000;
+        question.placeholder = "What pose does this prompt specify?";
+        for (const text of [
+            "What exact body pose and support geometry does this prompt specify?",
+            "Find contradictions or physically impossible details in this prompt.",
+            "What important KREA2 reconstruction details are missing?",
+            "Does the camera, lighting, shadow, and depth-of-field description agree?"
+        ]) {
+            const button = modalDocument.createElement("button");
+            button.type = "button";
+            button.className = "krea2-history-action";
+            button.textContent = text.split(" ").slice(0, 4).join(" ") + "…";
+            button.title = text;
+            button.addEventListener("click", () => { question.value = text; question.focus(); });
+            presets.append(button);
+        }
+        const answer = modalDocument.createElement("div");
+        answer.className = "krea2-prompt-editor-turn";
+        answer.dataset.role = "assistant";
+        answer.hidden = true;
+        const status = modalDocument.createElement("div");
+        status.className = "krea2-prompt-editor-status";
+        status.textContent = "No credit has been used.";
+        const actions = modalDocument.createElement("div");
+        actions.className = "krea2-history-dialog-actions";
+        const send = modalDocument.createElement("button");
+        send.type = "button";
+        send.className = "krea2-history-action";
+        send.dataset.primary = "true";
+        send.textContent = "Ask Qwen · 1 credit";
+        const copy = modalDocument.createElement("button");
+        copy.type = "button";
+        copy.className = "krea2-history-action";
+        copy.textContent = "Copy answer";
+        copy.disabled = true;
+        const done = modalDocument.createElement("button");
+        done.type = "button";
+        done.className = "krea2-history-action";
+        done.textContent = "Close";
+        actions.append(send, copy, done);
+        body.append(explanation, preflight, presets, question, answer, status);
+        dialog.append(head, body, actions);
+        overlay.append(dialog);
+        modalDocument.body.append(overlay);
+
+        const cleanup = () => {
+            controller.abort();
+            modalDocument.removeEventListener("keydown", onKey, true);
+            overlay.remove();
+            if (this.promptAuditCleanup === cleanup) this.promptAuditCleanup = null;
+        };
+        const onKey = event => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopImmediatePropagation?.();
+                cleanup();
+            }
+            else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void submit();
+        };
+        const submit = async () => {
+            if (busy) return;
+            const request = question.value.trim();
+            if (request.length < 2) {
+                status.textContent = "Ask a question first.";
+                status.dataset.state = "error";
+                return;
+            }
+            busy = true;
+            send.disabled = true;
+            send.textContent = "Qwen is auditing…";
+            status.textContent = "Waiting safely; a failed answer is automatically refunded.";
+            status.dataset.state = "";
+            try {
+                const instruction = [
+                    "Audit the supplied KREA2 generation prompt. Answer the user's question directly and concisely.",
+                    "Do not rewrite the prompt, do not output a replacement prompt, and do not claim to see the source image.",
+                    "Base every conclusion only on the prompt text. Explicitly label uncertainty.",
+                    `KREA2 prompt:\n${auditedPrompt}`,
+                    `User question:\n${request}`
+                ].join("\n\n");
+                const result = await this.requestPromptChat([{role: "user", content: instruction}], controller.signal);
+                answer.textContent = result.reply;
+                answer.hidden = false;
+                copy.disabled = false;
+                status.textContent = `Audit complete · 1 credit used · ${result.availableCredits} credits remaining.`;
+                status.dataset.state = "success";
+            }
+            catch (error) {
+                if (error?.name !== "AbortError") {
+                    status.textContent = error instanceof Error ? error.message : String(error);
+                    status.dataset.state = "error";
+                }
+            }
+            finally {
+                busy = false;
+                send.disabled = false;
+                send.textContent = "Ask Qwen · 1 credit";
+            }
+        };
+        this.promptAuditCleanup = cleanup;
+        modalDocument.addEventListener("keydown", onKey, true);
+        close.addEventListener("click", cleanup);
+        done.addEventListener("click", cleanup);
+        overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
+        send.addEventListener("click", () => void submit());
+        copy.addEventListener("click", async () => {
+            try {
+                await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(answer.textContent || "");
+                copy.textContent = "Copied";
+                setTimeout(() => { if (copy.isConnected) copy.textContent = "Copy answer"; }, 1200);
+            }
+            catch { this.toast("Discord could not copy the audit answer.", "error"); }
+        });
+        void (async () => {
+            try {
+                const license = await this.ensureRemoteLicense(controller.signal);
+                const creditStatus = await this.remoteCreditStatus(license, controller.signal, "prompt-chat");
+                preflight.textContent = remotePreflightSummary(creditStatus, "prompt-chat").text;
+            }
+            catch (error) {
+                if (error?.name !== "AbortError") preflight.textContent = error instanceof Error ? error.message : String(error);
+            }
+        })();
+        question.focus();
+    }
+
     openPromptEditor(initialPrompt = "", modalDocument = document) {
         const suppliedPrompt = String(initialPrompt || "").trim().slice(0, 18000);
         this.promptEditorCleanup?.();
@@ -7565,7 +8104,10 @@ class Krea2DiscordCollector {
             : promptChat
                 ? status.credits_per_prompt_chat
                 : status.credits_per_image;
-        if (status.available_credits >= required) return license;
+        if (status.available_credits >= required) {
+            this.toast(remotePreflightSummary(status, purpose).text, "info");
+            return license;
+        }
         if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Retry later.");
         const accepted = await this.confirmCreditPurchase(status, purpose);
         if (!accepted) throw new Error("Online API credits are required. Purchase credits to continue.");
@@ -7597,6 +8139,7 @@ class Krea2DiscordCollector {
             status = await this.remoteCreditStatus(license, signal, purpose);
             if (status.available_credits >= required) {
                 this.toast(`Online API credits added: ${status.available_credits} available.`, "success");
+                this.toast(remotePreflightSummary(status, purpose).text, "info");
                 return license;
             }
         }
@@ -9683,6 +10226,8 @@ class Krea2DiscordCollector {
 Krea2DiscordCollector.helpers = Object.freeze({
     applyPromptPreset,
     buildPromptFeedbackContext,
+    buildRedactedDiagnosticReport,
+    auditPromptContradictions,
     buildOperationalErrorReport,
     base64Url,
     buildVisionCacheProfile,
@@ -9734,6 +10279,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     selectCompanionMetadataAttachment,
     mergeHereticModelTelemetry,
     normalizeDatasetGuidanceState,
+    normalizePoseCheck,
     normalizePromptFeedbackText,
     normalizeMediaUrl,
     normalizePromptPreset,
@@ -9753,6 +10299,8 @@ Krea2DiscordCollector.helpers = Object.freeze({
     parseUploadResponse,
     parseStudioErrorDetail,
     parseVisionPromptResponse,
+    diagnosticForHistoryJob,
+    remotePreflightSummary,
     PRIVACY_RECEIPT_VERSION,
     DIAGNOSTIC_RECEIPT_VERSION,
     promptDiffSummary,
