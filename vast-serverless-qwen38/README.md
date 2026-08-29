@@ -18,3 +18,8 @@ Initial runtime policy:
 - startup health and real-inference checks before readiness
 - fail-closed supervision after readiness
 
+For local Open WebUI integration, use the sanitized companion in
+[`../openwebui-vast-bridge`](../openwebui-vast-bridge). Its request deadline is
+four minutes, preventing an unavailable scale-to-zero worker from leaving the
+Open WebUI conversation hanging for 30 minutes.
+
