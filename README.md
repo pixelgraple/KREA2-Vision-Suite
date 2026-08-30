@@ -50,7 +50,7 @@ Online inference means the selected image and bounded request metadata must leav
 - Adds an **Interrogate** tab for uploading an image manually.
 - Queues multiple jobs and reports queued, running, completed, and failed work.
 - Shows the exact requested and completed model for every result.
-- Includes a conversational **Qwen 3.8 Prompt Changer** that can revise any part of an existing prompt through natural-language instructions.
+- Includes a conversational **Qwen 3.8 Prompt Editor** that can create a complete KREA2 prompt from a few sentences or revise any part of an existing prompt through natural-language instructions.
 - Produces one V2 prompt by default or three optional reconstruction variations.
 - Audits subject count, pose, visible anatomy, clothing, expression, camera placement, lighting, and scene layout before returning prompts.
 - Supports local llama.cpp multimodal models and an operator-configured dedicated Vast GPU with one-model-at-a-time routing.
@@ -77,7 +77,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.17.1-win64.zip](releases/Krea2VisionSuite-v0.17.1-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.18.0-win64.zip](releases/Krea2VisionSuite-v0.18.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -114,7 +114,7 @@ See [Linux and macOS installation](docs/INSTALL_LINUX_MACOS.md) for default path
 
 ## Qwen 3.8 Prompt Changer
 
-The Discord-native **Qwen Prompt Editor** lets users paste or open a complete KREA2 prompt and change any part of it with ordinary language. Ask it to correct a pose, preserve one foot on a skateboard, redesign an outfit, rotate the camera, change the lighting, expand texture detail, shorten repetitive wording, or coordinate several changes at once. Each reply is a complete revised prompt, and the conversation can continue across several edits.
+The Discord-native **Qwen Prompt Editor** now has two workflows. **Edit existing prompt** lets users paste or open a complete KREA2 prompt and change any part of it with ordinary language. **Text to prompt** accepts a few plain-language sentences describing the desired image and expands them into one complete, detailed KREA2-ready prompt. Generated prompts are placed directly into the current-prompt box and can be refined through follow-up messages in the same saved conversation.
 
 The editor is available from the KREA2 Vision header, completed Vision results, Prompt History, and locally extracted metadata/YAML prompts. It uses the pinned `heretic-3.8-q4-cloud` model and costs **1 Online API credit per started 350 output tokens**: 1–350 tokens cost 1 credit, 351–700 cost 2, and so on. Opening, typing, copying, selecting a revision, or starting a new chat is free; failed, cancelled, invalid, or timed-out requests refund the reservation automatically, and unused reserved credits are returned.
 

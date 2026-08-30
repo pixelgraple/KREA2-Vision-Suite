@@ -135,6 +135,8 @@ class PromptChatGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route, "/v1/chat/completions")
         self.assertEqual(sent["model"], module.PROMPT_CHAT_MODEL_ID)
         self.assertEqual(sent["messages"][0]["role"], "system")
+        self.assertIn("creating and revising image-generation prompts", sent["messages"][0]["content"])
+        self.assertIn("supplies a short concept", sent["messages"][0]["content"])
         self.assertEqual(sent["messages"][-1]["content"], "Make the lighting warmer.")
         self.assertEqual(kwargs["model"], module.DEDICATED_QWEN_MODEL_ID)
         with gateway.connection() as db:

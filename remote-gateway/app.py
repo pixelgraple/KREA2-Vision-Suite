@@ -2613,7 +2613,8 @@ class Gateway:
             json.dumps(request_document, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         system_prompt = (
-            "You are KREA2 Prompt Editor, an expert at revising image-generation prompts. "
+            "You are KREA2 Prompt Editor, an expert at creating and revising image-generation prompts. "
+            "When the user supplies a short concept instead of an existing prompt, expand it into one complete, highly detailed KREA2-compatible prompt while staying faithful to the requested subject, action, mood, and scene. "
             "Preserve every visual fact the user did not ask to change, including subject, pose, anatomy, outfit, camera, lighting, setting, color, texture, and photographic character. "
             "Make exactly the requested edits. When the user asks for a rewrite, return only the complete revised prompt with no preface, explanation, markdown fence, negative prompt, or commentary. "
             "When the user asks a direct question, answer it briefly. You cannot see the source image; work only from the supplied prompt and conversation."

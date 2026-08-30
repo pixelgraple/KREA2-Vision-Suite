@@ -8,13 +8,15 @@ const sourcePath = path.join(__dirname, "Krea2DiscordCollector.plugin.source.js"
 const source = fs.readFileSync(sourcePath, "utf8");
 const Plugin = require(sourcePath);
 const {
+    buildPromptEditorUserContent,
     compactPromptEditorContext,
     estimatePromptEditorContextTokens,
     normalizePromptEditorHistoryIndex,
+    normalizePromptEditorMode,
     normalizePromptEditorSession
 } = Plugin.helpers;
 
-assert.match(source, /@version 0\.17\.1/);
+assert.match(source, /@version 0\.18\.0/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /const PROMPT_EDITOR_CONTEXT_TOKENS = 32768/);
 assert.match(source, /#\$\{PROMPT_EDITOR_MODAL_ID\}\[hidden\] \{ display: none !important; \}/);
@@ -35,6 +37,9 @@ assert.match(source, /value\.prompt_chat_output_tokens_per_credit === 350/);
 assert.match(source, /1 credit per started 350 output tokens/);
 assert.match(source, /Conversations are stored privately on this computer and survive closing Discord/);
 assert.match(source, /the KREA2 gateway still does not store them/);
+assert.match(source, /editModeTab\.textContent = "Edit existing prompt"/);
+assert.match(source, /createModeTab\.textContent = "Text to prompt"/);
+assert.match(source, /instructionLabel\.textContent = creating \? "Describe what you want to see"/);
 
 const method = source.slice(source.indexOf("    openPromptEditor("), source.indexOf("    openVerifiedExternal("));
 assert.ok(method.length > 10000, "durable Prompt Editor implementation should be present");
@@ -47,6 +52,9 @@ assert.match(method, /overlay\.hidden = true/);
 assert.match(method, /if \(!destroy\)/);
 assert.match(method, /if \(overlay\.hidden\) this\.toast\("Qwen Prompt Editor reply is ready/);
 assert.match(method, /compactPromptEditorContext\(messages/);
+assert.match(method, /buildPromptEditorUserContent\(/);
+assert.match(method, /if \(editorMode === PROMPT_EDITOR_MODE_CREATE\) promptBox\.value = reply/);
+assert.match(method, /result\.creditsCharged/);
 assert.doesNotMatch(method, /if \(messages\.length >= 14\) \{\s*messages = \[\]/);
 assert.doesNotMatch(method, /The in-flight edit was cancelled/);
 
@@ -86,12 +94,40 @@ const normalizedSession = normalizePromptEditorSession({
 assert.equal(normalizedSession.id, "session_1");
 assert.equal(normalizedSession.turns.length, 1);
 assert.equal(normalizedSession.version, 2);
+assert.equal(normalizedSession.mode, "edit");
+
+const createSession = normalizePromptEditorSession({
+    id: "create_1",
+    mode: "create",
+    instruction: "A moonlit rooftop portrait"
+});
+assert.equal(createSession.mode, "create");
+assert.equal(normalizePromptEditorMode("unexpected"), "edit");
+
+const creationRequest = buildPromptEditorUserContent({
+    mode: "create",
+    request: "An adult astronaut tending flowers inside a glass space station garden."
+});
+assert.match(creationRequest, /^Create one complete, highly detailed KREA2-compatible/);
+assert.match(creationRequest, /adult astronaut tending flowers/);
+assert.match(creationRequest, /camera position/);
+assert.match(creationRequest, /Return only the finished prompt/);
+assert.doesNotMatch(creationRequest, /Current KREA2 prompt/);
+
+const editRequest = buildPromptEditorUserContent({
+    mode: "edit",
+    currentPrompt: "A portrait in neutral window light.",
+    request: "Make the lighting warmer."
+});
+assert.match(editRequest, /Current KREA2 prompt/);
+assert.match(editRequest, /Requested revision/);
 
 const normalizedIndex = normalizePromptEditorHistoryIndex([
-    {id: "older", title: "Older", updatedAt: 10},
-    {id: "newer", title: "Newer", updatedAt: 20},
+    {id: "older", mode: "edit", title: "Older", updatedAt: 10},
+    {id: "newer", mode: "create", title: "Newer", updatedAt: 20},
     {id: "newer", title: "Duplicate", updatedAt: 30}
 ]);
 assert.deepEqual(normalizedIndex.map(item => item.id), ["newer", "older"]);
+assert.equal(normalizedIndex[0].mode, "create");
 
 console.log("Krea2DiscordCollector durable Qwen Prompt Editor tests passed.");

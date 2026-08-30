@@ -1,18 +1,21 @@
-# Qwen 3.8 Prompt Changer
+# Qwen 3.8 Prompt Editor and Text-to-Prompt Creator
 
-The **Qwen 3.8 Prompt Changer**, shown inside Discord as **Qwen Prompt Editor**, is a conversational AI tool for revising complete KREA2 image-generation prompts with ordinary language.
+The **Qwen 3.8 Prompt Editor** is a conversational AI tool with two tabs:
+
+- **Edit existing prompt** revises complete KREA2 image-generation prompts with ordinary language.
+- **Text to prompt** turns a few plain-language sentences about what you want to see into one complete, detailed KREA2-ready prompt.
 
 You do not need to learn prompt syntax or manually rewrite a long description. Give Qwen the current prompt and say what should change:
 
 > Keep everything else, but make her stand with only her left foot on the skateboard and her right foot on the pavement.
 
-Qwen returns a complete revised prompt. You can continue with another instruction, adopt any reply as the current prompt, or copy the result into Krea2.
+Qwen returns a complete prompt. You can continue with another instruction, adopt any editing reply as the current prompt, or copy the result into Krea2. Text-to-Prompt replies are placed into the current-prompt box automatically.
 
 The editor uses the pinned cloud model ID `heretic-3.8-q4-cloud`. It is separate from image interrogation: the Prompt Changer reads the supplied **text prompt**, not the source image.
 
 ## What it is for
 
-Use the Prompt Changer when a prompt is already close but one or more details need work. It can revise:
+Use **Edit existing prompt** when a prompt is already close but one or more details need work. Use **Text to prompt** when you have an image concept but no finished prompt yet. Both workflows can develop:
 
 - subject count, apparent adult age, appearance, hairstyle, proportions, and distinguishing details;
 - facial expression, gaze direction, head rotation, neck angle, and shoulder position;
@@ -53,6 +56,25 @@ The metadata-first route is useful because an existing source prompt can be edit
 8. Select **New chat** when you want to discard the conversation context while retaining the current prompt.
 
 Every assistant reply has its own **Use as current prompt** and **Copy reply** actions. Earlier replies remain visible during the current session, so you can compare alternatives before choosing one.
+
+## Text-to-Prompt workflow
+
+1. Open **Qwen Prompt Editor** and select **Text to prompt**.
+2. In **Describe what you want to see**, enter a few sentences covering the essential subject, action or pose, setting, mood, and any must-keep camera or lighting idea.
+3. Select **Create prompt**, or press `Ctrl+Enter` on Windows/Linux or `Command+Enter` on macOS.
+4. Review the completed prompt that appears automatically in **Generated KREA2 prompt**.
+5. Continue in the same conversation with requests such as `make the camera lower`, `keep the pose but change the dress`, or `add harder sunset shadows`.
+6. Select **Copy current prompt** when ready.
+
+Example concept:
+
+```text
+A confident adult woman in a silver evening gown stands on a rain-soaked neon rooftop at night. The camera is low and close, with wind moving her hair and hard magenta and cyan reflections across the wet concrete.
+```
+
+The protected creation instruction asks Qwen to expand relevant subject details, apparent adult age, expression, proportions, clothing, pose, hands, camera, lens character, framing, lighting, shadows, setting, colors, materials, texture, photographic imperfections, and depth of field. It also tells Qwen not to contradict the user's concept and to return only the finished prompt.
+
+Switching between **Edit existing prompt** and **Text to prompt** starts a clean saved conversation in the selected workflow. The conversation being left remains available in local history; creation context is never silently mixed into an existing revision conversation.
 
 ## How to ask for accurate changes
 
@@ -147,7 +169,7 @@ Qwen: [complete revised prompt]
 
 After a reply, select **Use as current prompt** before the next turn when that reply should become the working version. This makes your intent explicit and keeps later changes anchored to the correct text.
 
-The editor accepts up to 14 conversation messages in one working chat. When that limit is reached, the visible conversation is compacted and editing continues around the current prompt. This prevents an old discussion from growing without bounds or overwhelming the requested revision.
+The active request carries at most 16 bounded conversation messages. Before the 32K model window is exceeded, older inference context is summarized locally and editing continues around the current prompt. The complete raw transcript remains available in paginated local history.
 
 ## What Qwen preserves automatically
 
@@ -183,9 +205,10 @@ The current prompt is wrong about [detail]. In the source image, [direct visual 
 
 ## Credits and charging
 
-Prompt editing has a separate, simple credit contract:
+Prompt editing and Text to Prompt share the same output-based credit contract:
 
-- one valid Qwen reply costs exactly **1 Online API credit**;
+- each valid Qwen reply costs **1 Online API credit per started 350 output tokens**;
+- 1–350 output tokens cost 1 credit, 351–700 cost 2 credits, 701–1,050 cost 3 credits, and so on;
 - opening or closing the editor costs nothing;
 - typing, pasting, copying, selecting a previous reply, or starting a new chat costs nothing;
 - the credit is reserved immediately before the remote model request;
@@ -195,7 +218,7 @@ Prompt editing has a separate, simple credit contract:
 
 Image interrogation remains a different operation with its own three-credit-per-image contract. Editing an existing metadata/YAML prompt does not run image interrogation.
 
-The plugin checks the server's signed credit contract before sending a Prompt Changer request. If the server does not explicitly report a one-credit editor cost, the plugin fails closed and tells the user to retry; it does not guess the price.
+The plugin checks the server's signed credit contract before sending a request. It accepts a result only when the server reports exact output-token accounting, a 350-token billing step, and a matching calculated charge. Unused reserved credits are returned automatically.
 
 ## Privacy and data handling
 
@@ -229,7 +252,7 @@ The editor and gateway enforce several boundaries:
 - the model context is a visible 32,768-token window, with 1,536 tokens reserved for the reply and 1,024 reserved for protected system/chat formatting;
 - when the working context approaches that boundary, older model messages are summarized locally and their raw copies are deleted from the inference context while the full paginated local transcript is retained;
 - a returned reply must be nonempty and no larger than 24,000 characters;
-- the plugin validates the response model ID and confirms `credits_charged` is exactly `1`;
+- the plugin validates the response model ID, exact output-token count, 350-token billing step, and matching `credits_charged` value;
 - a request ID is bound to one license and one exact request digest, preventing altered replay;
 - remote failures return a generic user-facing error while the reserved credit is refunded.
 
@@ -253,7 +276,7 @@ The editor allows a bounded remote request window of up to eight minutes because
 
 ### “Qwen Prompt Editor credit information is still updating”
 
-The plugin could not verify the server's one-credit contract. Wait briefly and retry. No credit was charged.
+The plugin could not verify the server's signed 350-output-token credit contract. Wait briefly and retry. No credit was charged.
 
 ### “Prompt Editor credits are exhausted”
 
@@ -302,13 +325,15 @@ The BetterDiscord client sends an authenticated HTTPS request to the private gat
 }
 ```
 
-A successful response must confirm the pinned model and one-credit charge:
+A successful response must confirm the pinned model, exact output-token accounting, billing step, and calculated charge:
 
 ```json
 {
   "reply": "A complete revised KREA2 prompt...",
   "model": "heretic-3.8-q4-cloud",
-  "credits_charged": 1,
+  "output_tokens": 486,
+  "output_tokens_per_credit": 350,
+  "credits_charged": 2,
   "available_credits": 119,
   "privacy": "conversation content is forwarded for inference and is not stored by the KREA2 gateway"
 }
@@ -320,12 +345,12 @@ The route is not an anonymous public chatbot API. It requires a valid, revocable
 
 | Capability | Vision interrogation | Qwen 3.8 Prompt Changer |
 |---|---|---|
-| Input | PNG, JPEG, or WebP image | Existing prompt text and instructions |
+| Input | PNG, JPEG, or WebP image | Existing prompt or a short image concept, plus instructions |
 | Sees source pixels | Yes | No |
-| Main purpose | Build a new image-grounded prompt | Revise an existing prompt |
-| Default output | One V2 prompt, optionally three | One complete revised prompt per reply |
+| Main purpose | Build a new prompt grounded in source-image pixels | Create a prompt from a written concept or revise an existing prompt |
+| Default output | One V2 prompt, optionally three | One complete created or revised prompt per reply |
 | Conversation | No | Yes, within the current editor session |
-| Online credit cost | 3 credits per completed image | 1 credit per successful reply |
+| Online credit cost | 3 credits per completed image | 1 credit per started 350 output tokens |
 | Metadata/YAML shortcut | Can avoid Vision entirely | Can directly edit extracted prompt text |
 
 The strongest workflow is often:
@@ -354,7 +379,7 @@ It is not intended to replace image interrogation, verify that a prompt matches 
 
 ## Developer verification
 
-The repository includes focused coverage for editor presence, access points, request routing, one-credit contract checks, model-response validation, recovery behavior, and gateway settlement/refund rules:
+The repository includes focused coverage for both editor tabs, creation-request framing, context separation, request routing, output-token contract checks, model-response validation, recovery behavior, and gateway settlement/refund rules:
 
 ```bash
 node betterdiscord-plugin/Krea2DiscordCollector.prompt-editor.test.js
