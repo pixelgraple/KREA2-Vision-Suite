@@ -14,7 +14,7 @@ const {
     normalizePromptEditorSession
 } = Plugin.helpers;
 
-assert.match(source, /@version 0\.17\.0/);
+assert.match(source, /@version 0\.17\.1/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /const PROMPT_EDITOR_CONTEXT_TOKENS = 32768/);
 assert.match(source, /#\$\{PROMPT_EDITOR_MODAL_ID\}\[hidden\] \{ display: none !important; \}/);

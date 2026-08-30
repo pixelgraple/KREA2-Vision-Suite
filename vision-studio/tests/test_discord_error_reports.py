@@ -32,14 +32,14 @@ class DiscordErrorReportTests(unittest.TestCase):
                     "https://cdn.discordapp.com/attachments/private/source.png"
                 )
             except ValueError as cause:
-                raise RuntimeError(r"C:\Users\kayla\Documents\kreainterrogate\app\worker.py failed") from cause
+                raise RuntimeError(r"C:\Users\ExampleUser\Documents\kreainterrogate\app\worker.py failed") from cause
         except RuntimeError as error:
             report = exception_trace(error)
 
         self.assertIn("ValueError", report)
         self.assertIn("RuntimeError", report)
         self.assertIn("worker.py", report)
-        for forbidden in ("private-token", "secret image prompt", "cdn.discordapp.com", "source.png", "kayla"):
+        for forbidden in ("private-token", "secret image prompt", "cdn.discordapp.com", "source.png", "ExampleUser"):
             self.assertNotIn(forbidden, report)
 
     def test_reporter_posts_authenticated_bounded_json_without_redirects(self):

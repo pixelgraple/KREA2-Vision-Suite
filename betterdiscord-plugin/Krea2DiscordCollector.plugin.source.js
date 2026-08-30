@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.17.0
+ * @version 0.17.1
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.17.0";
+const PLUGIN_VERSION = "0.17.1";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -8403,14 +8403,14 @@ class Krea2DiscordCollector {
             return license;
         }
         if (!status.payments_configured) throw new Error("Online API credits are exhausted and Bitcoin checkout is not configured yet. Retry later.");
-        const accepted = await this.confirmCreditPurchase(status, purpose);
-        if (!accepted) throw new Error("Online API credits are required. Purchase credits to continue.");
+        const selectedPackId = await this.confirmCreditPurchase(status, purpose);
+        if (!selectedPackId) throw new Error("Online API credits are required. Purchase credits to continue.");
         let invoiceResponse;
         try {
             invoiceResponse = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/credits/purchase`, {
                 method:"POST", redirect:"manual", maxRedirects:0, timeout:15000, signal,
                 headers:{Accept:"application/json", "Content-Type":"application/json", Authorization:`Krea2License ${license.licenseId}.${license.licenseToken}`},
-                body:JSON.stringify({confirmation:"buy-1200-credits"})
+                body:JSON.stringify({pack_id:selectedPackId, confirmation:"buy-credit-pack"})
             });
         }
         catch { throw new Error("Bitcoin checkout is unavailable. Retry shortly."); }
@@ -8443,16 +8443,60 @@ class Krea2DiscordCollector {
     confirmCreditPurchase(status, purpose = "image") {
         return new Promise(resolve => {
             const promptChat = purpose === "prompt-chat";
+            const advertisedPacks = Array.isArray(status?.credit_packs) ? status.credit_packs : [];
+            const packs = advertisedPacks
+                .map(pack => ({
+                    id: String(pack?.id || ""),
+                    credits: Number(pack?.credits),
+                    priceUsd: String(pack?.price_usd || ""),
+                    oneTime: Boolean(pack?.one_time),
+                    label: String(pack?.label || "Credit pack")
+                }))
+                .filter(pack => /^[a-z0-9-]{1,40}$/.test(pack.id) && Number.isInteger(pack.credits) && pack.credits > 0 && /^\d+(?:\.\d{2})$/.test(pack.priceUsd));
+            if (!packs.length && Number.isInteger(status?.pack_credits) && status.pack_credits > 0 && /^\d+(?:\.\d{2})$/.test(String(status?.pack_price_usd || ""))) {
+                packs.push({
+                    id: "intro-1200", credits: status.pack_credits,
+                    priceUsd: String(status.pack_price_usd), oneTime: true,
+                    label: "One-time starter pack"
+                });
+            }
+            if (!packs.length) {
+                resolve(null);
+                return;
+            }
+            let selectedPackId = packs[0].id;
             const lead = promptChat
                 ? `Qwen Prompt Editor costs 1 credit per started 350 output tokens. You have ${status.available_credits} credits remaining.`
                 : `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
             const detail = promptChat
-                ? "Purchase 1,200 credits for $1.50 USD paid in Bitcoin. That covers up to 420,000 Qwen output tokens; failed replies are automatically refunded and unused reserved credits are returned."
-                : "Purchase 1,200 credits for $1.50 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
-            const content = buildConfirmationModalContent(this.api, [lead, detail]);
+                ? "Choose a Bitcoin credit pack below. Failed replies are automatically refunded and unused reserved credits are returned."
+                : "Choose a Bitcoin credit pack below. Failed or cancelled images are automatically refunded.";
+            const React = this.api?.React || globalThis.BdApi?.React;
+            const summary = buildConfirmationModalContent(this.api, [lead, detail]);
+            const content = React?.createElement ? React.createElement(
+                "div",
+                {style: {lineHeight: 1.55, color: "var(--text-normal)"}},
+                summary,
+                React.createElement("label", {style: {display: "block", marginTop: 12, fontWeight: 600}},
+                    "Credit pack",
+                    React.createElement("select", {
+                        defaultValue: selectedPackId,
+                        onChange: event => { selectedPackId = String(event?.target?.value || selectedPackId); },
+                        style: {
+                            display: "block", width: "100%", marginTop: 8, padding: "10px 12px",
+                            borderRadius: 6, color: "var(--text-normal)",
+                            background: "var(--input-background, var(--background-secondary))",
+                            border: "1px solid var(--input-border, var(--background-modifier-accent))"
+                        }
+                    }, ...packs.map(pack => React.createElement(
+                        "option", {key: pack.id, value: pack.id},
+                        `${pack.label}: ${pack.credits.toLocaleString()} credits — $${pack.priceUsd} USD${pack.oneTime ? " (one time)" : ""}`
+                    )))
+                )
+            ) : summary;
             this.api.UI.showConfirmationModal("Purchase Online API credits", content, {
                 confirmText: "Open Bitcoin checkout", cancelText: "Use Local GPU", danger: false,
-                onConfirm: () => resolve(true), onCancel: () => resolve(false)
+                onConfirm: () => resolve(selectedPackId), onCancel: () => resolve(null)
             });
         });
     }

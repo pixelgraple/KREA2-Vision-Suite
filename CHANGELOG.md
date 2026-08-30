@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.17.1 - 2026-08-30
+
+- Makes the $1.50 / 1,200-credit starter pack a server-enforced one-time purchase.
+- Replaces the starter offer after settlement with $5 / 2,667-credit, $10 / 5,333-credit, and $20 / 10,667-credit packs at 1.5 times the starter per-credit price.
+- Adds a server-advertised Bitcoin pack selector to BetterDiscord and reuses an unpaid starter invoice so duplicate discounted invoices cannot be opened.
+- Preserves exact-once BTCPay settlement, charge/refund accounting, Local GPU use, and all existing private plugin settings.
+
 ## 0.17.0 - 2026-08-30
 
 - Makes Qwen Prompt Editor conversations durable local history that survives closing the modal, Discord restarts, and plugin reloads; the private gateway still stores no conversation text.

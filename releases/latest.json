@@ -2,10 +2,10 @@
     "schema_version":  1,
     "product":  "krea2-vision-suite",
     "channel":  "stable",
-    "version":  "0.17.0",
-    "published_at":  "2026-08-30T08:06:46.0476926+00:00",
-    "download_url":  "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.17.0-win64.zip",
-    "sha256":  "f02d05954c85ac2971444f01123545741fdb61da6d692a2fd028a7a3110de14b",
-    "bytes":  688663,
+    "version":  "0.17.1",
+    "published_at":  "2026-08-30T14:00:05.8808609+00:00",
+    "download_url":  "https://raw.githubusercontent.com/pixelgraple/KREA2-Vision-Suite/main/releases/Krea2VisionSuite-v0.17.1-win64.zip",
+    "sha256":  "f8e4a06f42e9ebb72c61efd27280b1a52ede4618ddee71c4ed964b1d2e5c9636",
+    "bytes":  693139,
     "notes_url":  "https://github.com/pixelgraple/KREA2-Vision-Suite#download"
 }

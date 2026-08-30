@@ -45,9 +45,37 @@ async function run() {
     const oauth = await capture("confirmRemoteOAuth");
     assert.equal(oauth.title, "Connect Discord for Online API");
 
-    const purchase = await capture("confirmCreditPurchase", {available_credits: 0}, "image");
+    const packs = [
+        {id: "intro-1200", credits: 1200, price_usd: "1.50", one_time: true, label: "One-time starter pack"},
+        {id: "standard-5", credits: 2667, price_usd: "5.00", one_time: false, label: "$5 credit pack"},
+        {id: "standard-20", credits: 10667, price_usd: "20.00", one_time: false, label: "$20 credit pack"}
+    ];
+    const purchase = await capture("confirmCreditPurchase", {available_credits: 0, credit_packs: packs}, "image");
     assert.equal(purchase.title, "Purchase Online API credits");
     assert.equal(purchase.options.confirmText, "Open Bitcoin checkout");
+
+    const collector = new Plugin();
+    let modal;
+    collector.api = {
+        React: fakeReact(),
+        UI: {showConfirmationModal(title, content, options) { modal = {title, content, options}; }},
+        Data: {save() {}}
+    };
+    const selected = collector.confirmCreditPurchase({available_credits: 0, credit_packs: packs}, "image");
+    const findElement = (node, type) => {
+        if (!node || typeof node !== "object") return null;
+        if (node.type === type) return node;
+        for (const child of node.props?.children || []) {
+            const found = findElement(child, type);
+            if (found) return found;
+        }
+        return null;
+    };
+    const selector = findElement(modal.content, "select");
+    assert.ok(selector, "purchase modal must render a pack selector");
+    selector.props.onChange({target: {value: "standard-20"}});
+    modal.options.onConfirm();
+    assert.equal(await selected, "standard-20");
 
     const fallback = Plugin.helpers.buildConfirmationModalContent(
         {},

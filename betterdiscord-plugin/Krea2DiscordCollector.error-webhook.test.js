@@ -11,7 +11,7 @@ const Plugin = require(path.join(root, "Krea2DiscordCollector.plugin.js"));
 
 assert.equal(Plugin.helpers.VISION_PIPELINE_ID, "discord-faithful-v12-interaction-locked-v2");
 for (const text of [source, built]) {
-    assert.match(text, /const PLUGIN_VERSION = "0\.17\.0"/);
+    assert.match(text, /const PLUGIN_VERSION = "0\.17\.1"/);
     assert.match(text, /technical_trace/);
     assert.match(text, /technicalTrace: error instanceof Error \? error\.stack \|\| message : message/);
     assert.match(text, /\/v1\/audit\/error/);

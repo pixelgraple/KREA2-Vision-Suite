@@ -51,8 +51,35 @@ IMAGE_CREDIT_COST = 3
 PROMPT_CHAT_CREDIT_COST = 1
 PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT = 350
 PROMPT_CHAT_RESULT_TTL_SECONDS = 30 * 60
-CREDIT_PACK_CREDITS = 1200
-CREDIT_PACK_PRICE_USD = "1.50"
+CREDIT_PACKS: dict[str, dict[str, str | int | bool]] = {
+    "intro-1200": {
+        "credits": 1200,
+        "price_usd": "1.50",
+        "one_time": True,
+        "label": "One-time starter pack",
+    },
+    "standard-5": {
+        "credits": 2667,
+        "price_usd": "5.00",
+        "one_time": False,
+        "label": "$5 credit pack",
+    },
+    "standard-10": {
+        "credits": 5333,
+        "price_usd": "10.00",
+        "one_time": False,
+        "label": "$10 credit pack",
+    },
+    "standard-20": {
+        "credits": 10667,
+        "price_usd": "20.00",
+        "one_time": False,
+        "label": "$20 credit pack",
+    },
+}
+INTRO_CREDIT_PACK_ID = "intro-1200"
+CREDIT_PACK_CREDITS = int(CREDIT_PACKS[INTRO_CREDIT_PACK_ID]["credits"])
+CREDIT_PACK_PRICE_USD = str(CREDIT_PACKS[INTRO_CREDIT_PACK_ID]["price_usd"])
 CREDIT_RESERVATION_TTL_SECONDS = 2 * 60 * 60
 DEFAULT_ALLOWED_GPU_NAMES = ("RTX 3090", "RTX 3090 Ti", "RTX 4090")
 
@@ -210,7 +237,8 @@ class RevokeRequest(BaseModel):
 
 
 class CreditPurchaseRequest(BaseModel):
-    """A deliberately empty, authenticated purchase request for the fixed credit pack."""
+    """An authenticated request for one server-advertised credit pack."""
+    pack_id: str = Field(default="", pattern=r"^[a-z0-9-]{0,40}$")
     confirmation: str = Field(default="", max_length=80)
 
 
@@ -317,6 +345,7 @@ class Gateway:
         # window during a cold start. Keep only transient in-memory job state;
         # prompt text and replies are never persisted to SQLite.
         self._prompt_chat_runs: dict[str, dict[str, Any]] = {}
+        self._credit_purchase_lock = threading.Lock()
         self._error_report_lock = threading.Lock()
         self._error_report_seen: dict[str, float] = {}
         self._error_report_rate: dict[str, list[float]] = {}
@@ -435,6 +464,7 @@ class Gateway:
                 CREATE TABLE IF NOT EXISTS credit_invoices (
                     invoice_id TEXT PRIMARY KEY, purchase_reference TEXT NOT NULL UNIQUE,
                     discord_user_id TEXT NOT NULL, license_id TEXT NOT NULL,
+                    pack_id TEXT NOT NULL DEFAULT '',
                     credits INTEGER NOT NULL, amount TEXT NOT NULL, currency TEXT NOT NULL,
                     checkout_url TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('new','settled','expired','invalid')),
                     created_at INTEGER NOT NULL, settled_at INTEGER
@@ -461,6 +491,16 @@ class Gateway:
                 db.execute("ALTER TABLE remote_jobs ADD COLUMN credit_state TEXT NOT NULL DEFAULT 'none'")
             if "request_digest" not in job_columns:
                 db.execute("ALTER TABLE remote_jobs ADD COLUMN request_digest TEXT")
+            invoice_columns = {row[1] for row in db.execute("PRAGMA table_info(credit_invoices)")}
+            if "pack_id" not in invoice_columns:
+                db.execute("ALTER TABLE credit_invoices ADD COLUMN pack_id TEXT NOT NULL DEFAULT ''")
+            # Invoices created before selectable packs existed were all the
+            # one-time $1.50 / 1,200-credit offer. Preserve that provenance so
+            # an account can never settle several legacy starter invoices.
+            db.execute(
+                "UPDATE credit_invoices SET pack_id=? WHERE pack_id='' AND credits=? AND amount=? AND currency='USD'",
+                (INTRO_CREDIT_PACK_ID, CREDIT_PACK_CREDITS, CREDIT_PACK_PRICE_USD),
+            )
 
     def oauth_configured(self) -> bool:
         return bool(
@@ -1875,7 +1915,7 @@ class Gateway:
         if balance < IMAGE_CREDIT_COST:
             raise HTTPException(
                 402,
-                f"Online API credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin or select Local GPU.",
+                "Online API credits are exhausted. Purchase a Bitcoin credit pack or select Local GPU.",
             )
         return balance
 
@@ -2067,13 +2107,55 @@ class Gateway:
             raise HTTPException(422, "Remote request provenance is invalid.")
         return self.authenticate_license(authorization)
 
-    def credit_status(self, license_row: sqlite3.Row) -> dict[str, int | str | bool]:
+    @staticmethod
+    def _credit_pack_item_code(pack_id: str) -> str:
+        return f"krea2-credit-pack-{pack_id}"
+
+    @staticmethod
+    def _intro_pack_used(db: sqlite3.Connection, discord_user_id: str) -> bool:
+        return db.execute(
+            "SELECT 1 FROM credit_invoices WHERE discord_user_id=? AND pack_id=? AND status='settled' LIMIT 1",
+            (discord_user_id, INTRO_CREDIT_PACK_ID),
+        ).fetchone() is not None
+
+    def _available_credit_packs(
+        self,
+        db: sqlite3.Connection,
+        discord_user_id: str,
+    ) -> list[dict[str, str | int | bool]]:
+        intro_used = self._intro_pack_used(db, discord_user_id)
+        pending_intro = db.execute(
+            "SELECT 1 FROM credit_invoices WHERE discord_user_id=? AND pack_id=? AND status='new' LIMIT 1",
+            (discord_user_id, INTRO_CREDIT_PACK_ID),
+        ).fetchone() is not None
+        available: list[dict[str, str | int | bool]] = []
+        for pack_id, definition in CREDIT_PACKS.items():
+            # The starter is the entire first-purchase offer. Regular tiers
+            # replace it only after its settled payment has been recorded.
+            if intro_used != (pack_id != INTRO_CREDIT_PACK_ID):
+                continue
+            credits = int(definition["credits"])
+            available.append({
+                "id": pack_id,
+                "credits": credits,
+                "price_usd": str(definition["price_usd"]),
+                "one_time": bool(definition["one_time"]),
+                "pending": bool(pack_id == INTRO_CREDIT_PACK_ID and pending_intro),
+                "label": str(definition["label"]),
+                "vision_images": credits // IMAGE_CREDIT_COST,
+                "qwen_output_tokens": credits * PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
+            })
+        return available
+
+    def credit_status(self, license_row: sqlite3.Row) -> dict[str, Any]:
         self._reconcile_credit_invoices(str(license_row["discord_user_id"]))
         with self.connection() as db:
             now = int(time.time())
             self._release_stale_reservations(db, now)
             self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
             balance = self._account_balance(db, str(license_row["discord_user_id"]))
+            packs = self._available_credit_packs(db, str(license_row["discord_user_id"]))
+        preferred_pack = packs[0]
         return {
             "available_credits": balance,
             "credits_per_image": IMAGE_CREDIT_COST,
@@ -2082,8 +2164,12 @@ class Gateway:
             "prompt_chat_turns_available": balance // PROMPT_CHAT_CREDIT_COST,
             "prompt_chat_output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
             "prompt_chat_output_tokens_available": balance * PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
-            "pack_credits": CREDIT_PACK_CREDITS,
-            "pack_price_usd": CREDIT_PACK_PRICE_USD,
+            # Retained for pre-selectable-pack clients. The values always
+            # mirror the first currently eligible pack.
+            "pack_credits": int(preferred_pack["credits"]),
+            "pack_price_usd": str(preferred_pack["price_usd"]),
+            "credit_packs": packs,
+            "intro_pack_available": any(pack["id"] == INTRO_CREDIT_PACK_ID for pack in packs),
             "payments_configured": self.btcpay_configured(),
         }
 
@@ -2106,7 +2192,7 @@ class Gateway:
             (IMAGE_CREDIT_COST, now, license_row["discord_user_id"], IMAGE_CREDIT_COST),
         ).rowcount
         if not updated:
-            raise HTTPException(402, f"Online API credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin or select Local GPU.")
+            raise HTTPException(402, "Online API credits are exhausted. Purchase a Bitcoin credit pack or select Local GPU.")
         db.execute(
             "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
             (license_row["discord_user_id"], -IMAGE_CREDIT_COST, "image_reservation", request_id, f"reserve:{request_id}", now),
@@ -2307,7 +2393,7 @@ class Gateway:
             (credits, now, license_row["discord_user_id"], credits),
         ).rowcount
         if not changed:
-            raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
+            raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase a Bitcoin credit pack.")
         db.execute(
             "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
             (license_row["discord_user_id"], -credits, "prompt_chat_reservation", request_id, f"prompt-chat-reserve:{request_id}", now),
@@ -2451,7 +2537,7 @@ class Gateway:
                 db, str(license_row["discord_user_id"])
             )
             if available_credits < PROMPT_CHAT_CREDIT_COST:
-                raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
+                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase a Bitcoin credit pack.")
             requested_credit_ceiling = max(
                 PROMPT_CHAT_CREDIT_COST,
                 (payload.max_tokens + PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT - 1)
@@ -2742,7 +2828,7 @@ class Gateway:
                 raise HTTPException(409, "Prompt Editor request ID was already used. Send the message again.")
             self._grant_welcome_credits(db, str(license_row["discord_user_id"]), int(time.time()))
             if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
-                raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
+                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase a Bitcoin credit pack.")
         run: dict[str, Any] = {
             "license_id": license_id,
             "status": "queued",
@@ -3088,35 +3174,92 @@ class Gateway:
         with self.connection() as db:
             self._release_image_credits(db, license_row, request_id, int(time.time()))
 
-    def create_credit_invoice(self, license_row: sqlite3.Row) -> dict[str, str | int]:
+    def create_credit_invoice(self, license_row: sqlite3.Row, pack_id: str) -> dict[str, str | int | bool]:
         if not self.btcpay_configured():
             raise HTTPException(503, "Bitcoin credit purchases are not configured yet. Local GPU remains free.")
-        now = int(time.time())
-        purchase_reference = "krea2-credit-" + secrets.token_urlsafe(18)
-        try:
-            response = self.http.post(
-                f"{self.config.btcpay_url}/api/v1/stores/{self.config.btcpay_store_id}/invoices",
-                headers={"Authorization": f"token {self.config.btcpay_api_key}", "Content-Type": "application/json"},
-                json={
-                    "amount": CREDIT_PACK_PRICE_USD, "currency": "USD",
-                    "metadata": {"orderId": purchase_reference, "itemCode": "krea2-credits-1200"},
-                    "checkout": {"redirectAutomatically": False},
-                },
-                timeout=15,
-            )
-            body = response.json()
-            invoice_id = str(body.get("id") or "")
-            checkout_url = str(body.get("checkoutLink") or "")
-            if getattr(response, "status_code", 500) >= 400 or not invoice_id or not checkout_url.startswith("https://"):
-                raise ValueError("BTCPay did not return a valid checkout")
-        except Exception as exc:
-            raise HTTPException(503, "Bitcoin checkout is temporarily unavailable. Retry shortly.") from exc
-        with self.connection() as db:
-            db.execute(
-                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (invoice_id, purchase_reference, license_row["discord_user_id"], license_row["license_id"], CREDIT_PACK_CREDITS, CREDIT_PACK_PRICE_USD, "USD", checkout_url, "new", now),
-            )
-        return {"invoice_id": invoice_id, "checkout_url": checkout_url, "credits": CREDIT_PACK_CREDITS, "price_usd": CREDIT_PACK_PRICE_USD}
+        definition = CREDIT_PACKS.get(pack_id)
+        if definition is None:
+            raise HTTPException(422, "The requested credit pack is invalid.")
+        discord_user_id = str(license_row["discord_user_id"])
+        credits = int(definition["credits"])
+        price_usd = str(definition["price_usd"])
+        with self._credit_purchase_lock:
+            self._reconcile_credit_invoices(discord_user_id)
+            with self.connection() as db:
+                intro_used = self._intro_pack_used(db, discord_user_id)
+                if pack_id == INTRO_CREDIT_PACK_ID and intro_used:
+                    raise HTTPException(
+                        409,
+                        "The one-time $1.50 starter pack has already been purchased. Choose a $5, $10, or $20 pack.",
+                    )
+                if pack_id != INTRO_CREDIT_PACK_ID and not intro_used:
+                    raise HTTPException(
+                        409,
+                        "The one-time $1.50 starter pack is the first-purchase offer. Complete it before choosing a regular pack.",
+                    )
+                existing = db.execute(
+                    "SELECT * FROM credit_invoices WHERE discord_user_id=? AND pack_id=? AND status='new' ORDER BY created_at DESC LIMIT 1",
+                    (discord_user_id, pack_id),
+                ).fetchone()
+                if existing:
+                    return {
+                        "invoice_id": str(existing["invoice_id"]),
+                        "checkout_url": str(existing["checkout_url"]),
+                        "pack_id": pack_id,
+                        "credits": int(existing["credits"]),
+                        "price_usd": str(existing["amount"]),
+                        "reused": True,
+                    }
+
+            now = int(time.time())
+            purchase_reference = f"krea2-{pack_id}-" + secrets.token_urlsafe(18)
+            try:
+                response = self.http.post(
+                    f"{self.config.btcpay_url}/api/v1/stores/{self.config.btcpay_store_id}/invoices",
+                    headers={"Authorization": f"token {self.config.btcpay_api_key}", "Content-Type": "application/json"},
+                    json={
+                        "amount": price_usd,
+                        "currency": "USD",
+                        "metadata": {
+                            "orderId": purchase_reference,
+                            "itemCode": self._credit_pack_item_code(pack_id),
+                        },
+                        "checkout": {"redirectAutomatically": False},
+                    },
+                    timeout=15,
+                )
+                body = response.json()
+                invoice_id = str(body.get("id") or "")
+                checkout_url = str(body.get("checkoutLink") or "")
+                if getattr(response, "status_code", 500) >= 400 or not invoice_id or not checkout_url.startswith("https://"):
+                    raise ValueError("BTCPay did not return a valid checkout")
+            except Exception as exc:
+                raise HTTPException(503, "Bitcoin checkout is temporarily unavailable. Retry shortly.") from exc
+            with self.connection() as db:
+                db.execute(
+                    "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,pack_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        invoice_id,
+                        purchase_reference,
+                        discord_user_id,
+                        license_row["license_id"],
+                        pack_id,
+                        credits,
+                        price_usd,
+                        "USD",
+                        checkout_url,
+                        "new",
+                        now,
+                    ),
+                )
+        return {
+            "invoice_id": invoice_id,
+            "checkout_url": checkout_url,
+            "pack_id": pack_id,
+            "credits": credits,
+            "price_usd": price_usd,
+            "reused": False,
+        }
 
     def _settle_credit_invoice_locked(
         self,
@@ -3180,6 +3323,11 @@ class Gateway:
                     amount_matches = Decimal(str(document.get("amount"))) == Decimal(str(invoice["amount"]))
                 except (InvalidOperation, TypeError, ValueError):
                     amount_matches = False
+                pack_id = str(invoice["pack_id"] or INTRO_CREDIT_PACK_ID)
+                accepted_item_codes = {self._credit_pack_item_code(pack_id)}
+                if pack_id == INTRO_CREDIT_PACK_ID:
+                    # Existing unpaid starter invoices used this legacy code.
+                    accepted_item_codes.add("krea2-credits-1200")
                 if not (
                     str(document.get("id") or "") == str(invoice["invoice_id"])
                     and str(document.get("storeId") or "") == self.config.btcpay_store_id
@@ -3187,7 +3335,7 @@ class Gateway:
                     and amount_matches
                     and isinstance(metadata, dict)
                     and str(metadata.get("orderId") or "") == str(invoice["purchase_reference"])
-                    and str(metadata.get("itemCode") or "") == "krea2-credits-1200"
+                    and str(metadata.get("itemCode") or "") in accepted_item_codes
                 ):
                     LOGGER.error("BTCPay invoice %s failed KREA2 settlement verification", str(invoice["invoice_id"])[:12])
                     continue
@@ -3548,14 +3696,19 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         return gateway.post_error_webhook(payload, license_row)
 
     @app.get("/v1/credits/balance")
-    def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, int | str | bool]:
+    def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         return gateway.credit_status(gateway.authenticate_license(authorization))
 
     @app.post("/v1/credits/purchase")
-    def credit_purchase(payload: CreditPurchaseRequest, authorization: str | None = Header(default=None)) -> dict[str, str | int]:
-        if payload.confirmation not in {"", "buy-1200-credits"}:
+    def credit_purchase(payload: CreditPurchaseRequest, authorization: str | None = Header(default=None)) -> dict[str, str | int | bool]:
+        if payload.confirmation == "buy-credit-pack" and payload.pack_id:
+            pack_id = payload.pack_id
+        elif payload.confirmation in {"", "buy-1200-credits"} and not payload.pack_id:
+            # Backward compatibility for already-installed plugin builds.
+            pack_id = INTRO_CREDIT_PACK_ID
+        else:
             raise HTTPException(422, "The requested credit pack is invalid.")
-        return gateway.create_credit_invoice(gateway.authenticate_license(authorization))
+        return gateway.create_credit_invoice(gateway.authenticate_license(authorization), pack_id)
 
     @app.post("/v1/btcpay/webhook")
     async def btcpay_webhook(request: Request, signature: str | None = Header(default=None, alias="BTCPay-Sig")) -> dict[str, bool]:

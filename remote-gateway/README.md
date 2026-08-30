@@ -76,15 +76,26 @@ from the server-only signing key and is never persisted in SQLite. Use a random
 Run it behind HTTPS only. Do not put any of those values in BetterDiscord,
 `vision-studio/.env`, an installer, a release ZIP, screenshots, or GitHub.
 
-## Bitcoin credit pack
+## Bitcoin credit packs
 
-The fixed pack is 1,200 credits for **$1.50 USD paid in Bitcoin**. It covers
-400 successful Vision images or up to 420,000 Qwen output tokens. BTCPay quotes
-the Bitcoin amount at checkout, so the BTC amount changes with the exchange
-rate. The gateway creates the BTCPay invoice server-side using an API key scoped
-only to invoice creation for this store. It records only an opaque purchase
-reference on the invoice, never a Discord name, image, prompt, URL, or local
-path.
+Every account may purchase the **one-time starter pack** of 1,200 credits for
+**$1.50 USD paid in Bitcoin**. It covers 400 successful Vision images or up to
+420,000 Qwen output tokens. Once that invoice settles, the gateway permanently
+removes the starter offer for that Discord account and advertises these regular
+packs instead:
+
+- $5 USD: 2,667 credits
+- $10 USD: 5,333 credits
+- $20 USD: 10,667 credits
+
+The starter rate is 800 credits per dollar. The regular rate is approximately
+533.33 credits per dollar, making the regular per-credit price 1.5 times the
+starter price. BTCPay quotes the Bitcoin amount at checkout, so the BTC amount
+changes with the exchange rate. The gateway enforces pack eligibility and exact
+amounts server-side. Reopening the starter checkout reuses its pending invoice,
+preventing multiple discounted invoices from being created before settlement.
+It records only an opaque purchase reference on the invoice, never a Discord
+name, image, prompt, URL, or local path.
 
 Configure a BTCPay webhook for `InvoiceSettled` only, pointing to
 `https://your-gateway-host/v1/btcpay/webhook`, with the same private webhook

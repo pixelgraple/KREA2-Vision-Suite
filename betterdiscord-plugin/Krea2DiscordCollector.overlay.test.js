@@ -171,7 +171,7 @@ function overlayHarness({collapsed = false} = {}) {
 }
 
 const built = fs.readFileSync(path.join(__dirname, "Krea2DiscordCollector.plugin.js"), "utf8");
-assert.match(built, /@version 0\.17\.0/);
+assert.match(built, /@version 0\.17\.1/);
 assert.match(built, /brandBar\.className = "krea2-history-brand-bar"/);
 assert.match(built, /brandBar\.setAttribute\("aria-label", "Krea2 Vision"\)/);
 assert.match(built, /brandTitle\.textContent = "Krea2 Vision"/);

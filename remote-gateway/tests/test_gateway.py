@@ -143,12 +143,28 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(status["prompt_chat_output_tokens_per_credit"], 350)
         self.assertEqual(status["pack_credits"], 1200)
         self.assertEqual(status["pack_price_usd"], "1.50")
+        self.assertTrue(status["intro_pack_available"])
+        self.assertEqual(
+            [(pack["id"], pack["credits"], pack["price_usd"]) for pack in status["credit_packs"]],
+            [("intro-1200", 1200, "1.50")],
+        )
         self.assertEqual(status["worker_state"], "cold-standby")
         self.assertEqual(status["credits_per_image"], 3)
         self.assertTrue(status["credits_charged_on_success"])
         self.assertTrue(status["failed_or_cancelled_refunded"])
         self.assertGreaterEqual(status["estimated_wait_seconds_max"], status["estimated_wait_seconds_min"])
         self.assertNotIn("vast_api_key", status)
+
+    def test_balance_advertises_only_the_one_time_starter_before_first_purchase(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
+        status = gateway.credit_status(row)
+        self.assertTrue(status["intro_pack_available"])
+        self.assertEqual(
+            [(pack["id"], pack["credits"], pack["price_usd"]) for pack in status["credit_packs"]],
+            [("intro-1200", 1200, "1.50")],
+        )
 
     def test_sleeping_attached_worker_group_accepts_one_cold_start_request(self):
         license = self.enroll()
@@ -309,7 +325,7 @@ class GatewayTests(unittest.TestCase):
             gateway.config.license_signing_key, "https://bitcoin.example", "store-123", "p" * 24, "w" * 32,
         )
         with gateway.connection() as db:
-            db.execute("INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", ("invoice-1", "purchase-1", "123456789012345678", license["license_id"], 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-1", "new", 1))
+            db.execute("INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,pack_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("invoice-1", "purchase-1", "123456789012345678", license["license_id"], "intro-1200", 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-1", "new", 1))
         body = b'{"deliveryId":"delivery-1","type":"InvoiceSettled","invoiceId":"invoice-1","storeId":"store-123"}'
         signature = "sha256=" + __import__("hmac").new(b"w" * 32, body, __import__("hashlib").sha256).hexdigest()
         gateway.accept_btcpay_webhook(body, signature)
@@ -329,8 +345,8 @@ class GatewayTests(unittest.TestCase):
         )
         with gateway.connection() as db:
             db.execute(
-                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                ("invoice-poll", "purchase-poll", "123456789012345678", license["license_id"], 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-poll", "new", 1),
+                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,pack_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                ("invoice-poll", "purchase-poll", "123456789012345678", license["license_id"], "intro-1200", 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-poll", "new", 1),
             )
         self.http.btcpay_invoice = {
             "id": "invoice-poll",
@@ -349,7 +365,7 @@ class GatewayTests(unittest.TestCase):
             ).fetchone()["count"]
         self.assertEqual(purchases, 1)
 
-    def test_purchase_creates_the_fixed_1200_credit_150_invoice(self):
+    def test_purchase_creates_and_reuses_the_one_time_starter_invoice(self):
         license = self.enroll()
         gateway = self.app.state.gateway
         gateway.config = replace(
@@ -366,14 +382,65 @@ class GatewayTests(unittest.TestCase):
         response = self.client.post(
             "/v1/credits/purchase",
             headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
-            json={"confirmation": "buy-1200-credits"},
+            json={"pack_id": "intro-1200", "confirmation": "buy-credit-pack"},
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["credits"], 1200)
         self.assertEqual(response.json()["price_usd"], "1.50")
+        self.assertFalse(response.json()["reused"])
         invoice_call = next(call for call in self.http.calls if call[0][0].endswith("/api/v1/stores/store-123/invoices"))
         self.assertEqual(invoice_call[1]["json"]["amount"], "1.50")
-        self.assertEqual(invoice_call[1]["json"]["metadata"]["itemCode"], "krea2-credits-1200")
+        self.assertEqual(invoice_call[1]["json"]["metadata"]["itemCode"], "krea2-credit-pack-intro-1200")
+
+        repeated = self.client.post(
+            "/v1/credits/purchase",
+            headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
+            json={"pack_id": "intro-1200", "confirmation": "buy-credit-pack"},
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertTrue(repeated.json()["reused"])
+        invoice_calls = [call for call in self.http.calls if call[0][0].endswith("/api/v1/stores/store-123/invoices")]
+        self.assertEqual(len(invoice_calls), 1)
+
+    def test_settled_starter_disappears_and_regular_pack_remains_repeatable(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = replace(
+            gateway.config,
+            btcpay_url="https://bitcoin.example",
+            btcpay_store_id="store-123",
+            btcpay_api_key="p" * 24,
+            btcpay_webhook_secret="w" * 32,
+        )
+        with gateway.connection() as db:
+            db.execute(
+                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,pack_id,credits,amount,currency,checkout_url,status,created_at,settled_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("intro-settled", "purchase-settled", "123456789012345678", license["license_id"], "intro-1200", 1200, "1.50", "USD", "https://bitcoin.example/i/intro-settled", "settled", 1, 2),
+            )
+        row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
+        status = gateway.credit_status(row)
+        self.assertFalse(status["intro_pack_available"])
+        self.assertEqual(status["pack_credits"], 2667)
+        self.assertEqual(status["pack_price_usd"], "5.00")
+        self.assertEqual([pack["id"] for pack in status["credit_packs"]], ["standard-5", "standard-10", "standard-20"])
+
+        denied = self.client.post(
+            "/v1/credits/purchase",
+            headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
+            json={"pack_id": "intro-1200", "confirmation": "buy-credit-pack"},
+        )
+        self.assertEqual(denied.status_code, 409)
+
+        self.http.btcpay_create = {"id": "regular-5", "checkoutLink": "https://bitcoin.example/i/regular-5"}
+        regular = self.client.post(
+            "/v1/credits/purchase",
+            headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
+            json={"pack_id": "standard-5", "confirmation": "buy-credit-pack"},
+        )
+        self.assertEqual(regular.status_code, 200)
+        self.assertEqual((regular.json()["credits"], regular.json()["price_usd"]), (2667, "5.00"))
+        invoice_call = next(call for call in self.http.calls if call[0][0].endswith("/api/v1/stores/store-123/invoices"))
+        self.assertEqual(invoice_call[1]["json"]["metadata"]["itemCode"], "krea2-credit-pack-standard-5")
 
 
 if __name__ == "__main__": unittest.main()
