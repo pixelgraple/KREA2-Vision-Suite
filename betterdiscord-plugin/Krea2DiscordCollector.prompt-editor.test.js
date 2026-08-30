@@ -30,7 +30,9 @@ assert.match(source, /\/v1\/prompt-chat\/jobs/);
 assert.match(source, /\/v1\/prompt-chat\/jobs\/\$\{requestId\}/);
 assert.doesNotMatch(source, /\/v1\/prompt-chat\/completions/);
 assert.match(source, /model: "heretic-3\.8-q4-cloud"/);
-assert.match(source, /result\?\.credits_charged !== 1/);
+assert.match(source, /creditsCharged !== Math\.ceil\(outputTokens \/ outputTokensPerCredit\)/);
+assert.match(source, /value\.prompt_chat_output_tokens_per_credit === 350/);
+assert.match(source, /1 credit per started 350 output tokens/);
 assert.match(source, /Conversations are stored privately on this computer and survive closing Discord/);
 assert.match(source, /the KREA2 gateway still does not store them/);
 

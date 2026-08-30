@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
+from dataclasses import replace
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -11,14 +12,18 @@ from app import Config, PUBLIC_MODEL_ID, create_app, token_hash
 
 
 class RecordingHttp:
-    def __init__(self): self.calls = []
+    def __init__(self): self.calls, self.btcpay_invoice, self.btcpay_create = [], None, None
     def post(self, url, *args, **kwargs):
         self.calls.append(((url, *args), kwargs))
         if url == "https://discord.com/api/oauth2/token": return _Response(200, {"access_token":"discord-access"})
+        if url.endswith("/api/v1/stores/store-123/invoices") and self.btcpay_create:
+            return _Response(200, self.btcpay_create)
         return _Response(204, {})
     def get(self, url, *args, **kwargs):
         self.calls.append(((url, *args), kwargs))
         if url == "https://discord.com/api/v10/users/@me": return _Response(200, {"id":"123456789012345678","username":"verified-tester"})
+        if url.startswith("https://bitcoin.example/api/v1/invoices/") and self.btcpay_invoice:
+            return _Response(200, self.btcpay_invoice)
         return _Response(404, {})
 
 
@@ -98,18 +103,18 @@ class GatewayTests(unittest.TestCase):
         license = self.enroll()
         gateway = self.app.state.gateway
         row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
-        self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 60)
         now = __import__("time").time_ns() // 1_000_000_000
         with gateway.connection() as db:
             gateway._reserve_image_credits(db, row, "d" * 64, "e" * 64, now)
             with self.assertRaisesRegex(Exception, "already in progress or completed"):
                 gateway._reserve_image_credits(db, row, "d" * 64, "e" * 64, now + 1)
-        self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 57)
         gateway.fail_audit(row, "d" * 64)
-        self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 60)
         with gateway.connection() as db:
             entries = db.execute("SELECT entry_kind,delta_credits FROM credit_ledger WHERE discord_user_id=? ORDER BY entry_id", (row["discord_user_id"],)).fetchall()
-        self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 120), ("image_reservation", -3), ("image_refund", 3)])
+        self.assertEqual([(item["entry_kind"], item["delta_credits"]) for item in entries], [("welcome", 60), ("image_reservation", -3), ("image_refund", 3)])
 
     def test_credit_balance_includes_secret_free_wait_and_refund_preflight(self):
         license = self.enroll()
@@ -132,6 +137,12 @@ class GatewayTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         status = response.json()
+        self.assertEqual(status["available_credits"], 60)
+        self.assertEqual(status["credits_per_image"], 3)
+        self.assertEqual(status["credits_per_prompt_chat"], 1)
+        self.assertEqual(status["prompt_chat_output_tokens_per_credit"], 350)
+        self.assertEqual(status["pack_credits"], 1200)
+        self.assertEqual(status["pack_price_usd"], "1.50")
         self.assertEqual(status["worker_state"], "cold-standby")
         self.assertEqual(status["credits_per_image"], 3)
         self.assertTrue(status["credits_charged_on_success"])
@@ -199,7 +210,7 @@ class GatewayTests(unittest.TestCase):
         self.assertGreaterEqual(readiness_calls, 3)
         gateway._set_activation_floor_async.assert_awaited_once_with(1.0)
         gateway._restore_activation_floor.assert_awaited_once()
-        self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 117)
+        self.assertEqual(gateway.credit_status(gateway.authenticate_license(self.headers(license, "f" * 64)["Authorization"]))["available_credits"], 57)
 
     def test_scale_down_transition_queues_image_until_route_is_ready(self):
         license = self.enroll()
@@ -232,9 +243,9 @@ class GatewayTests(unittest.TestCase):
         async def routed_request(_client, _endpoint, _payload, _deadline, *, before_send, **_kwargs):
             # The route callback is the first point at which billing is allowed.
             row = gateway.authenticate_license(self.headers(license, "a" * 64)["Authorization"])
-            self.assertEqual(gateway.credit_status(row)["available_credits"], 120)
+            self.assertEqual(gateway.credit_status(row)["available_credits"], 60)
             await before_send()
-            self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+            self.assertEqual(gateway.credit_status(row)["available_credits"], 57)
             return {"ok": True, "response": {"choices": [{"message": {"content": "transition-ok"}}]}}
 
         class EmptyEndpoint:
@@ -266,7 +277,7 @@ class GatewayTests(unittest.TestCase):
         gateway._set_activation_floor_async.assert_awaited_once_with(1.0)
         gateway._restore_activation_floor.assert_awaited_once()
         row = gateway.authenticate_license(self.headers(license, "a" * 64)["Authorization"])
-        self.assertEqual(gateway.credit_status(row)["available_credits"], 117)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 57)
 
     def test_warming_admission_keeps_controller_and_gpu_policy_fail_closed(self):
         gateway = self.app.state.gateway
@@ -298,13 +309,71 @@ class GatewayTests(unittest.TestCase):
             gateway.config.license_signing_key, "https://bitcoin.example", "store-123", "p" * 24, "w" * 32,
         )
         with gateway.connection() as db:
-            db.execute("INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", ("invoice-1", "purchase-1", "123456789012345678", license["license_id"], 1200, "20", "USD", "https://bitcoin.example/i/invoice-1", "new", 1))
+            db.execute("INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", ("invoice-1", "purchase-1", "123456789012345678", license["license_id"], 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-1", "new", 1))
         body = b'{"deliveryId":"delivery-1","type":"InvoiceSettled","invoiceId":"invoice-1","storeId":"store-123"}'
         signature = "sha256=" + __import__("hmac").new(b"w" * 32, body, __import__("hashlib").sha256).hexdigest()
         gateway.accept_btcpay_webhook(body, signature)
         gateway.accept_btcpay_webhook(body, signature)
         row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
-        self.assertEqual(gateway.credit_status(row)["available_credits"], 1320)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 1260)
+
+    def test_balance_poll_reconciles_settled_invoice_once(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = replace(
+            gateway.config,
+            btcpay_url="https://bitcoin.example",
+            btcpay_store_id="store-123",
+            btcpay_api_key="p" * 24,
+            btcpay_webhook_secret="w" * 32,
+        )
+        with gateway.connection() as db:
+            db.execute(
+                "INSERT INTO credit_invoices(invoice_id,purchase_reference,discord_user_id,license_id,credits,amount,currency,checkout_url,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("invoice-poll", "purchase-poll", "123456789012345678", license["license_id"], 1200, "1.50", "USD", "https://bitcoin.example/i/invoice-poll", "new", 1),
+            )
+        self.http.btcpay_invoice = {
+            "id": "invoice-poll",
+            "storeId": "store-123",
+            "amount": "1.500",
+            "currency": "USD",
+            "status": "Settled",
+            "metadata": {"orderId": "purchase-poll", "itemCode": "krea2-credits-1200"},
+        }
+        row = gateway.authenticate_license(self.headers(license, "unused" * 11)["Authorization"])
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 1260)
+        self.assertEqual(gateway.credit_status(row)["available_credits"], 1260)
+        with gateway.connection() as db:
+            purchases = db.execute(
+                "SELECT COUNT(*) AS count FROM credit_ledger WHERE invoice_id='invoice-poll' AND entry_kind='bitcoin_purchase'"
+            ).fetchone()["count"]
+        self.assertEqual(purchases, 1)
+
+    def test_purchase_creates_the_fixed_1200_credit_150_invoice(self):
+        license = self.enroll()
+        gateway = self.app.state.gateway
+        gateway.config = replace(
+            gateway.config,
+            btcpay_url="https://bitcoin.example",
+            btcpay_store_id="store-123",
+            btcpay_api_key="p" * 24,
+            btcpay_webhook_secret="w" * 32,
+        )
+        self.http.btcpay_create = {
+            "id": "invoice-new",
+            "checkoutLink": "https://bitcoin.example/i/invoice-new",
+        }
+        response = self.client.post(
+            "/v1/credits/purchase",
+            headers={"Authorization": self.headers(license, "unused" * 11)["Authorization"]},
+            json={"confirmation": "buy-1200-credits"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["credits"], 1200)
+        self.assertEqual(response.json()["price_usd"], "1.50")
+        invoice_call = next(call for call in self.http.calls if call[0][0].endswith("/api/v1/stores/store-123/invoices"))
+        self.assertEqual(invoice_call[1]["json"]["amount"], "1.50")
+        self.assertEqual(invoice_call[1]["json"]["metadata"]["itemCode"], "krea2-credits-1200")
 
 
 if __name__ == "__main__": unittest.main()

@@ -40,8 +40,13 @@ def make_gateway(root: Path, *, webhook_url: str = "", http=None):
         prompt_chat_endpoint="local-openwebui-coding",
         prompt_chat_api_key="q" * 64,
         prompt_chat_timeout_seconds=300,
+        dedicated_base_url="http://dedicated.test",
+        dedicated_api_key="d" * 64,
     )
     gateway = module.Gateway(config, http=http or module.requests)
+    async def fake_dedicated_completion(payload, **kwargs):
+        return await FakeServerless.endpoint.request("/v1/chat/completions", payload, **kwargs)
+    gateway._dedicated_completion = fake_dedicated_completion
     now = int(time.time())
     token = secrets.token_urlsafe(32)
     with gateway.connection() as db:
@@ -68,20 +73,24 @@ class FakeWebhookHttp:
 
 
 class FakeEndpoint:
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, fail: bool = False, output_tokens: int | None = 42):
         self.fail = fail
+        self.output_tokens = output_tokens
         self.calls = []
 
     async def request(self, route, payload, **kwargs):
         self.calls.append((route, payload, kwargs))
         if self.fail:
             raise RuntimeError("provider unavailable")
-        return {
+        response = {
             "ok": True,
             "response": {
-                "choices": [{"message": {"content": "<think>private</think>\nA complete revised KREA2 prompt."}}]
+                "choices": [{"message": {"content": "<think>private</think>\nA complete revised KREA2 prompt."}}],
             },
         }
+        if self.output_tokens is not None:
+            response["response"]["usage"] = {"completion_tokens": self.output_tokens}
+        return response
 
 
 class FakeServerless:
@@ -119,18 +128,30 @@ class PromptChatGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["reply"], "A complete revised KREA2 prompt.")
         self.assertEqual(result["credits_charged"], 1)
-        self.assertEqual(result["available_credits"], 119)
+        self.assertEqual(result["output_tokens"], 42)
+        self.assertEqual(result["output_tokens_per_credit"], 350)
+        self.assertEqual(result["available_credits"], 59)
         route, sent, kwargs = FakeServerless.endpoint.calls[0]
         self.assertEqual(route, "/v1/chat/completions")
         self.assertEqual(sent["model"], module.PROMPT_CHAT_MODEL_ID)
         self.assertEqual(sent["messages"][0]["role"], "system")
         self.assertEqual(sent["messages"][-1]["content"], "Make the lighting warmer.")
-        self.assertIs(kwargs["retry"], True)
+        self.assertEqual(kwargs["model"], module.DEDICATED_QWEN_MODEL_ID)
         with gateway.connection() as db:
             job = db.execute("SELECT * FROM prompt_chat_jobs WHERE request_id=?", (request_id,)).fetchone()
             self.assertEqual(job["credit_state"], "charged")
             self.assertNotIn("content", job.keys())
-            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 119)
+            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 59)
+            reservation = db.execute(
+                "SELECT delta_credits FROM credit_ledger WHERE request_id=? AND entry_kind='prompt_chat_reservation'",
+                (request_id,),
+            ).fetchone()
+            unused = db.execute(
+                "SELECT delta_credits FROM credit_ledger WHERE request_id=? AND entry_kind='prompt_chat_unused_refund'",
+                (request_id,),
+            ).fetchone()
+            self.assertEqual(reservation["delta_credits"], -5)
+            self.assertEqual(unused["delta_credits"], 4)
 
         with patch.object(module, "CoroutineServerless", FakeServerless):
             with self.assertRaises(HTTPException) as replay:
@@ -150,7 +171,78 @@ class PromptChatGatewayTests(unittest.IsolatedAsyncioTestCase):
         with gateway.connection() as db:
             job = db.execute("SELECT * FROM prompt_chat_jobs WHERE request_id=?", (request_id,)).fetchone()
             self.assertEqual(job["credit_state"], "refunded")
-            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 120)
+            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 60)
+
+    async def test_prompt_chat_charges_one_credit_per_started_350_output_tokens(self):
+        gateway, license_row = make_gateway(self.root)
+        FakeServerless.endpoint = FakeEndpoint(output_tokens=351)
+        payload = module.PromptChatRequest(
+            messages=[{"role": "user", "content": "Expand the prompt."}],
+            max_tokens=1536,
+        )
+        request_id = hashlib.sha256(b"two-credit-success").hexdigest()
+        with patch.object(module, "CoroutineServerless", FakeServerless):
+            result = await gateway.prompt_chat(payload, license_row, request_id)
+
+        self.assertEqual(result["credits_charged"], 2)
+        self.assertEqual(result["output_tokens"], 351)
+        self.assertEqual(result["available_credits"], 58)
+        with gateway.connection() as db:
+            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 58)
+
+    async def test_prompt_chat_exactly_350_tokens_costs_one_credit(self):
+        gateway, license_row = make_gateway(self.root)
+        FakeServerless.endpoint = FakeEndpoint(output_tokens=350)
+        payload = module.PromptChatRequest(
+            messages=[{"role": "user", "content": "Use the full first billing step."}],
+            max_tokens=350,
+        )
+        request_id = hashlib.sha256(b"one-credit-boundary").hexdigest()
+        result = await gateway.prompt_chat(payload, license_row, request_id)
+
+        self.assertEqual(result["credits_charged"], 1)
+        self.assertEqual(result["output_tokens"], 350)
+        self.assertEqual(result["available_credits"], 59)
+
+    async def test_prompt_chat_missing_exact_usage_refunds_full_reservation(self):
+        gateway, license_row = make_gateway(self.root)
+        FakeServerless.endpoint = FakeEndpoint(output_tokens=None)
+        payload = module.PromptChatRequest(
+            messages=[{"role": "user", "content": "Return a reply without usage."}],
+            max_tokens=700,
+        )
+        request_id = hashlib.sha256(b"missing-usage").hexdigest()
+        with self.assertRaises(HTTPException) as failed:
+            await gateway.prompt_chat(payload, license_row, request_id)
+
+        self.assertEqual(failed.exception.status_code, 503)
+        with gateway.connection() as db:
+            self.assertEqual(gateway._account_balance(db, "12345678901234567"), 60)
+            job = db.execute(
+                "SELECT credit_state FROM prompt_chat_jobs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            self.assertEqual(job["credit_state"], "refunded")
+
+    async def test_prompt_chat_caps_output_to_the_available_credit_balance(self):
+        gateway, license_row = make_gateway(self.root)
+        with gateway.connection() as db:
+            db.execute(
+                "UPDATE credit_accounts SET available_credits=2 WHERE discord_user_id=?",
+                (license_row["discord_user_id"],),
+            )
+        FakeServerless.endpoint = FakeEndpoint(output_tokens=700)
+        payload = module.PromptChatRequest(
+            messages=[{"role": "user", "content": "Use my remaining output allowance."}],
+            max_tokens=1536,
+        )
+        request_id = hashlib.sha256(b"balance-cap").hexdigest()
+        result = await gateway.prompt_chat(payload, license_row, request_id)
+
+        self.assertEqual(result["credits_charged"], 2)
+        self.assertEqual(result["available_credits"], 0)
+        _, sent, _ = FakeServerless.endpoint.calls[0]
+        self.assertEqual(sent["max_tokens"], 700)
 
     def test_prompt_chat_rejects_system_messages(self):
         gateway, _ = make_gateway(self.root)

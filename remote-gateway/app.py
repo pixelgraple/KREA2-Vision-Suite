@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import ipaddress
@@ -45,12 +46,13 @@ ENROLLMENT_ID_RE = re.compile(r"^enr_[A-Za-z0-9_-]{24,96}$")
 ENROLLMENT_SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
 OAUTH_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{43,160}$")
 OAUTH_ENROLLMENT_TTL_SECONDS = 10 * 60
-WELCOME_CREDITS = 120
+WELCOME_CREDITS = 60
 IMAGE_CREDIT_COST = 3
 PROMPT_CHAT_CREDIT_COST = 1
+PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT = 350
 PROMPT_CHAT_RESULT_TTL_SECONDS = 30 * 60
 CREDIT_PACK_CREDITS = 1200
-CREDIT_PACK_PRICE_USD = "20"
+CREDIT_PACK_PRICE_USD = "1.50"
 CREDIT_RESERVATION_TTL_SECONDS = 2 * 60 * 60
 DEFAULT_ALLOWED_GPU_NAMES = ("RTX 3090", "RTX 3090 Ti", "RTX 4090")
 
@@ -1873,7 +1875,7 @@ class Gateway:
         if balance < IMAGE_CREDIT_COST:
             raise HTTPException(
                 402,
-                "Online API credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin or select Local GPU.",
+                f"Online API credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin or select Local GPU.",
             )
         return balance
 
@@ -2066,6 +2068,7 @@ class Gateway:
         return self.authenticate_license(authorization)
 
     def credit_status(self, license_row: sqlite3.Row) -> dict[str, int | str | bool]:
+        self._reconcile_credit_invoices(str(license_row["discord_user_id"]))
         with self.connection() as db:
             now = int(time.time())
             self._release_stale_reservations(db, now)
@@ -2077,6 +2080,8 @@ class Gateway:
             "images_available": balance // IMAGE_CREDIT_COST,
             "credits_per_prompt_chat": PROMPT_CHAT_CREDIT_COST,
             "prompt_chat_turns_available": balance // PROMPT_CHAT_CREDIT_COST,
+            "prompt_chat_output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
+            "prompt_chat_output_tokens_available": balance * PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
             "pack_credits": CREDIT_PACK_CREDITS,
             "pack_price_usd": CREDIT_PACK_PRICE_USD,
             "payments_configured": self.btcpay_configured(),
@@ -2101,7 +2106,7 @@ class Gateway:
             (IMAGE_CREDIT_COST, now, license_row["discord_user_id"], IMAGE_CREDIT_COST),
         ).rowcount
         if not updated:
-            raise HTTPException(402, "Online API credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin or select Local GPU.")
+            raise HTTPException(402, f"Online API credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin or select Local GPU.")
         db.execute(
             "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
             (license_row["discord_user_id"], -IMAGE_CREDIT_COST, "image_reservation", request_id, f"reserve:{request_id}", now),
@@ -2183,6 +2188,9 @@ class Gateway:
             (now - CREDIT_RESERVATION_TTL_SECONDS,),
         ).fetchall()
         for job in stale_chat:
+            reserved_credits = self._prompt_chat_reserved_credits(
+                db, str(job["request_id"]), str(job["discord_user_id"])
+            )
             if not db.execute(
                 "UPDATE prompt_chat_jobs SET credit_state='refunded' WHERE request_id=? AND credit_state='reserved'",
                 (job["request_id"],),
@@ -2190,11 +2198,11 @@ class Gateway:
                 continue
             db.execute(
                 "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
-                (PROMPT_CHAT_CREDIT_COST, now, job["discord_user_id"]),
+                (reserved_credits, now, job["discord_user_id"]),
             )
             db.execute(
                 "INSERT OR IGNORE INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
-                (job["discord_user_id"], PROMPT_CHAT_CREDIT_COST, "prompt_chat_refund", job["request_id"], f"prompt-chat-refund:{job['request_id']}", now),
+                (job["discord_user_id"], reserved_credits, "prompt_chat_refund", job["request_id"], f"prompt-chat-refund:{job['request_id']}", now),
             )
             released += 1
         return released
@@ -2237,6 +2245,31 @@ class Gateway:
             raise RuntimeError("Qwen Prompt Editor returned invalid text.")
         return cleaned
 
+    @staticmethod
+    def _prompt_chat_output_tokens(result: Any) -> int:
+        if not isinstance(result, dict) or result.get("ok") is False:
+            raise RuntimeError("Qwen Prompt Editor returned unusable token accounting.")
+        nested = result.get("response", result)
+        if isinstance(nested, str):
+            nested = json.loads(nested)
+        usage = nested.get("usage") if isinstance(nested, dict) else None
+        raw_tokens = (
+            usage.get("completion_tokens", usage.get("output_tokens"))
+            if isinstance(usage, dict)
+            else None
+        )
+        if isinstance(raw_tokens, bool):
+            raise RuntimeError("Qwen Prompt Editor returned invalid token accounting.")
+        try:
+            output_tokens = int(raw_tokens)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Qwen Prompt Editor did not return exact output-token accounting."
+            ) from exc
+        if output_tokens < 1 or output_tokens > 4096:
+            raise RuntimeError("Qwen Prompt Editor output-token accounting is out of range.")
+        return output_tokens
+
     def _assert_unused_prompt_chat_request(
         self,
         db: sqlite3.Connection,
@@ -2263,23 +2296,41 @@ class Gateway:
         request_id: str,
         request_digest: str,
         now: int,
+        credits: int,
     ) -> None:
+        if not isinstance(credits, int) or credits < PROMPT_CHAT_CREDIT_COST:
+            raise RuntimeError("Prompt Editor credit reservation is invalid.")
         self._assert_unused_prompt_chat_request(db, license_row, request_id, request_digest)
         self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
         changed = db.execute(
             "UPDATE credit_accounts SET available_credits=available_credits-?,updated_at=? WHERE discord_user_id=? AND available_credits>=?",
-            (PROMPT_CHAT_CREDIT_COST, now, license_row["discord_user_id"], PROMPT_CHAT_CREDIT_COST),
+            (credits, now, license_row["discord_user_id"], credits),
         ).rowcount
         if not changed:
-            raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+            raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
         db.execute(
             "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
-            (license_row["discord_user_id"], -PROMPT_CHAT_CREDIT_COST, "prompt_chat_reservation", request_id, f"prompt-chat-reserve:{request_id}", now),
+            (license_row["discord_user_id"], -credits, "prompt_chat_reservation", request_id, f"prompt-chat-reserve:{request_id}", now),
         )
         db.execute(
             "INSERT INTO prompt_chat_jobs(request_id,license_id,discord_user_id,model_id,request_digest,credit_state,started_at) VALUES(?,?,?,?,?,'reserved',?)",
             (request_id, license_row["license_id"], license_row["discord_user_id"], PROMPT_CHAT_MODEL_ID, request_digest, now),
         )
+
+    @staticmethod
+    def _prompt_chat_reserved_credits(
+        db: sqlite3.Connection,
+        request_id: str,
+        discord_user_id: str,
+    ) -> int:
+        row = db.execute(
+            "SELECT delta_credits FROM credit_ledger WHERE request_id=? AND discord_user_id=? AND entry_kind='prompt_chat_reservation'",
+            (request_id, discord_user_id),
+        ).fetchone()
+        credits = -int(row["delta_credits"]) if row else 0
+        if credits < PROMPT_CHAT_CREDIT_COST:
+            raise RuntimeError("Prompt Editor credit reservation could not be verified.")
+        return credits
 
     def _refund_prompt_chat_credit(
         self,
@@ -2288,6 +2339,9 @@ class Gateway:
         request_id: str,
         now: int,
     ) -> None:
+        reserved_credits = self._prompt_chat_reserved_credits(
+            db, request_id, str(license_row["discord_user_id"])
+        )
         changed = db.execute(
             "UPDATE prompt_chat_jobs SET credit_state='refunded',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
             (now, request_id, license_row["license_id"]),
@@ -2296,11 +2350,56 @@ class Gateway:
             return
         db.execute(
             "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
-            (PROMPT_CHAT_CREDIT_COST, now, license_row["discord_user_id"]),
+            (reserved_credits, now, license_row["discord_user_id"]),
         )
         db.execute(
             "INSERT OR IGNORE INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
-            (license_row["discord_user_id"], PROMPT_CHAT_CREDIT_COST, "prompt_chat_refund", request_id, f"prompt-chat-refund:{request_id}", now),
+            (license_row["discord_user_id"], reserved_credits, "prompt_chat_refund", request_id, f"prompt-chat-refund:{request_id}", now),
+        )
+
+    def _settle_prompt_chat_credit(
+        self,
+        db: sqlite3.Connection,
+        license_row: sqlite3.Row,
+        request_id: str,
+        output_tokens: int,
+        now: int,
+    ) -> tuple[int, int]:
+        charged_credits = max(
+            PROMPT_CHAT_CREDIT_COST,
+            (output_tokens + PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT - 1)
+            // PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
+        )
+        reserved_credits = self._prompt_chat_reserved_credits(
+            db, request_id, str(license_row["discord_user_id"])
+        )
+        if charged_credits > reserved_credits:
+            raise RuntimeError("Prompt Editor output exceeded its reserved credit ceiling.")
+        changed = db.execute(
+            "UPDATE prompt_chat_jobs SET credit_state='charged',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
+            (now, request_id, license_row["license_id"]),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("Prompt Editor credit settlement could not be confirmed.")
+        unused_credits = reserved_credits - charged_credits
+        if unused_credits:
+            db.execute(
+                "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
+                (unused_credits, now, license_row["discord_user_id"]),
+            )
+            db.execute(
+                "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,request_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+                (
+                    license_row["discord_user_id"],
+                    unused_credits,
+                    "prompt_chat_unused_refund",
+                    request_id,
+                    f"prompt-chat-unused:{request_id}",
+                    now,
+                ),
+            )
+        return charged_credits, self._account_balance(
+            db, str(license_row["discord_user_id"])
         )
 
     async def prompt_chat(
@@ -2348,8 +2447,21 @@ class Gateway:
             self._release_stale_reservations(db, now)
             self._assert_unused_prompt_chat_request(db, license_row, request_id, request_digest)
             self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
-            if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
-                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+            available_credits = self._account_balance(
+                db, str(license_row["discord_user_id"])
+            )
+            if available_credits < PROMPT_CHAT_CREDIT_COST:
+                raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
+            requested_credit_ceiling = max(
+                PROMPT_CHAT_CREDIT_COST,
+                (payload.max_tokens + PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT - 1)
+                // PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
+            )
+            reservation_credits = min(requested_credit_ceiling, available_credits)
+        provider_payload["max_tokens"] = min(
+            payload.max_tokens,
+            reservation_credits * PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
+        )
         if self.dedicated_configured():
             reserved = False
             failure_stage = "preparing-dedicated-qwen"
@@ -2360,7 +2472,12 @@ class Gateway:
                         now = int(time.time())
                         self._release_stale_reservations(db, now)
                         self._reserve_prompt_chat_credit(
-                            db, license_row, request_id, request_digest, now
+                            db,
+                            license_row,
+                            request_id,
+                            request_digest,
+                            now,
+                            reservation_credits,
                         )
                         reserved = True
                     failure_stage = "dedicated-queue-and-inference"
@@ -2371,24 +2488,25 @@ class Gateway:
                     )
                     failure_stage = "validating-reply"
                     reply = self._prompt_chat_reply(result)
+                    output_tokens = self._prompt_chat_output_tokens(result)
+                    if output_tokens > int(provider_payload["max_tokens"]):
+                        raise RuntimeError("Qwen Prompt Editor exceeded its output-token limit.")
                     failure_stage = "settling-credit"
                     with self.connection() as db:
                         now = int(time.time())
-                        charged = db.execute(
-                            "UPDATE prompt_chat_jobs SET credit_state='charged',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
-                            (now, request_id, license_row["license_id"]),
-                        ).rowcount
-                        if charged != 1:
-                            raise RuntimeError(
-                                "Prompt Editor credit settlement could not be confirmed."
-                            )
-                        balance = self._account_balance(
-                            db, str(license_row["discord_user_id"])
+                        charged_credits, balance = self._settle_prompt_chat_credit(
+                            db,
+                            license_row,
+                            request_id,
+                            output_tokens,
+                            now,
                         )
                     return {
                         "reply": reply,
                         "model": PROMPT_CHAT_MODEL_ID,
-                        "credits_charged": PROMPT_CHAT_CREDIT_COST,
+                        "credits_charged": charged_credits,
+                        "output_tokens": output_tokens,
+                        "output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
                         "available_credits": balance,
                         "privacy": "conversation content is forwarded for inference and is not stored by the KREA2 gateway",
                     }
@@ -2433,7 +2551,14 @@ class Gateway:
                 with self.connection() as db:
                     now = int(time.time())
                     self._release_stale_reservations(db, now)
-                    self._reserve_prompt_chat_credit(db, license_row, request_id, request_digest, now)
+                    self._reserve_prompt_chat_credit(
+                        db,
+                        license_row,
+                        request_id,
+                        request_digest,
+                        now,
+                        reservation_credits,
+                    )
                     reserved = True
                 failure_stage = "activating-qwen"
                 async with self._prompt_chat_activation_guard():
@@ -2488,7 +2613,7 @@ class Gateway:
                             endpoint,
                             provider_payload,
                             time.monotonic() + self.config.prompt_chat_timeout_seconds,
-                            cost=payload.max_tokens,
+                            cost=int(provider_payload["max_tokens"]),
                             worker_timeout_seconds=min(
                                 120.0,
                                 self.config.prompt_chat_timeout_seconds,
@@ -2497,20 +2622,25 @@ class Gateway:
                         )
                 failure_stage = "validating-reply"
                 reply = self._prompt_chat_reply(result)
+                output_tokens = self._prompt_chat_output_tokens(result)
+                if output_tokens > int(provider_payload["max_tokens"]):
+                    raise RuntimeError("Qwen Prompt Editor exceeded its output-token limit.")
                 failure_stage = "settling-credit"
                 with self.connection() as db:
                     now = int(time.time())
-                    charged = db.execute(
-                        "UPDATE prompt_chat_jobs SET credit_state='charged',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
-                        (now, request_id, license_row["license_id"]),
-                    ).rowcount
-                    if charged != 1:
-                        raise RuntimeError("Prompt Editor credit settlement could not be confirmed.")
-                    balance = self._account_balance(db, str(license_row["discord_user_id"]))
+                    charged_credits, balance = self._settle_prompt_chat_credit(
+                        db,
+                        license_row,
+                        request_id,
+                        output_tokens,
+                        now,
+                    )
                 return {
                     "reply": reply,
                     "model": PROMPT_CHAT_MODEL_ID,
-                    "credits_charged": PROMPT_CHAT_CREDIT_COST,
+                    "credits_charged": charged_credits,
+                    "output_tokens": output_tokens,
+                    "output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
                     "available_credits": balance,
                     "privacy": "conversation content is forwarded for inference and is not stored by the KREA2 gateway",
                 }
@@ -2612,7 +2742,7 @@ class Gateway:
                 raise HTTPException(409, "Prompt Editor request ID was already used. Send the message again.")
             self._grant_welcome_credits(db, str(license_row["discord_user_id"]), int(time.time()))
             if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
-                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+                raise HTTPException(402, f"Prompt Editor credits are exhausted. Purchase {CREDIT_PACK_CREDITS:,} credits for ${CREDIT_PACK_PRICE_USD} in Bitcoin.")
         run: dict[str, Any] = {
             "license_id": license_id,
             "status": "queued",
@@ -2988,6 +3118,101 @@ class Gateway:
             )
         return {"invoice_id": invoice_id, "checkout_url": checkout_url, "credits": CREDIT_PACK_CREDITS, "price_usd": CREDIT_PACK_PRICE_USD}
 
+    def _settle_credit_invoice_locked(
+        self,
+        db: sqlite3.Connection,
+        invoice: sqlite3.Row,
+        now: int,
+    ) -> bool:
+        if invoice["status"] == "settled":
+            return False
+        changed = db.execute(
+            "UPDATE credit_invoices SET status='settled',settled_at=? WHERE invoice_id=? AND status!='settled'",
+            (now, invoice["invoice_id"]),
+        ).rowcount
+        if changed != 1:
+            return False
+        self._grant_welcome_credits(db, str(invoice["discord_user_id"]), now)
+        db.execute(
+            "UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?",
+            (int(invoice["credits"]), now, invoice["discord_user_id"]),
+        )
+        db.execute(
+            "INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,invoice_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)",
+            (
+                invoice["discord_user_id"],
+                int(invoice["credits"]),
+                "bitcoin_purchase",
+                invoice["invoice_id"],
+                f"invoice:{invoice['invoice_id']}",
+                now,
+            ),
+        )
+        return True
+
+    def _reconcile_credit_invoices(self, discord_user_id: str) -> None:
+        """Settle pending packs from BTCPay during the plugin's balance polling.
+
+        The signed webhook remains the fast path. This authenticated fallback
+        keeps checkout reliable when a store administrator has not yet granted
+        this product permission to create its own webhook.
+        """
+
+        if not self.btcpay_configured():
+            return
+        with self.connection() as db:
+            pending = db.execute(
+                "SELECT * FROM credit_invoices WHERE discord_user_id=? AND status='new' ORDER BY created_at DESC LIMIT 4",
+                (discord_user_id,),
+            ).fetchall()
+        for invoice in pending:
+            try:
+                response = self.http.get(
+                    f"{self.config.btcpay_url}/api/v1/invoices/{invoice['invoice_id']}",
+                    headers={"Authorization": f"token {self.config.btcpay_api_key}"},
+                    timeout=10,
+                )
+                document = response.json()
+                if getattr(response, "status_code", 500) != 200 or not isinstance(document, dict):
+                    continue
+                metadata = document.get("metadata")
+                try:
+                    amount_matches = Decimal(str(document.get("amount"))) == Decimal(str(invoice["amount"]))
+                except (InvalidOperation, TypeError, ValueError):
+                    amount_matches = False
+                if not (
+                    str(document.get("id") or "") == str(invoice["invoice_id"])
+                    and str(document.get("storeId") or "") == self.config.btcpay_store_id
+                    and str(document.get("currency") or "").upper() == str(invoice["currency"]).upper()
+                    and amount_matches
+                    and isinstance(metadata, dict)
+                    and str(metadata.get("orderId") or "") == str(invoice["purchase_reference"])
+                    and str(metadata.get("itemCode") or "") == "krea2-credits-1200"
+                ):
+                    LOGGER.error("BTCPay invoice %s failed KREA2 settlement verification", str(invoice["invoice_id"])[:12])
+                    continue
+                status = str(document.get("status") or "")
+                with self.connection() as db:
+                    current = db.execute(
+                        "SELECT * FROM credit_invoices WHERE invoice_id=?",
+                        (invoice["invoice_id"],),
+                    ).fetchone()
+                    if not current:
+                        continue
+                    if status == "Settled":
+                        self._settle_credit_invoice_locked(db, current, int(time.time()))
+                    elif status in {"Expired", "Invalid"}:
+                        db.execute(
+                            "UPDATE credit_invoices SET status=? WHERE invoice_id=? AND status='new'",
+                            (status.lower(), invoice["invoice_id"]),
+                        )
+            except Exception as exc:
+                LOGGER.warning(
+                    "BTCPay invoice reconciliation deferred for %s: %s",
+                    str(invoice["invoice_id"])[:12],
+                    type(exc).__name__,
+                )
+
     def accept_btcpay_webhook(self, raw_body: bytes, signature: str | None) -> None:
         if not self.btcpay_configured():
             raise HTTPException(503, "Bitcoin webhook is not configured.")
@@ -3008,13 +3233,9 @@ class Gateway:
             if event_type != "InvoiceSettled":
                 return
             invoice = db.execute("SELECT * FROM credit_invoices WHERE invoice_id=?", (invoice_id,)).fetchone()
-            if not invoice or invoice["status"] == "settled":
+            if not invoice:
                 return
-            now = int(time.time())
-            self._grant_welcome_credits(db, str(invoice["discord_user_id"]), now)
-            db.execute("UPDATE credit_accounts SET available_credits=available_credits+?,updated_at=? WHERE discord_user_id=?", (int(invoice["credits"]), now, invoice["discord_user_id"]))
-            db.execute("INSERT INTO credit_ledger(discord_user_id,delta_credits,entry_kind,invoice_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?)", (invoice["discord_user_id"], int(invoice["credits"]), "bitcoin_purchase", invoice_id, f"invoice:{invoice_id}", now))
-            db.execute("UPDATE credit_invoices SET status='settled',settled_at=? WHERE invoice_id=?", (now, invoice_id))
+            self._settle_credit_invoice_locked(db, invoice, int(time.time()))
 
     def _post_webhook(self, license_row: sqlite3.Row, request_id: str, source_url: str, variants: list[str]) -> None:
         if not self.config.audit_webhook_url:

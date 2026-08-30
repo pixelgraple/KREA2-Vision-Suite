@@ -9,15 +9,16 @@ Legacy Vast Serverless variables remain supported only as a migration fallback.
 
 It issues a revocable random-token entitlement only after Discord OAuth verifies
 the account with the minimal `identify` scope. A newly verified Discord account
-receives 120 introductory Online API credits. Each image reserves three credits
+receives 60 introductory Online API credits. Each image reserves three credits
 exactly once, regardless of its internal evidence passes; it is charged only
 after the final prompt audit succeeds and is automatically refunded if the
 image fails or is cancelled. Local GPU mode does not contact this service or
 require a Discord account or credits.
 
 The same verified license can use the separate Qwen Prompt Editor route. Each
-successful Qwen reply costs one credit; a failed, cancelled, timed-out, invalid,
-or unsettled request is refunded automatically. The gateway stores only its
+successful Qwen reply costs one credit per started 350 output tokens; a failed,
+cancelled, timed-out, invalid, or unsettled request is refunded automatically,
+and unused reserved credits are returned. The gateway stores only its
 request digest and credit state, not the prompt, instructions, conversation, or
 reply text.
 
@@ -77,7 +78,8 @@ Run it behind HTTPS only. Do not put any of those values in BetterDiscord,
 
 ## Bitcoin credit pack
 
-The fixed pack is 1,200 credits for **$20 USD paid in Bitcoin**. BTCPay quotes
+The fixed pack is 1,200 credits for **$1.50 USD paid in Bitcoin**. It covers
+400 successful Vision images or up to 420,000 Qwen output tokens. BTCPay quotes
 the Bitcoin amount at checkout, so the BTC amount changes with the exchange
 rate. The gateway creates the BTCPay invoice server-side using an API key scoped
 only to invoice creation for this store. It records only an opaque purchase
@@ -89,3 +91,8 @@ Configure a BTCPay webhook for `InvoiceSettled` only, pointing to
 secret. The gateway validates the `BTCPay-Sig` HMAC over the raw request body,
 deduplicates webhook delivery IDs, and credits an invoice once. Do not credit at
 `InvoiceReceivedPayment` or `InvoiceProcessing`: those events are not final.
+As a reliability fallback, each authenticated balance poll also queries only
+that account's pending invoice IDs through BTCPay and applies the same exact
+store, amount, currency, order-reference, item-code, and settled-state checks.
+The ledger's unique invoice key prevents webhook and polling settlement from
+crediting the same purchase twice.

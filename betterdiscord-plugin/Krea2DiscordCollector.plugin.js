@@ -4224,6 +4224,7 @@ function remotePreflightSummary(status, purpose = "image") {
     const maximum = Math.max(minimum, Math.trunc(Number(status?.estimated_wait_seconds_max) || minimum));
     const editCost = Math.max(0, Math.trunc(Number(status?.credits_per_prompt_chat) || 1));
     const imageCost = Math.max(0, Math.trunc(Number(status?.credits_per_image) || 3));
+    const promptTokenStep = Math.max(1, Math.trunc(Number(status?.prompt_chat_output_tokens_per_credit) || 350));
     const cost = purpose === "prompt-chat" ? editCost : imageCost;
     const wait = maximum ? `${minimum}–${maximum}s estimate` : "wait estimate unavailable";
     const refund = status?.failed_or_cancelled_refunded === false
@@ -4235,7 +4236,9 @@ function remotePreflightSummary(status, purpose = "image") {
         wait_max_seconds: maximum,
         cost,
         available_credits: Math.max(0, Math.trunc(Number(status?.available_credits) || 0)),
-        text: `Remote worker: ${state} · ${wait} · ${cost} credit${cost === 1 ? "" : "s"} on success · ${Math.max(0, Math.trunc(Number(status?.available_credits) || 0))} available. ${refund}`
+        text: purpose === "prompt-chat"
+            ? `Remote worker: ${state} · ${wait} · 1 credit per started ${promptTokenStep} output tokens · ${Math.max(0, Math.trunc(Number(status?.available_credits) || 0))} available. ${refund}`
+            : `Remote worker: ${state} · ${wait} · ${cost} credits on success · ${Math.max(0, Math.trunc(Number(status?.available_credits) || 0))} available. ${refund}`
     });
 }
 
@@ -8453,13 +8456,26 @@ class Krea2DiscordCollector {
             }
         }
         const reply = String(result?.reply || "").trim();
-        if (!reply || reply.length > 24000 || result?.model !== "heretic-3.8-q4-cloud" || result?.credits_charged !== 1) {
+        const outputTokens = Number(result?.output_tokens);
+        const outputTokensPerCredit = Number(result?.output_tokens_per_credit);
+        const creditsCharged = Number(result?.credits_charged);
+        if (
+            !reply
+            || reply.length > 24000
+            || result?.model !== "heretic-3.8-q4-cloud"
+            || !Number.isInteger(outputTokens)
+            || outputTokens < 1
+            || outputTokensPerCredit !== 350
+            || !Number.isInteger(creditsCharged)
+            || creditsCharged !== Math.ceil(outputTokens / outputTokensPerCredit)
+        ) {
             throw new Error("Qwen Prompt Editor returned an invalid reply.");
         }
         return Object.freeze({
             reply,
             model: result.model,
-            creditsCharged: 1,
+            creditsCharged,
+            outputTokens,
             availableCredits: Number(result.available_credits)
         });
     }
@@ -9317,6 +9333,8 @@ class Krea2DiscordCollector {
             const validPromptBalance = value => (
                 Number.isInteger(value?.credits_per_prompt_chat)
                 && value.credits_per_prompt_chat === 1
+                && Number.isInteger(value?.prompt_chat_output_tokens_per_credit)
+                && value.prompt_chat_output_tokens_per_credit === 350
                 && Number.isInteger(value?.prompt_chat_turns_available)
                 && value.prompt_chat_turns_available >= 0
             );
@@ -9379,11 +9397,11 @@ class Krea2DiscordCollector {
         return new Promise(resolve => {
             const promptChat = purpose === "prompt-chat";
             const lead = promptChat
-                ? `Qwen Prompt Editor needs 1 credit per successful reply. You have ${status.available_credits} credits remaining.`
+                ? `Qwen Prompt Editor costs 1 credit per started 350 output tokens. You have ${status.available_credits} credits remaining.`
                 : `Online API needs 3 credits per image. You have ${status.available_credits} credits remaining.`;
             const detail = promptChat
-                ? "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 1,200 successful Prompt Editor replies; a failed reply is automatically refunded."
-                : "Purchase 1,200 credits for $20 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
+                ? "Purchase 1,200 credits for $1.50 USD paid in Bitcoin. That covers up to 420,000 Qwen output tokens; failed replies are automatically refunded and unused reserved credits are returned."
+                : "Purchase 1,200 credits for $1.50 USD paid in Bitcoin. That covers 400 successful images; a failed or cancelled image is automatically refunded.";
             const content = buildConfirmationModalContent(this.api, [lead, detail]);
             this.api.UI.showConfirmationModal("Purchase Online API credits", content, {
                 confirmText: "Open Bitcoin checkout", cancelText: "Use Local GPU", danger: false,
@@ -9395,7 +9413,7 @@ class Krea2DiscordCollector {
     confirmRemoteOAuth() {
         return new Promise(resolve => {
             const content = buildConfirmationModalContent(this.api, [
-                "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a revocable account license, grant 120 introductory credits, and enforce its terms and rate limits."
+                "Online API uses KREA2's remote Gemma worker. Connect Discord once so the service can issue a revocable account license, grant 60 introductory credits, and enforce its terms and rate limits."
             ], [
                 "Discord handles the sign-in. KREA2 never receives your Discord password.",
                 "Only Discord's basic identify permission is requested to verify the account.",
