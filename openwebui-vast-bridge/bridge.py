@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import requests
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from vastai import CoroutineServerless
@@ -32,20 +33,31 @@ def _load_config() -> dict[str, Any]:
         raise RuntimeError(f"Bridge config could not be read: {CONFIG_PATH}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("Bridge config must be a JSON object.")
-    required = ("vast_api_key", "endpoint", "model", "bridge_api_key")
+    required = ("model", "bridge_api_key")
     for key in required:
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise RuntimeError(f"Bridge config field is missing: {key}")
-    if len(data["vast_api_key"]) < 24 or len(data["bridge_api_key"]) < 24:
+    upstream_base_url = str(data.get("upstream_base_url") or "").strip()
+    if upstream_base_url:
+        if len(str(data.get("upstream_api_key") or "")) < 24:
+            raise RuntimeError("Dedicated upstream credential is invalid.")
+    elif (
+        len(str(data.get("vast_api_key") or "")) < 24
+        or not str(data.get("endpoint") or "").strip()
+    ):
+        raise RuntimeError("Vast Serverless bridge configuration is invalid.")
+    if len(data["bridge_api_key"]) < 24:
         raise RuntimeError("Bridge credentials are invalid.")
     return data
 
 
 CONFIG = _load_config()
-ENDPOINT = CONFIG["endpoint"].strip()
+ENDPOINT = str(CONFIG.get("endpoint") or "").strip()
 MODEL = CONFIG["model"].strip()
-VAST_API_KEY = CONFIG["vast_api_key"].strip()
+VAST_API_KEY = str(CONFIG.get("vast_api_key") or "").strip()
 BRIDGE_API_KEY = CONFIG["bridge_api_key"].strip()
+UPSTREAM_BASE_URL = str(CONFIG.get("upstream_base_url") or "").strip().rstrip("/")
+UPSTREAM_API_KEY = str(CONFIG.get("upstream_api_key") or "").strip()
 REQUEST_TIMEOUT = float(CONFIG.get("request_timeout", 240))
 SSE_KEEPALIVE_SECONDS = max(
     1.0,
@@ -319,6 +331,33 @@ async def _request_vast(payload: dict[str, Any], cost: int, *, stream: bool) -> 
     # at a time. Queue overlapping Open WebUI/sub-agent calls locally so Vast
     # never rejects a parallel burst while the single GPU is busy.
     async with VAST_REQUEST_GATE:
+        if UPSTREAM_BASE_URL:
+            def request_dedicated() -> dict[str, Any]:
+                response = requests.post(
+                    f"{UPSTREAM_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {UPSTREAM_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={**payload, "stream": False},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                try:
+                    document = response.json()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Dedicated Qwen returned invalid JSON (HTTP {response.status_code})"
+                    ) from exc
+                if response.status_code >= 400:
+                    detail = document.get("detail") if isinstance(document, dict) else None
+                    raise RuntimeError(
+                        f"Dedicated Qwen failed (HTTP {response.status_code}): {str(detail or 'unknown error')[:300]}"
+                    )
+                if not isinstance(document, dict):
+                    raise RuntimeError("Dedicated Qwen returned a non-object response")
+                return {"ok": True, "response": document}
+
+            return await asyncio.to_thread(request_dedicated)
         async with CoroutineServerless(
             api_key=VAST_API_KEY,
             default_request_timeout=REQUEST_TIMEOUT,
@@ -412,6 +451,32 @@ def _continuation_token_budget(payload: dict[str, Any], usage_total: int | None)
 
 async def _sse_stream(payload: dict[str, Any], cost: int) -> AsyncIterator[bytes]:
     try:
+        if UPSTREAM_BASE_URL:
+            result = await _request_vast(payload, cost, stream=False)
+            document = _unwrap_response(result)
+            choices = document.get("choices") or []
+            message = choices[0].get("message") if choices and isinstance(choices[0], dict) else {}
+            content = str((message or {}).get("content") or "")
+            completion_id = str(document.get("id") or f"chatcmpl-{uuid.uuid4().hex}")
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": MODEL,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": content},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+            chunk["choices"][0]["delta"] = {}
+            chunk["choices"][0]["finish_reason"] = "stop"
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+            yield b"data: [DONE]\n\n"
+            return
         # Keep the SDK client alive until the remote async iterator is exhausted.
         # Closing it immediately after endpoint.request() can terminate a valid
         # Open WebUI stream before any generated tokens reach the browser.
@@ -571,6 +636,7 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "endpoint": ENDPOINT,
+        "runtime": "dedicated" if UPSTREAM_BASE_URL else "serverless",
         "model": MODEL,
         "model_context_tokens": MODEL_CONTEXT_TOKENS,
         "target_input_tokens": CONTEXT_TARGET_INPUT_TOKENS,

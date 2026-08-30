@@ -1,9 +1,11 @@
 # KREA2 remote Vision gateway
 
-This optional service is the public boundary for the KREA2 online Gemma model.
-It owns the Vast Serverless API key and optional Discord audit webhook; neither
-credential is distributed in the BetterDiscord plugin, local Studio, releases,
-or Git history.
+This optional service is the public boundary for the KREA2 online Gemma model
+and Qwen Prompt Editor. Production uses a private dedicated RTX 3090 reached
+through a restricted reverse SSH listener on VPS loopback. The gateway owns the
+router bearer key and optional Discord audit webhook; neither credential is
+distributed in the BetterDiscord plugin, local Studio, releases, or Git history.
+Legacy Vast Serverless variables remain supported only as a migration fallback.
 
 It issues a revocable random-token entitlement only after Discord OAuth verifies
 the account with the minimal `identify` scope. A newly verified Discord account
@@ -37,9 +39,6 @@ are suppressed for 15 minutes and each license is limited to 30 new reports per
 Create `/data/krea2-vision-gateway/gateway.env` outside the repository:
 
 ```ini
-KREA2_GATEWAY_VAST_ENDPOINT=your-vast-endpoint
-KREA2_GATEWAY_QWEN_ENDPOINT=your-qwen-prompt-editor-endpoint
-KREA2_GATEWAY_VAST_API_KEY=private-vast-key
 KREA2_GATEWAY_QWEN_TIMEOUT_SECONDS=300
 KREA2_GATEWAY_AUDIT_WEBHOOK_URL=private-discord-webhook-url
 KREA2_GATEWAY_ADMIN_KEY=generate-a-random-32-byte-or-longer-secret
@@ -54,6 +53,17 @@ KREA2_GATEWAY_BTCPAY_STORE_ID=your-btcpay-store-id
 KREA2_GATEWAY_BTCPAY_API_KEY=least-privilege-server-only-btcpay-api-key
 KREA2_GATEWAY_BTCPAY_WEBHOOK_SECRET=separate-random-32-byte-or-longer-webhook-secret
 ```
+
+Create a second root-readable file, `/data/krea2-vision-gateway/dedicated.env`:
+
+```ini
+KREA2_GATEWAY_DEDICATED_BASE_URL=http://127.0.0.1:18090
+KREA2_GATEWAY_DEDICATED_API_KEY=dedicated-router-bearer-key
+KREA2_GATEWAY_OPENWEBUI_BRIDGE_API_KEY=separate-private-bridge-key
+```
+
+The systemd unit may load both files. The dedicated URL must remain loopback;
+never bind the llama.cpp router or reverse listener to a public interface.
 
 Register the exact redirect URI in the Discord Developer Portal. The plugin
 starts a short-lived enrollment, opens Discord in the user's browser, and polls

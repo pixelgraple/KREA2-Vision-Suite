@@ -192,7 +192,7 @@ class VastServerlessProviderTests(unittest.TestCase):
     def test_factory_selects_licensed_remote_gateway_provider(self):
         spec = catalog.ModelSpec(
             "vast::gemma4-26b-a4b-heretic-q3_k_l",
-            "Remote Serverless",
+            "dedicated RTX 3090",
             "vast_serverless",
             "gemma4-26b-a4b-heretic-q3-k-l",
             False,

@@ -38,6 +38,7 @@ def make_gateway(root: Path, *, webhook_url: str = "", http=None):
         discord_redirect_uri="",
         license_signing_key="s" * 64,
         prompt_chat_endpoint="local-openwebui-coding",
+        prompt_chat_api_key="q" * 64,
         prompt_chat_timeout_seconds=300,
     )
     gateway = module.Gateway(config, http=http or module.requests)

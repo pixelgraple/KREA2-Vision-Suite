@@ -63,6 +63,9 @@ class Client:
 
 async def main():
     bridge.CoroutineServerless = Client
+    # This branch explicitly exercises the retained Serverless fallback even
+    # when the operator's installed config selects the dedicated gateway.
+    bridge.UPSTREAM_BASE_URL = ""
     bridge.SSE_KEEPALIVE_SECONDS = 0.005
     Endpoint.requests.clear()
     payload = {
@@ -89,6 +92,27 @@ async def main():
             terminal_reasons.append(choices[0]["finish_reason"])
     assert terminal_reasons == ["stop"]
     print({"segments": 2, "terminal_reasons": terminal_reasons, "done_markers": 1})
+
+    async def dedicated_response(payload, cost, *, stream):
+        assert payload["messages"][-1]["content"] == "complete file"
+        assert cost == 8192
+        assert stream is False
+        return {
+            "ok": True,
+            "response": {
+                "id": "chatcmpl-dedicated-proof",
+                "choices": [{"message": {"content": "DEDICATED_STREAM_OK"}}],
+            },
+        }
+
+    bridge.UPSTREAM_BASE_URL = "https://gateway.invalid/v1/openwebui"
+    bridge._request_vast = dedicated_response
+    dedicated_chunks = [chunk async for chunk in bridge._sse_stream(payload, 8192)]
+    dedicated_text = b"".join(dedicated_chunks).decode("utf-8")
+    assert dedicated_text.count("data: [DONE]") == 1
+    assert "DEDICATED_STREAM_OK" in dedicated_text
+    assert dedicated_text.count('"finish_reason": "stop"') == 1
+    print({"dedicated_stream": True, "done_markers": 1})
 
 
 asyncio.run(main())

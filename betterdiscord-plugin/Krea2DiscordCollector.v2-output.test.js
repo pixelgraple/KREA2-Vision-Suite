@@ -88,7 +88,7 @@ assert.throws(() => parseVisionPromptResponse(response(three.slice(0, 2)), {expe
 const v2ThreePromptJob = {
     prompt: three[0],
     prompt_variants: three,
-    model: "Remote Serverless — V2 Direct Fidelity",
+    model: "Dedicated RTX 3090 — V2 Direct Fidelity",
     reproducibility: {analysis_profile: "v2", prompt_variant_count: 3}
 };
 assert.deepEqual(visibleHistoryPromptVariants(v2ThreePromptJob, {v2ThreePromptVariations: false}), [three[0]]);

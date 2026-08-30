@@ -116,9 +116,9 @@ class VastServerlessProvider(VisionProvider):
         }
         if self.progress_callback is not None:
             self.progress_callback(
-                "Waking remote Gemma 4 26B-A4B GPU — the request will wait safely for Serverless capacity"
+                "Loading Gemma 4 26B-A4B on the dedicated RTX 3090 — queued requests wait safely"
                 if self._request_count == 0
-                else "Using the awake remote Gemma 4 26B-A4B Serverless worker"
+                else "Using the dedicated RTX 3090 Gemma 4 26B-A4B worker"
             )
         env = os.environ.copy()
         env["VAST_API_KEY"] = self.api_key
@@ -135,7 +135,7 @@ class VastServerlessProvider(VisionProvider):
             )
             response = json.loads(completed.stdout or "{}")
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-            raise VastServerlessProviderError("The Vast Serverless bridge failed.") from exc
+            raise VastServerlessProviderError("The dedicated Vision gateway bridge failed.") from exc
         if completed.returncode != 0 or not isinstance(response, dict) or not response.get("ok"):
             detail = response.get("error") if isinstance(response, dict) else None
             raise VastServerlessProviderError(

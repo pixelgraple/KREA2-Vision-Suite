@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -30,9 +31,12 @@ try:
 except ImportError:  # Allows isolated API-contract tests without the Vast SDK.
     CoroutineServerless = VastAI = _vast_make_request = None
 
+LOGGER = logging.getLogger("krea2.gateway")
+
 MODEL_ID = "gemma4-26b-a4b-heretic-q3-k-l"
 PUBLIC_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l"
 PROMPT_CHAT_MODEL_ID = "heretic-3.8-q4-cloud"
+DEDICATED_QWEN_MODEL_ID = "qwen38-27b-heretic-q4-k-m"
 DISCORD_ID_RE = re.compile(r"^[1-9][0-9]{16,21}$")
 LICENSE_ID_RE = re.compile(r"^lic_[A-Za-z0-9_-]{12,64}$")
 REQUEST_ID_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -44,6 +48,7 @@ OAUTH_ENROLLMENT_TTL_SECONDS = 10 * 60
 WELCOME_CREDITS = 120
 IMAGE_CREDIT_COST = 3
 PROMPT_CHAT_CREDIT_COST = 1
+PROMPT_CHAT_RESULT_TTL_SECONDS = 30 * 60
 CREDIT_PACK_CREDITS = 1200
 CREDIT_PACK_PRICE_USD = "20"
 CREDIT_RESERVATION_TTL_SECONDS = 2 * 60 * 60
@@ -83,7 +88,11 @@ class Config:
     allowed_gpu_names: tuple[str, ...] = DEFAULT_ALLOWED_GPU_NAMES
     max_worker_hourly_usd: float = 0.30
     prompt_chat_endpoint: str = ""
+    prompt_chat_api_key: str = ""
     prompt_chat_timeout_seconds: float = 300.0
+    dedicated_base_url: str = ""
+    dedicated_api_key: str = ""
+    openwebui_bridge_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -124,10 +133,26 @@ class Config:
                 min(float(os.getenv("KREA2_GATEWAY_MAX_WORKER_HOURLY_USD", "0.30")), 0.30),
             ),
             prompt_chat_endpoint=os.getenv("KREA2_GATEWAY_QWEN_ENDPOINT", "").strip(),
+            # This worker-group credential has narrower privileges than the
+            # Vast management key. Never fall back: the route key is forwarded
+            # to both the autoscaler and worker authentication transport.
+            prompt_chat_api_key=os.getenv(
+                "KREA2_GATEWAY_QWEN_API_KEY", ""
+            ).strip(),
             prompt_chat_timeout_seconds=max(
                 60.0,
                 min(float(os.getenv("KREA2_GATEWAY_QWEN_TIMEOUT_SECONDS", "300")), 900.0),
             ),
+            dedicated_base_url=os.getenv(
+                "KREA2_GATEWAY_DEDICATED_BASE_URL", ""
+            ).strip().rstrip("/"),
+            dedicated_api_key=os.getenv(
+                "KREA2_GATEWAY_DEDICATED_API_KEY", ""
+            ).strip(),
+            openwebui_bridge_api_key=os.getenv(
+                "KREA2_GATEWAY_OPENWEBUI_BRIDGE_API_KEY",
+                os.getenv("KREA2_GATEWAY_DEDICATED_API_KEY", ""),
+            ).strip(),
         )
 
 
@@ -269,6 +294,7 @@ class Gateway:
         self._recovery_lock = threading.Lock()
         self._controller_mutation_lock = threading.RLock()
         self._desired_activation_floor = 0.0
+        self._desired_prompt_chat_activation_floor = 0.0
         self._activation_headroom_target = 0
         self._activation_evidence_lock = threading.Lock()
         self._activation_failures: dict[int, dict[str, float]] = {}
@@ -280,11 +306,78 @@ class Gateway:
         self._recovery_status = "idle"
         self._activation_lock = asyncio.Lock()
         self._prompt_chat_lock = asyncio.Lock()
+        # Vision, Prompt Editor, and OpenWebUI share one physical GPU. This
+        # single FIFO lock prevents overlapping model loads and lets llama.cpp
+        # router mode keep exactly one model resident in VRAM.
+        self._dedicated_inference_lock = asyncio.Lock()
+        self._dedicated_queue_depth = 0
+        # Prompt Editor inference can outlive Cloudflare's synchronous request
+        # window during a cold start. Keep only transient in-memory job state;
+        # prompt text and replies are never persisted to SQLite.
+        self._prompt_chat_runs: dict[str, dict[str, Any]] = {}
         self._error_report_lock = threading.Lock()
         self._error_report_seen: dict[str, float] = {}
         self._error_report_rate: dict[str, list[float]] = {}
         config.database.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def dedicated_configured(self) -> bool:
+        return bool(
+            self.config.dedicated_base_url
+            and len(self.config.dedicated_api_key) >= 24
+        )
+
+    def _dedicated_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.config.dedicated_api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def _dedicated_completion(
+        self,
+        payload: dict[str, Any],
+        *,
+        model: str,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if not self.dedicated_configured():
+            raise RuntimeError("Dedicated GPU is not configured")
+        request_payload = dict(payload)
+        request_payload["model"] = model
+        request_payload["stream"] = False
+
+        def request_completion() -> dict[str, Any]:
+            response = self.http.post(
+                f"{self.config.dedicated_base_url}/v1/chat/completions",
+                headers=self._dedicated_headers(),
+                json=request_payload,
+                timeout=timeout_seconds,
+            )
+            status = int(getattr(response, "status_code", 500))
+            try:
+                document = response.json()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Dedicated GPU returned invalid JSON (HTTP {status})"
+                ) from exc
+            if status >= 400:
+                detail = document.get("error") if isinstance(document, dict) else None
+                raise RuntimeError(
+                    f"Dedicated GPU request failed (HTTP {status}): {str(detail or 'unknown error')[:300]}"
+                )
+            if not isinstance(document, dict):
+                raise RuntimeError("Dedicated GPU returned a non-object response")
+            choices = document.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise RuntimeError("Dedicated GPU returned no completion choices")
+            return document
+
+        self._dedicated_queue_depth += 1
+        try:
+            async with self._dedicated_inference_lock:
+                return await asyncio.to_thread(request_completion)
+        finally:
+            self._dedicated_queue_depth = max(0, self._dedicated_queue_depth - 1)
 
     @contextmanager
     def connection(self):
@@ -652,6 +745,118 @@ class Gateway:
                     await asyncio.sleep(1.0 + attempt)
         raise last_error or RuntimeError("Vast activation floor reset failed")
 
+    def _set_prompt_chat_activation_floor(self, min_load: float) -> None:
+        """Wake only the Qwen Prompt Editor endpoint, preserving its pool shape."""
+
+        with self._controller_mutation_lock:
+            self._desired_prompt_chat_activation_floor = float(min_load)
+            try:
+                self._set_prompt_chat_activation_floor_locked(min_load)
+            except Exception:
+                if float(min_load) > 0:
+                    self._desired_prompt_chat_activation_floor = 0.0
+                raise
+
+    def _set_prompt_chat_activation_floor_locked(self, min_load: float) -> None:
+        if VastAI is None:
+            raise RuntimeError("Vast SDK unavailable")
+        endpoint_name = self.config.prompt_chat_endpoint
+        if not endpoint_name:
+            raise RuntimeError("Qwen Prompt Editor endpoint is not configured")
+        client = VastAI(api_key=self.config.vast_api_key)
+        endpoint = next(
+            item
+            for item in client.show_endpoints()
+            if str(item.get("endpoint_name") or "") == endpoint_name
+        )
+        endpoint_id = int(endpoint.get("id") or 0)
+        group = next(
+            item
+            for item in client.show_workergroups()
+            if int(item.get("endpoint_id") or 0) == endpoint_id
+        )
+        runtime_group = dict(group)
+        runtime_group["min_load"] = float(min_load)
+        self._update_workergroup(
+            client,
+            runtime_group,
+            dict(group.get("search_query") or {}),
+        )
+        cold_workers = max(1, int(endpoint.get("cold_workers") or 0))
+        max_workers = max(cold_workers, int(endpoint.get("max_workers") or 0), 1)
+        self._update_endpoint_runtime(
+            client,
+            endpoint,
+            min_load=float(min_load),
+            cold_workers=cold_workers,
+            max_workers=max_workers,
+        )
+        for attempt in range(3):
+            observed_endpoint = next(
+                item
+                for item in client.show_endpoints()
+                if int(item.get("id") or 0) == endpoint_id
+            )
+            observed_group = next(
+                item
+                for item in client.show_workergroups()
+                if int(item.get("endpoint_id") or 0) == endpoint_id
+            )
+            if (
+                abs(float(observed_endpoint.get("min_load") or 0) - float(min_load)) < 0.001
+                and abs(float(observed_group.get("min_load") or 0) - float(min_load)) < 0.001
+                and int(observed_endpoint.get("cold_workers") or 0) == cold_workers
+                and int(observed_endpoint.get("max_workers") or 0) == max_workers
+            ):
+                return
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError("Qwen controller did not confirm the requested activation floor")
+
+    async def _set_prompt_chat_activation_floor_async(self, min_load: float) -> None:
+        mutation = asyncio.create_task(
+            asyncio.to_thread(self._set_prompt_chat_activation_floor, min_load)
+        )
+        try:
+            await asyncio.shield(mutation)
+        except asyncio.CancelledError:
+            await mutation
+            raise
+
+    async def _restore_prompt_chat_activation_floor(self) -> None:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                await self._set_prompt_chat_activation_floor_async(0.0)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.0 + attempt)
+        raise last_error or RuntimeError("Qwen activation floor reset failed")
+
+    @asynccontextmanager
+    async def _prompt_chat_activation_guard(self):
+        """Always return Qwen to scale-to-zero after a prompt edit attempt."""
+
+        floor_attempted = False
+        try:
+            floor_attempted = True
+            await self._set_prompt_chat_activation_floor_async(1.0)
+            yield
+        finally:
+            if floor_attempted:
+                cleanup = asyncio.create_task(
+                    self._restore_prompt_chat_activation_floor()
+                )
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+
     def _prepared_activation_machine_ids(self) -> set[int]:
         """Return the exact approved stopped workers eligible for this wake.
 
@@ -1003,6 +1208,44 @@ class Gateway:
         retain the endpoint settings after a worker group/template disappears.
         Check this before reserving image credits or accepting a long request.
         """
+        if self.dedicated_configured():
+            def check_dedicated() -> bool:
+                response = self.http.get(
+                    f"{self.config.dedicated_base_url}/v1/models",
+                    headers=self._dedicated_headers(),
+                    timeout=5,
+                )
+                if int(getattr(response, "status_code", 500)) != 200:
+                    return False
+                document = response.json()
+                models = document.get("data") if isinstance(document, dict) else None
+                return isinstance(models, list) and bool(models)
+
+            try:
+                ready = await asyncio.to_thread(check_dedicated)
+            except Exception:
+                ready = False
+            return {
+                "configured": True,
+                "sdk_available": True,
+                "workergroup_attached": True,
+                "controller_verified": True,
+                "cold_start_eligible": False,
+                "worker_count": 1,
+                "ready_workers": 1 if ready else 0,
+                "controller_ready_workers": 1 if ready else 0,
+                "starting_workers": 0 if ready else 1,
+                "unhealthy_workers": 0,
+                "inactive_workers": 0,
+                "disallowed_workers": 0,
+                "recovery_status": "dedicated-ready" if ready else "dedicated-warming",
+                "queue_depth": self._dedicated_queue_depth,
+                "reason": (
+                    "Dedicated RTX 3090 ready."
+                    if ready
+                    else "Dedicated RTX 3090 is downloading or loading its verified models."
+                ),
+            }
         configured = bool(self.config.vast_endpoint and len(self.config.vast_api_key) >= 24)
         snapshot: dict[str, Any] = {
             "configured": configured,
@@ -1185,6 +1428,45 @@ class Gateway:
             urls.append(urlunsplit(("http", parsed.netloc, parsed.path, parsed.query, parsed.fragment)))
         return urls
 
+    @staticmethod
+    async def _wait_for_routed_endpoint_ready(
+        endpoint: Any, deadline: float
+    ) -> bool:
+        """Wait on the same scoped endpoint after an indeterminate first route.
+
+        This must not consult the main Vision endpoint: Prompt Editor and Vision
+        are separate worker groups and can have opposite readiness states.
+        """
+
+        while time.monotonic() < deadline:
+            try:
+                document = await endpoint.get_workers()
+                workers = (
+                    document.get("workers", document.get("results", []))
+                    if isinstance(document, dict)
+                    else document
+                )
+                for worker in workers if isinstance(workers, list) else []:
+                    status = (
+                        worker.get("status")
+                        if isinstance(worker, dict)
+                        else getattr(worker, "status", "")
+                    )
+                    if str(status or "").casefold() in {
+                        "ready",
+                        "running",
+                        "active",
+                    }:
+                        return True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The route call remains authoritative; worker-status reads are
+                # advisory and can lag briefly during cold reactivation.
+                pass
+            await asyncio.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
+        return False
+
     async def _fast_routed_request(
         self,
         client: Any,
@@ -1195,6 +1477,7 @@ class Gateway:
         cost: int = 100,
         before_send: Any = None,
         worker_timeout_seconds: float | None = None,
+        zero_index_ready_waiter: Any = None,
     ) -> dict[str, Any]:
         """Poll a Vast route frequently enough to catch a newly ready worker.
 
@@ -1251,7 +1534,10 @@ class Gateway:
                     if zero_index_recovery_used:
                         raise TimeoutError("Remote route admission remained indeterminate") from exc
                     zero_index_recovery_used = True
-                    if not await self._wait_for_remote_ready(deadline):
+                    ready_waiter = (
+                        zero_index_ready_waiter or self._wait_for_remote_ready
+                    )
+                    if not await ready_waiter(deadline):
                         raise TimeoutError("Remote route did not become ready") from exc
                     continue
                 await asyncio.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
@@ -1596,7 +1882,6 @@ class Gateway:
         readiness: dict[str, Any],
         *,
         require_ready: bool = False,
-        allow_warming: bool = False,
     ) -> None:
         """Apply the same controller/GPU policy at every admission boundary."""
 
@@ -1643,14 +1928,6 @@ class Gateway:
             int(readiness.get("ready_workers") or 0) > 0
             or readiness.get("cold_start_eligible") is True
         ):
-            if allow_warming:
-                # Vast briefly exposes a policy-clean worker as neither READY
-                # nor inactive while it moves from active compute back to cold
-                # standby.  This is an admissible scheduling transition, not a
-                # missing pool.  Let the image enter the existing bounded route
-                # activation below; that route still has to become READY before
-                # any credits are reserved or inference bytes are sent.
-                return
             raise HTTPException(
                 503,
                 "Remote GPU cold capacity is still being prepared; no credits were reserved. Retry shortly or use Local GPU.",
@@ -2034,7 +2311,15 @@ class Gateway:
     ) -> dict[str, Any]:
         if payload.model != PROMPT_CHAT_MODEL_ID or payload.stream:
             raise HTTPException(422, "Only the pinned Qwen 3.8 Prompt Editor model is available.")
-        if not self.config.prompt_chat_endpoint or len(self.config.vast_api_key) < 24 or CoroutineServerless is None:
+        prompt_chat_api_key = self.config.prompt_chat_api_key
+        if (
+            not self.dedicated_configured()
+            and (
+                not self.config.prompt_chat_endpoint
+                or len(prompt_chat_api_key) < 24
+                or CoroutineServerless is None
+            )
+        ):
             raise HTTPException(503, "Qwen Prompt Editor is not configured.")
         messages = self._prompt_chat_content(payload)
         request_document = {
@@ -2065,27 +2350,154 @@ class Gateway:
             self._grant_welcome_credits(db, str(license_row["discord_user_id"]), now)
             if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
                 raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+        if self.dedicated_configured():
+            reserved = False
+            failure_stage = "preparing-dedicated-qwen"
+            try:
+                async with self._prompt_chat_lock:
+                    failure_stage = "reserving-credit"
+                    with self.connection() as db:
+                        now = int(time.time())
+                        self._release_stale_reservations(db, now)
+                        self._reserve_prompt_chat_credit(
+                            db, license_row, request_id, request_digest, now
+                        )
+                        reserved = True
+                    failure_stage = "dedicated-queue-and-inference"
+                    result = await self._dedicated_completion(
+                        provider_payload,
+                        model=DEDICATED_QWEN_MODEL_ID,
+                        timeout_seconds=self.config.prompt_chat_timeout_seconds,
+                    )
+                    failure_stage = "validating-reply"
+                    reply = self._prompt_chat_reply(result)
+                    failure_stage = "settling-credit"
+                    with self.connection() as db:
+                        now = int(time.time())
+                        charged = db.execute(
+                            "UPDATE prompt_chat_jobs SET credit_state='charged',completed_at=? WHERE request_id=? AND license_id=? AND credit_state='reserved'",
+                            (now, request_id, license_row["license_id"]),
+                        ).rowcount
+                        if charged != 1:
+                            raise RuntimeError(
+                                "Prompt Editor credit settlement could not be confirmed."
+                            )
+                        balance = self._account_balance(
+                            db, str(license_row["discord_user_id"])
+                        )
+                    return {
+                        "reply": reply,
+                        "model": PROMPT_CHAT_MODEL_ID,
+                        "credits_charged": PROMPT_CHAT_CREDIT_COST,
+                        "available_credits": balance,
+                        "privacy": "conversation content is forwarded for inference and is not stored by the KREA2 gateway",
+                    }
+            except asyncio.CancelledError:
+                if reserved:
+                    with self.connection() as db:
+                        self._refund_prompt_chat_credit(
+                            db, license_row, request_id, int(time.time())
+                        )
+                raise
+            except HTTPException:
+                if reserved:
+                    with self.connection() as db:
+                        self._refund_prompt_chat_credit(
+                            db, license_row, request_id, int(time.time())
+                        )
+                raise
+            except Exception as exc:
+                if reserved:
+                    with self.connection() as db:
+                        self._refund_prompt_chat_credit(
+                            db, license_row, request_id, int(time.time())
+                        )
+                safe_error = redact_error_report_text(
+                    f"{type(exc).__name__}: {exc}", 1200
+                ).replace("\n", " ")
+                LOGGER.error(
+                    "Prompt Editor request %s failed during %s: %s",
+                    request_id[:12],
+                    failure_stage,
+                    safe_error,
+                )
+                raise HTTPException(
+                    503,
+                    "Qwen Prompt Editor is warming or temporarily unavailable; no credit was charged.",
+                ) from exc
         reserved = False
+        failure_stage = "preparing"
         try:
             async with self._prompt_chat_lock:
+                failure_stage = "reserving-credit"
                 with self.connection() as db:
                     now = int(time.time())
                     self._release_stale_reservations(db, now)
                     self._reserve_prompt_chat_credit(db, license_row, request_id, request_digest, now)
                     reserved = True
-                async with CoroutineServerless(
-                    api_key=self.config.vast_api_key,
-                    default_request_timeout=self.config.prompt_chat_timeout_seconds,
-                ) as client:
-                    endpoint = await client.get_endpoint(self.config.prompt_chat_endpoint)
-                    result = await endpoint.request(
-                        "/v1/chat/completions",
-                        provider_payload,
-                        cost=payload.max_tokens,
-                        timeout=self.config.prompt_chat_timeout_seconds,
-                        retry=True,
-                    )
+                failure_stage = "activating-qwen"
+                async with self._prompt_chat_activation_guard():
+                    # Vast's management key can resolve endpoint metadata but is
+                    # not authorized to route this worker group. Conversely, the
+                    # Qwen worker-group key can route and authenticate the worker
+                    # but cannot call get_endpoint(). Resolve with the management
+                    # client, then construct a partial endpoint bound exclusively
+                    # to the Qwen client/key. Do not pass managed.data: Endpoint_
+                    # deliberately prefers that object's embedded management key
+                    # and would silently ignore the explicit route key.
+                    async with CoroutineServerless(
+                        api_key=self.config.vast_api_key,
+                        default_request_timeout=self.config.prompt_chat_timeout_seconds,
+                    ) as manager:
+                        failure_stage = "resolving-qwen-endpoint"
+                        managed_endpoint = await manager.get_endpoint(
+                            self.config.prompt_chat_endpoint
+                        )
+                        endpoint_type = type(managed_endpoint)
+                        endpoint_name = str(managed_endpoint.name)
+                        endpoint_id = int(managed_endpoint.id)
+                    async with CoroutineServerless(
+                        api_key=prompt_chat_api_key,
+                        default_request_timeout=self.config.prompt_chat_timeout_seconds,
+                    ) as router:
+                        endpoint = endpoint_type(
+                            client=router,
+                            name=endpoint_name,
+                            id=endpoint_id,
+                            api_key=prompt_chat_api_key,
+                            soft_refresh_threshold=float("inf"),
+                            hard_refresh_threshold=float("inf"),
+                        )
+                        if not hmac.compare_digest(
+                            str(endpoint.api_key), prompt_chat_api_key
+                        ):
+                            raise RuntimeError(
+                                "Qwen routing endpoint did not retain its scoped credential"
+                            )
+
+                        async def wait_for_qwen_ready(
+                            wait_deadline: float,
+                        ) -> bool:
+                            return await self._wait_for_routed_endpoint_ready(
+                                endpoint, wait_deadline
+                            )
+
+                        failure_stage = "routing-and-inference"
+                        result = await self._fast_routed_request(
+                            router,
+                            endpoint,
+                            provider_payload,
+                            time.monotonic() + self.config.prompt_chat_timeout_seconds,
+                            cost=payload.max_tokens,
+                            worker_timeout_seconds=min(
+                                120.0,
+                                self.config.prompt_chat_timeout_seconds,
+                            ),
+                            zero_index_ready_waiter=wait_for_qwen_ready,
+                        )
+                failure_stage = "validating-reply"
                 reply = self._prompt_chat_reply(result)
+                failure_stage = "settling-credit"
                 with self.connection() as db:
                     now = int(time.time())
                     charged = db.execute(
@@ -2116,16 +2528,135 @@ class Gateway:
             if reserved:
                 with self.connection() as db:
                     self._refund_prompt_chat_credit(db, license_row, request_id, int(time.time()))
+            safe_error = redact_error_report_text(
+                f"{type(exc).__name__}: {exc}", 1200
+            ).replace("\n", " ")
+            LOGGER.error(
+                "Prompt Editor request %s failed during %s: %s",
+                request_id[:12],
+                failure_stage,
+                safe_error,
+            )
             raise HTTPException(503, "Qwen Prompt Editor is warming or temporarily unavailable; no credit was charged.") from exc
+
+    def _prune_prompt_chat_runs(self) -> None:
+        cutoff = time.monotonic() - PROMPT_CHAT_RESULT_TTL_SECONDS
+        stale = [
+            request_id
+            for request_id, run in self._prompt_chat_runs.items()
+            if run.get("finished_monotonic") is not None
+            and float(run["finished_monotonic"]) < cutoff
+        ]
+        for request_id in stale:
+            self._prompt_chat_runs.pop(request_id, None)
+
+    async def _run_prompt_chat_job(
+        self,
+        payload: PromptChatRequest,
+        license_row: sqlite3.Row,
+        request_id: str,
+    ) -> None:
+        run = self._prompt_chat_runs.get(request_id)
+        if run is None:
+            return
+        run["status"] = "running"
+        try:
+            run["result"] = await self.prompt_chat(payload, license_row, request_id)
+            run["status"] = "completed"
+        except HTTPException as exc:
+            run["status"] = "error"
+            run["error_status"] = int(exc.status_code)
+            run["error_detail"] = str(exc.detail)
+        except Exception:
+            run["status"] = "error"
+            run["error_status"] = 503
+            run["error_detail"] = "Qwen Prompt Editor is temporarily unavailable; no credit was charged."
+        finally:
+            run["finished_monotonic"] = time.monotonic()
+            # Drop the task reference after completion. The response remains
+            # available in memory for bounded polling/retry recovery.
+            run.pop("task", None)
+
+    async def submit_prompt_chat(
+        self,
+        payload: PromptChatRequest,
+        license_row: sqlite3.Row,
+        request_id: str,
+    ) -> dict[str, Any]:
+        if payload.model != PROMPT_CHAT_MODEL_ID or payload.stream:
+            raise HTTPException(422, "Only the pinned Qwen 3.8 Prompt Editor model is available.")
+        prompt_chat_api_key = self.config.prompt_chat_api_key
+        if (
+            not self.dedicated_configured()
+            and (
+                not self.config.prompt_chat_endpoint
+                or len(prompt_chat_api_key) < 24
+                or CoroutineServerless is None
+            )
+        ):
+            raise HTTPException(503, "Qwen Prompt Editor is not configured.")
+        self._prompt_chat_content(payload)
+        self._prune_prompt_chat_runs()
+        license_id = str(license_row["license_id"])
+        existing = self._prompt_chat_runs.get(request_id)
+        if existing is not None:
+            if not hmac.compare_digest(str(existing["license_id"]), license_id):
+                raise HTTPException(409, "Prompt Editor request ownership is invalid.")
+            return {
+                "request_id": request_id,
+                "status": str(existing["status"]),
+                "credits_charged": 0,
+            }
+        with self.connection() as db:
+            if db.execute("SELECT 1 FROM prompt_chat_jobs WHERE request_id=?", (request_id,)).fetchone():
+                raise HTTPException(409, "Prompt Editor request ID was already used. Send the message again.")
+            self._grant_welcome_credits(db, str(license_row["discord_user_id"]), int(time.time()))
+            if self._account_balance(db, str(license_row["discord_user_id"])) < PROMPT_CHAT_CREDIT_COST:
+                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase 1,200 credits for $20 in Bitcoin.")
+        run: dict[str, Any] = {
+            "license_id": license_id,
+            "status": "queued",
+            "created_monotonic": time.monotonic(),
+            "finished_monotonic": None,
+        }
+        self._prompt_chat_runs[request_id] = run
+        run["task"] = asyncio.create_task(self._run_prompt_chat_job(payload, license_row, request_id))
+        return {"request_id": request_id, "status": "queued", "credits_charged": 0}
+
+    def prompt_chat_job(
+        self,
+        license_row: sqlite3.Row,
+        request_id: str,
+    ) -> dict[str, Any]:
+        self._prune_prompt_chat_runs()
+        run = self._prompt_chat_runs.get(request_id)
+        if run is None:
+            raise HTTPException(404, "Prompt Editor job was not found or has expired; no new credit was charged.")
+        if not hmac.compare_digest(str(run["license_id"]), str(license_row["license_id"])):
+            raise HTTPException(404, "Prompt Editor job was not found or has expired; no new credit was charged.")
+        status = str(run["status"])
+        if status == "error":
+            raise HTTPException(int(run.get("error_status") or 503), str(run.get("error_detail") or "Prompt Editor failed."))
+        if status != "completed":
+            return {"request_id": request_id, "status": status, "credits_charged": 0}
+        result = dict(run.get("result") or {})
+        result.update({"request_id": request_id, "status": "completed"})
+        return result
 
     async def infer(self, payload: ChatRequest, license_row: sqlite3.Row, request_id: str) -> dict[str, Any]:
         if payload.model != MODEL_ID or payload.stream:
             raise HTTPException(422, "Only the pinned KREA2 remote Gemma model is available.")
         if len(json.dumps(payload.model_dump(), separators=(",", ":")).encode("utf-8")) > self.config.max_request_bytes:
             raise HTTPException(413, "The remote Vision request is too large.")
-        if not self.config.vast_endpoint or len(self.config.vast_api_key) < 24:
+        if (
+            not self.dedicated_configured()
+            and (
+                not self.config.vast_endpoint
+                or len(self.config.vast_api_key) < 24
+            )
+        ):
             raise HTTPException(503, "The remote Vision service is not configured.")
-        if CoroutineServerless is None:
+        if not self.dedicated_configured() and CoroutineServerless is None:
             raise HTTPException(503, "The remote Vision SDK is not installed.")
         request_payload = payload.model_dump(exclude_none=True)
         request_digest = hashlib.sha256(
@@ -2145,9 +2676,59 @@ class Gateway:
                 db, license_row, request_id, request_digest
             )
             self._preflight_credit_balance(db, license_row)
+        if self.dedicated_configured():
+            reservation_owned = False
+            try:
+                with self.connection() as db:
+                    now = int(time.time())
+                    self._release_stale_reservations(db, now)
+                    reservation_owned = self._reserve_image_credits(
+                        db, license_row, request_id, request_digest, now
+                    )
+                result = await self._dedicated_completion(
+                    request_payload,
+                    model=MODEL_ID,
+                    timeout_seconds=self.config.request_timeout_seconds,
+                )
+                choices = result.get("choices")
+                first_message = (
+                    choices[0].get("message")
+                    if isinstance(choices, list)
+                    and choices
+                    and isinstance(choices[0], dict)
+                    else None
+                )
+                content = (
+                    first_message.get("content")
+                    or first_message.get("reasoning_content")
+                    if isinstance(first_message, dict)
+                    else None
+                )
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError(
+                        "Dedicated Vision returned an empty completion"
+                    )
+                return result
+            except asyncio.CancelledError:
+                if reservation_owned:
+                    with self.connection() as db:
+                        self._release_image_credits(
+                            db, license_row, request_id, int(time.time())
+                        )
+                raise
+            except Exception as exc:
+                if reservation_owned:
+                    with self.connection() as db:
+                        self._release_image_credits(
+                            db, license_row, request_id, int(time.time())
+                        )
+                raise HTTPException(
+                    503,
+                    "Dedicated Vision is warming or temporarily unavailable; reserved credits were refunded.",
+                ) from exc
         self._instance_readiness_until = 0.0
         readiness = await self.remote_readiness()
-        self._require_remote_capacity(readiness, allow_warming=True)
+        self._require_remote_capacity(readiness)
         # The image's own route is the cold-worker wake signal. Do not issue a
         # redundant text probe first: that doubled cold latency and, worse,
         # waiting for READY before creating a route could never wake an inactive
@@ -2175,7 +2756,7 @@ class Gateway:
                     self._preflight_credit_balance(db, license_row)
                 self._instance_readiness_until = 0.0
                 readiness = await self.remote_readiness()
-                self._require_remote_capacity(readiness, allow_warming=True)
+                self._require_remote_capacity(readiness)
                 candidates: set[int] = set()
                 if (
                     int(readiness.get("ready_workers") or 0) == 0
@@ -2559,6 +3140,7 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             "remote_inactive_workers": int(remote.get("inactive_workers") or 0),
             "remote_disallowed_workers": int(remote.get("disallowed_workers") or 0),
             "remote_recovery_status": str(remote.get("recovery_status") or gateway._recovery_status),
+            "remote_queue_depth": int(remote.get("queue_depth") or 0),
             "remote_activation_phase": gateway._activation_phase,
             "remote_activation_elapsed_seconds": round(activation_elapsed, 3),
             "remote_activation_last_outcome": gateway._activation_last_outcome,
@@ -2570,6 +3152,57 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             "discord_oauth_configured": gateway.oauth_configured(),
             "bitcoin_credits_configured": gateway.btcpay_configured(),
         }
+
+    def authorize_openwebui(authorization: str | None) -> None:
+        supplied = ""
+        if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+        expected = gateway.config.openwebui_bridge_api_key
+        if len(expected) < 24 or not hmac.compare_digest(supplied, expected):
+            raise HTTPException(401, "OpenWebUI bridge authorization failed.")
+
+    @app.get("/v1/openwebui/models")
+    async def openwebui_models(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize_openwebui(authorization)
+        if not gateway.dedicated_configured():
+            raise HTTPException(503, "Dedicated Qwen is not configured.")
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": PROMPT_CHAT_MODEL_ID,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "krea2-dedicated",
+                }
+            ],
+        }
+
+    @app.post("/v1/openwebui/chat/completions")
+    async def openwebui_chat(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authorize_openwebui(authorization)
+        if not gateway.dedicated_configured():
+            raise HTTPException(503, "Dedicated Qwen is not configured.")
+        raw_body = await request.body()
+        if len(raw_body) > 4 * 1024 * 1024:
+            raise HTTPException(413, "OpenWebUI request is too large.")
+        try:
+            payload = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(400, "OpenWebUI request body is invalid JSON.") from exc
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(messages, list) or not messages:
+            raise HTTPException(422, "OpenWebUI messages must be a non-empty array.")
+        return await gateway._dedicated_completion(
+            payload,
+            model=DEDICATED_QWEN_MODEL_ID,
+            timeout_seconds=gateway.config.prompt_chat_timeout_seconds,
+        )
 
     @app.post("/v1/admin/wake-proof")
     async def admin_wake_proof(
@@ -2657,6 +3290,25 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         license_row = gateway.authenticate(authorization, request_id or "")
         return await gateway.prompt_chat(payload, license_row, request_id or "")
 
+    @app.post("/v1/prompt-chat/jobs", status_code=202)
+    async def submit_prompt_chat(
+        payload: PromptChatRequest,
+        authorization: str | None = Header(default=None),
+        request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id"),
+    ) -> dict[str, Any]:
+        license_row = gateway.authenticate(authorization, request_id or "")
+        return await gateway.submit_prompt_chat(payload, license_row, request_id or "")
+
+    @app.get("/v1/prompt-chat/jobs/{request_id}")
+    def prompt_chat_job(
+        request_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        license_row = gateway.authenticate_license(authorization)
+        if not REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(422, "Prompt Editor request ID is invalid.")
+        return gateway.prompt_chat_job(license_row, request_id)
+
     @app.post("/v1/audit/complete")
     def complete(payload: AuditCompletion, authorization: str | None = Header(default=None), request_id: str | None = Header(default=None, alias="X-Krea2-Request-Id")) -> dict[str, bool]:
         license_row = gateway.authenticate(authorization, request_id or "")
@@ -2675,38 +3327,8 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         return gateway.post_error_webhook(payload, license_row)
 
     @app.get("/v1/credits/balance")
-    async def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        status: dict[str, Any] = gateway.credit_status(
-            gateway.authenticate_license(authorization)
-        )
-        readiness = await gateway.remote_readiness()
-        ready = int(readiness.get("ready_workers") or 0)
-        inactive = int(readiness.get("inactive_workers") or 0)
-        starting = int(readiness.get("starting_workers") or 0)
-        if ready:
-            worker_state, wait_min, wait_max = "ready", 10, 45
-        elif inactive and readiness.get("cold_start_eligible"):
-            worker_state, wait_min, wait_max = "cold-standby", 25, max(
-                60, int(gateway.config.activation_deadline_seconds)
-            )
-        elif starting or int(readiness.get("worker_count") or 0):
-            worker_state, wait_min, wait_max = "warming", 30, max(
-                90, int(gateway.config.bootstrap_deadline_seconds)
-            )
-        else:
-            worker_state, wait_min, wait_max = "preparing", 60, max(
-                120, int(gateway.config.bootstrap_deadline_seconds)
-            )
-        status.update({
-            "worker_state": worker_state,
-            "worker_status": clean_text(readiness.get("reason") or "Remote capacity is being checked.", 240),
-            "estimated_wait_seconds_min": wait_min,
-            "estimated_wait_seconds_max": wait_max,
-            "credits_charged_on_success": True,
-            "failed_or_cancelled_refunded": True,
-            "remote_max_workers": 5,
-        })
-        return status
+    def credit_balance(authorization: str | None = Header(default=None)) -> dict[str, int | str | bool]:
+        return gateway.credit_status(gateway.authenticate_license(authorization))
 
     @app.post("/v1/credits/purchase")
     def credit_purchase(payload: CreditPurchaseRequest, authorization: str | None = Header(default=None)) -> dict[str, str | int]:

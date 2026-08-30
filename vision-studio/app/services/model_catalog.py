@@ -242,7 +242,7 @@ LLAMA_CPP_DEFINITIONS = (
 
 VAST_SERVERLESS_DEFINITION = _ModelDefinition(
     "vast::gemma4-26b-a4b-heretic-q3_k_l",
-    "Remote Serverless — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)",
+    "Dedicated RTX 3090 — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)",
     "vast_serverless",
     "gemma4-26b-a4b-heretic-q3-k-l",
     8192,

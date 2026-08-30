@@ -13,7 +13,9 @@ Vision Studio on 127.0.0.1:7870
         |
         +--> local shared GPU FIFO --> llama.cpp/Ollama --> local model
         |
-        +--> optional HTTPS worker client --> Vast Serverless model worker
+        +--> optional HTTPS gateway --> private dedicated RTX 3090 router
+                                      |--> Gemma 4 Vision
+                                      +--> Qwen 3.8 Prompt Editor / OpenWebUI
         |
         +--> optional read-only KREA2 prompt sampler
         |
@@ -46,9 +48,9 @@ Vision Studio is a FastAPI service bound to `127.0.0.1:7870`. It owns image vali
 
 The llama.cpp provider launches a selected GGUF body with its matching multimodal projector. Quantization-specific IDs prevent telemetry or measured VRAM from one quantization being reused for another. The selected multimodal Qwen/Gemma model both observes the image and writes the resulting KREA2 prompt; no automatic second-stage prompter is installed or exposed.
 
-### Vast Serverless worker
+### Dedicated dual-model worker
 
-The optional worker container starts a pinned model and projector on a 24 GB GPU. The local broker authenticates requests to the configured HTTPS endpoint. The worker processes request content in memory and returns model output. Public multi-user service still requires an operator gateway with per-user authentication, quotas, revocation, and abuse controls.
+The online service uses one dedicated 24 GB RTX 3090. llama.cpp router mode exposes two pinned model presets but enforces `--models-max 1`, so Gemma Vision and Qwen Prompt Editor never compete for VRAM. A shared gateway lock serializes both product classes, and llama.cpp unloads the least-recent model before starting the other. The model API binds to worker loopback, requires a bearer key, and reaches the VPS only through a restricted reverse SSH listener on VPS loopback. Public clients can reach only the HTTPS gateway, which owns authentication, credit accounting, quotas, revocation, and abuse controls.
 
 ## Job lifecycle
 
@@ -66,7 +68,7 @@ The optional worker container starts a pinned model and projector on a 24 GB GPU
 
 Discord performs one image per acquired queue ticket. If more Discord work remains, it returns at the tail. A 15-second warm model window is opportunistic only. A waiting non-Discord ticket cancels the window and forces eviction before that ticket proceeds.
 
-Local plugin submissions and local shared-FIFO tickets have no arbitrary admission deadline. They remain visible and cancellable while waiting behind Discord, Forge, or KreaForge work. At FIFO head, Vision owns the shared lock for the full interrogation, performs the queue-authenticated Forge/Ollama handoff, unloads its model before release, and then yields. Remote Serverless capacity has its own bounded provider deadline; only that remote-capacity timeout becomes the terminal state `GPU not available`.
+Local plugin submissions and local shared-FIFO tickets have no arbitrary admission deadline. They remain visible and cancellable while waiting behind Discord, Forge, or KreaForge work. At FIFO head, Vision owns the shared lock for the full interrogation, performs the queue-authenticated Forge/Ollama handoff, unloads its model before release, and then yields. Online Vision, Prompt Editor, and private OpenWebUI calls share a separate bounded FIFO on the dedicated GPU. A model change includes a bounded disk-to-VRAM load; same-model warm requests proceed without that swap.
 
 ## Release maintenance
 

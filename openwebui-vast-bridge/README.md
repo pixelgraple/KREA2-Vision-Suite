@@ -1,18 +1,17 @@
 # Open WebUI Vast bridge
 
 This optional loopback-only bridge lets a local Open WebUI installation use
-the `local-openwebui-coding` Vast Serverless endpoint as an OpenAI-compatible
-model named `heretic-3.8-q4-cloud`.
+the private dedicated Qwen 3.8 gateway as an OpenAI-compatible model named
+`heretic-3.8-q4-cloud`. A retained Serverless adapter remains available for
+older operator configurations, but the production path is the dedicated GPU.
 
 ## Timeout policy
 
-The default request timeout is **600 seconds (10 minutes)**. A streamed request
-emits an invisible SSE keepalive every 10 seconds while Vast activates a cold
-worker, so Open WebUI does not abandon an otherwise healthy activation at the
-old four-minute boundary. An endpoint that still cannot provide a worker within
-the bounded 10-minute window returns an error instead of hanging indefinitely.
-Long responses that are actively streaming still need to finish within this
-request deadline.
+The default request timeout is **600 seconds (10 minutes)**. Dedicated requests
+wait behind the shared Vision/Qwen FIFO and receive a normal OpenAI-compatible
+response after any required model swap. The legacy Serverless streaming path
+still emits an invisible SSE keepalive every 10 seconds during activation.
+All paths remain bounded and return an error instead of hanging indefinitely.
 
 ## 32K context guard
 
@@ -28,10 +27,9 @@ deadline; the model itself still runs with its full 32K context allocation.
 
 ## Windows installation
 
-1. Create a dedicated Vast API key with only the permissions required for this
-   endpoint.
-2. Copy that key to the clipboard.
-3. Run `install-local.ps1` in PowerShell.
+1. Obtain the private gateway base URL and bridge bearer key from the operator.
+2. Run `install-local.ps1` in PowerShell and configure `upstream_base_url` plus
+   `upstream_api_key` in the protected local `config.json`.
 4. In Open WebUI, add an OpenAI-compatible connection with base URL
    `http://127.0.0.1:11436/v1` and use the generated bridge key left on the
    clipboard.

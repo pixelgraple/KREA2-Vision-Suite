@@ -1487,7 +1487,7 @@ const VISION_MODEL_OPTIONS = Object.freeze([
     ["Heretic — Qwen3-VL 32B Q4_K_M (26,624 MiB estimate)", "llamacpp::qwen3-vl-32b-heretic-q4_k_m"]
 ]);
 const ONLINE_VISION_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l";
-const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB remote GPU)";
+const ONLINE_VISION_MODEL_LABEL = "Online API — Dedicated RTX 3090 · Gemma 4 26B-A4B Heretic Q3_K_L (24 GB GPU)";
 const REMOTE_GATEWAY_URL = "https://seedframe.xyz/api/krea2-vision";
 const TRUSTED_CHECKOUT_HOSTS = new Set(["bitcoin.seedframe.xyz", "bitcoin.zoo-chat.org"]);
 const PROJECT_LINKS = Object.freeze({
@@ -4290,7 +4290,7 @@ function isHistoryJobActive(job) {
 
 function visionModelDisplayName(modelId) {
     const normalized = String(modelId || "").trim();
-    if (normalized === ONLINE_VISION_MODEL_ID) return ONLINE_VISION_MODEL_LABEL.replace(/^Online API — /, "Remote Serverless — ").replace(/\s*\(24 GB remote GPU\)$/, "");
+    if (normalized === ONLINE_VISION_MODEL_ID) return ONLINE_VISION_MODEL_LABEL.replace(/^Online API — /, "");
     const spec = HERETIC_MODEL_SPECS.find(model => model.public_id === normalized);
     if (spec?.label) return spec.label;
     const option = VISION_MODEL_OPTIONS.find(([, id]) => id === normalized);
