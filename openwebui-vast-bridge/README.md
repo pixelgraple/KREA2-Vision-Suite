@@ -8,10 +8,16 @@ older operator configurations, but the production path is the dedicated GPU.
 ## Timeout policy
 
 The default request timeout is **600 seconds (10 minutes)**. Dedicated requests
-wait behind the shared Vision/Qwen FIFO and receive a normal OpenAI-compatible
-response after any required model swap. The legacy Serverless streaming path
-still emits an invisible SSE keepalive every 10 seconds during activation.
-All paths remain bounded and return an error instead of hanging indefinitely.
+wait behind the shared Vision/Qwen FIFO and then relay the dedicated llama.cpp
+SSE response through the HTTPS gateway to Open WebUI as it is generated. This
+makes the app display the answer progressively instead of waiting for one final
+block. The FIFO slot and shared GPU lock remain held until the stream completes
+or the client disconnects, preventing a Vision model swap from interrupting an
+active Qwen answer. If a compatible gateway returns ordinary JSON despite
+`stream=true`, the bridge converts that response to a valid final SSE event.
+The legacy Serverless streaming path still emits an invisible SSE keepalive
+every 10 seconds during activation. All paths remain bounded and return an
+error instead of hanging indefinitely.
 
 ## 32K context guard
 

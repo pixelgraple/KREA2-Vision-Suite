@@ -9,6 +9,7 @@ import math
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -426,6 +427,54 @@ async def _request_vast(payload: dict[str, Any], cost: int, *, stream: bool) -> 
             )
 
 
+@asynccontextmanager
+async def _dedicated_gateway_stream(payload: dict[str, Any]) -> AsyncIterator[Any]:
+    """Keep the local FIFO slot until the gateway SSE response is exhausted."""
+
+    async with VAST_REQUEST_GATE:
+        def open_stream() -> Any:
+            return requests.post(
+                f"{UPSTREAM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {UPSTREAM_API_KEY}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+                json={**payload, "stream": True},
+                timeout=(10, REQUEST_TIMEOUT),
+                stream=True,
+            )
+
+        response = await asyncio.to_thread(open_stream)
+        try:
+            if response.status_code >= 400:
+                try:
+                    document = response.json()
+                except Exception:
+                    document = None
+                detail = document.get("detail") if isinstance(document, dict) else None
+                raise RuntimeError(
+                    f"Dedicated Qwen failed (HTTP {response.status_code}): {str(detail or 'unknown error')[:300]}"
+                )
+            yield response
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
+
+
+async def _dedicated_response_chunks(response: Any) -> AsyncIterator[bytes]:
+    # Small chunks keep the local app visibly updating while avoiding the
+    # per-byte overhead of iter_lines(chunk_size=1).
+    iterator = response.iter_content(chunk_size=256)
+    while True:
+        chunk = await asyncio.to_thread(lambda: next(iterator, None))
+        if chunk is None:
+            break
+        if chunk:
+            yield bytes(chunk)
+
+
 def _stream_source(result: Any) -> Any:
     if not isinstance(result, dict):
         raise RuntimeError("Vast returned a non-object stream wrapper.")
@@ -505,8 +554,34 @@ def _continuation_token_budget(payload: dict[str, Any], usage_total: int | None)
 async def _sse_stream(payload: dict[str, Any], cost: int) -> AsyncIterator[bytes]:
     try:
         if UPSTREAM_BASE_URL:
-            result = await _request_vast(payload, cost, stream=False)
-            document = _unwrap_response(result)
+            async with _dedicated_gateway_stream(payload) as response:
+                content_type = str(
+                    getattr(response, "headers", {}).get("Content-Type") or ""
+                ).lower()
+                if "text/event-stream" in content_type:
+                    saw_done = False
+                    tail = b""
+                    async for chunk in _dedicated_response_chunks(response):
+                        combined = tail + chunk
+                        if b"data: [DONE]" in combined:
+                            saw_done = True
+                        tail = combined[-64:]
+                        yield chunk
+                    if not saw_done:
+                        yield b"data: [DONE]\n\n"
+                    return
+
+                try:
+                    document = await asyncio.to_thread(response.json)
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Dedicated Qwen returned neither an SSE stream nor valid JSON"
+                    ) from exc
+                if not isinstance(document, dict):
+                    raise RuntimeError("Dedicated Qwen returned a non-object response")
+
+            # Compatibility fallback for a gateway or reverse proxy that
+            # ignores stream=true but still returns a valid completion object.
             choices = document.get("choices") or []
             message = choices[0].get("message") if choices and isinstance(choices[0], dict) else {}
             content = str((message or {}).get("content") or "")

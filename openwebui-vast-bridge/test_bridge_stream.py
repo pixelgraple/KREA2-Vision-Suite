@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 
@@ -93,26 +94,45 @@ async def main():
     assert terminal_reasons == ["stop"]
     print({"segments": 2, "terminal_reasons": terminal_reasons, "done_markers": 1})
 
-    async def dedicated_response(payload, cost, *, stream):
-        assert payload["messages"][-1]["content"] == "complete file"
-        assert cost == 8192
-        assert stream is False
-        return {
-            "ok": True,
-            "response": {
-                "id": "chatcmpl-dedicated-proof",
-                "choices": [{"message": {"content": "DEDICATED_STREAM_OK"}}],
-            },
-        }
+    class DedicatedStreamResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/event-stream; charset=utf-8"}
+
+        def __init__(self):
+            self.closed = False
+
+        def iter_content(self, *, chunk_size):
+            assert chunk_size == 256
+            yield b'data: {"id":"chatcmpl-dedicated-proof","choices":[{"delta":{"role":"assistant","content":"DEDICATED_"},"finish_reason":null}]}\n\n'
+            yield b'data: {"id":"chatcmpl-dedicated-proof","choices":[{"delta":{"content":"STREAM_OK"},"finish_reason":null}]}\n\n'
+            yield b'data: {"id":"chatcmpl-dedicated-proof","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        def close(self):
+            self.closed = True
+
+    dedicated_response = DedicatedStreamResponse()
+
+    @asynccontextmanager
+    async def dedicated_stream(stream_payload):
+        assert stream_payload["messages"][-1]["content"] == "complete file"
+        assert stream_payload["stream"] is True
+        try:
+            yield dedicated_response
+        finally:
+            dedicated_response.close()
 
     bridge.UPSTREAM_BASE_URL = "https://gateway.invalid/v1/openwebui"
-    bridge._request_vast = dedicated_response
+    bridge._dedicated_gateway_stream = dedicated_stream
     dedicated_chunks = [chunk async for chunk in bridge._sse_stream(payload, 8192)]
     dedicated_text = b"".join(dedicated_chunks).decode("utf-8")
     assert dedicated_text.count("data: [DONE]") == 1
-    assert "DEDICATED_STREAM_OK" in dedicated_text
-    assert dedicated_text.count('"finish_reason": "stop"') == 1
-    print({"dedicated_stream": True, "done_markers": 1})
+    assert "DEDICATED_" in dedicated_text
+    assert "STREAM_OK" in dedicated_text
+    assert dedicated_text.count('"finish_reason":"stop"') == 1
+    assert len(dedicated_chunks) == 4
+    assert dedicated_response.closed is True
+    print({"dedicated_stream": True, "content_deltas": 2, "done_markers": 1})
 
 
 asyncio.run(main())

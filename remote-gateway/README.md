@@ -22,6 +22,13 @@ and unused reserved credits are returned. The gateway stores only its
 request digest and credit state, not the prompt, instructions, conversation, or
 reply text.
 
+The private Open WebUI route supports ordinary JSON completions and genuine
+OpenAI-compatible SSE streaming. Streaming bytes are relayed immediately with
+proxy buffering disabled, while the same shared dedicated-GPU lock remains held
+until completion or disconnect. Vision and Qwen therefore continue to use one
+FIFO-safe model-at-a-time router even during long, progressively displayed
+answers.
+
 The gateway stores a bounded audit record for completed remote jobs only:
 license ID, claimed Discord ID/display name, selected model, request ID, optional
 Discord CDN attachment reference, and the three generated prompt variants. It

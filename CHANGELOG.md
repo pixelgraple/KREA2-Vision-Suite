@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restores real token-by-token streaming for `heretic-3.8-q4-cloud` through dedicated llama.cpp, the HTTPS gateway, and the local Open WebUI bridge instead of returning one completed block.
+- Keeps the shared Vision/Qwen GPU lock and local FIFO slot for the full lifetime of a stream, including disconnect cleanup, so model swaps cannot overlap active generation.
 - Fixes older Open WebUI conversations that contain later system/developer messages by merging those instructions into the single leading system block required by the dedicated Qwen template.
 - Makes dedicated Open WebUI upstream rejections return bounded JSON instead of a misleading plain-text 500 / invalid-JSON error.
 

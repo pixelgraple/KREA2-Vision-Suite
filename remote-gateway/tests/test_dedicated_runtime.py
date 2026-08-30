@@ -14,12 +14,29 @@ from app import Config, Gateway, create_app
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, body: dict):
+    def __init__(
+        self,
+        status_code: int,
+        body: dict,
+        *,
+        headers: dict[str, str] | None = None,
+        chunks: list[bytes] | None = None,
+    ):
         self.status_code = status_code
         self.body = body
+        self.headers = headers or {"Content-Type": "application/json"}
+        self.chunks = chunks or []
+        self.closed = False
 
     def json(self) -> dict:
         return self.body
+
+    def iter_content(self, *, chunk_size: int):
+        assert chunk_size == 256
+        yield from self.chunks
+
+    def close(self):
+        self.closed = True
 
 
 class RecordingDedicatedHttp:
@@ -45,12 +62,25 @@ class RecordingDedicatedHttp:
     def post(self, url: str, **kwargs):
         if self.failure_response is not None:
             return self.failure_response
+        payload = kwargs["json"]
+        if kwargs.get("stream"):
+            self.models.append(payload["model"])
+            return FakeResponse(
+                200,
+                {},
+                headers={"Content-Type": "text/event-stream; charset=utf-8"},
+                chunks=[
+                    b'data: {"id":"chatcmpl-stream","choices":[{"delta":{"content":"TOKEN_ONE "},"finish_reason":null}]}\n\n',
+                    b'data: {"id":"chatcmpl-stream","choices":[{"delta":{"content":"TOKEN_TWO"},"finish_reason":null}]}\n\n',
+                    b'data: {"id":"chatcmpl-stream","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+                    b"data: [DONE]\n\n",
+                ],
+            )
         with self.guard:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
         try:
             time.sleep(0.04)
-            payload = kwargs["json"]
             self.models.append(payload["model"])
             return FakeResponse(
                 200,
@@ -158,6 +188,45 @@ class DedicatedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["content-type"], "application/json")
         self.assertIn("Dedicated Qwen rejected", response.json()["detail"])
         self.assertNotIn("System message", response.text)
+
+    async def test_openwebui_stream_retains_lock_until_sse_is_exhausted(self):
+        stream = await self.gateway._dedicated_completion_stream(
+            {
+                "messages": [{"role": "user", "content": "Stream two tokens."}],
+                "max_tokens": 64,
+            },
+            model="qwen38-27b-heretic-q4-k-m",
+            timeout_seconds=30,
+        )
+        self.assertTrue(self.gateway._dedicated_inference_lock.locked())
+        self.assertEqual(self.gateway._dedicated_queue_depth, 1)
+
+        chunks = [chunk async for chunk in stream]
+        text = b"".join(chunks).decode("utf-8")
+        self.assertIn("TOKEN_ONE", text)
+        self.assertIn("TOKEN_TWO", text)
+        self.assertEqual(text.count("data: [DONE]"), 1)
+        self.assertFalse(self.gateway._dedicated_inference_lock.locked())
+        self.assertEqual(self.gateway._dedicated_queue_depth, 0)
+
+        client = TestClient(create_app(self.gateway.config, http=self.http))
+        with client.stream(
+            "POST",
+            "/v1/openwebui/chat/completions",
+            headers={"Authorization": f"Bearer {('d' * 64)}"},
+            json={
+                "model": "heretic-3.8-q4-cloud",
+                "messages": [{"role": "user", "content": "Stream through the route."}],
+                "max_tokens": 64,
+                "stream": True,
+            },
+        ) as response:
+            routed = "".join(response.iter_text())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/event-stream", response.headers["content-type"])
+        self.assertEqual(routed.count("data: [DONE]"), 1)
+        self.assertIn("TOKEN_ONE", routed)
+        self.assertIn("TOKEN_TWO", routed)
 
 
 if __name__ == "__main__":

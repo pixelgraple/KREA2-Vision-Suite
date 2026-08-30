@@ -19,12 +19,12 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 try:
     from vastai import CoroutineServerless, VastAI
@@ -409,6 +409,101 @@ class Gateway:
                 return await asyncio.to_thread(request_completion)
         finally:
             self._dedicated_queue_depth = max(0, self._dedicated_queue_depth - 1)
+
+    async def _dedicated_completion_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        model: str,
+        timeout_seconds: float,
+    ) -> AsyncIterator[bytes]:
+        """Open one dedicated SSE response while retaining the shared GPU lock."""
+
+        if not self.dedicated_configured():
+            raise RuntimeError("Dedicated GPU is not configured")
+        request_payload = dict(payload)
+        request_payload["model"] = model
+        request_payload["stream"] = True
+        self._dedicated_queue_depth += 1
+        acquired = False
+        response: Any = None
+        try:
+            await self._dedicated_inference_lock.acquire()
+            acquired = True
+
+            def open_stream() -> Any:
+                return self.http.post(
+                    f"{self.config.dedicated_base_url}/v1/chat/completions",
+                    headers={**self._dedicated_headers(), "Accept": "text/event-stream"},
+                    json=request_payload,
+                    timeout=(10, timeout_seconds),
+                    stream=True,
+                )
+
+            response = await asyncio.to_thread(open_stream)
+            status = int(getattr(response, "status_code", 500))
+            if status >= 400:
+                try:
+                    document = response.json()
+                except Exception:
+                    document = None
+                detail = document.get("error") if isinstance(document, dict) else None
+                raise RuntimeError(
+                    f"Dedicated GPU stream failed (HTTP {status}): {str(detail or 'unknown error')[:300]}"
+                )
+            content_type = str(getattr(response, "headers", {}).get("Content-Type") or "")
+            if "text/event-stream" not in content_type.lower():
+                try:
+                    document = response.json()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Dedicated GPU stream returned an invalid content type: {content_type or 'missing'}"
+                    ) from exc
+                if not isinstance(document, dict) or not isinstance(document.get("choices"), list):
+                    raise RuntimeError("Dedicated GPU stream fallback returned no completion choices")
+                encoded = json.dumps(document, ensure_ascii=False).encode("utf-8")
+
+                async def fallback() -> AsyncIterator[bytes]:
+                    try:
+                        yield b"data: " + encoded + b"\n\n"
+                        yield b"data: [DONE]\n\n"
+                    finally:
+                        await asyncio.to_thread(response.close)
+                        self._dedicated_inference_lock.release()
+                        self._dedicated_queue_depth = max(0, self._dedicated_queue_depth - 1)
+
+                acquired = False
+                return fallback()
+
+            # Relay frequent token-sized bursts instead of buffering most of a
+            # short answer before the browser sees its first visible update.
+            iterator = response.iter_content(chunk_size=256)
+
+            async def chunks() -> AsyncIterator[bytes]:
+                try:
+                    while True:
+                        chunk = await asyncio.to_thread(lambda: next(iterator, None))
+                        if chunk is None:
+                            break
+                        if chunk:
+                            yield bytes(chunk)
+                finally:
+                    await asyncio.to_thread(response.close)
+                    self._dedicated_inference_lock.release()
+                    self._dedicated_queue_depth = max(0, self._dedicated_queue_depth - 1)
+
+            acquired = False
+            return chunks()
+        except BaseException:
+            if response is not None:
+                try:
+                    await asyncio.to_thread(response.close)
+                except Exception:
+                    pass
+            if acquired:
+                self._dedicated_inference_lock.release()
+            self._dedicated_queue_depth = max(0, self._dedicated_queue_depth - 1)
+            raise
 
     @contextmanager
     def connection(self):
@@ -3549,11 +3644,11 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
             ],
         }
 
-    @app.post("/v1/openwebui/chat/completions")
+    @app.post("/v1/openwebui/chat/completions", response_model=None)
     async def openwebui_chat(
         request: Request,
         authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | StreamingResponse:
         authorize_openwebui(authorization)
         if not gateway.dedicated_configured():
             raise HTTPException(503, "Dedicated Qwen is not configured.")
@@ -3568,6 +3663,20 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         if not isinstance(messages, list) or not messages:
             raise HTTPException(422, "OpenWebUI messages must be a non-empty array.")
         try:
+            if bool(payload.get("stream")):
+                stream = await gateway._dedicated_completion_stream(
+                    payload,
+                    model=DEDICATED_QWEN_MODEL_ID,
+                    timeout_seconds=gateway.config.prompt_chat_timeout_seconds,
+                )
+                return StreamingResponse(
+                    stream,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache, no-transform",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             return await gateway._dedicated_completion(
                 payload,
                 model=DEDICATED_QWEN_MODEL_ID,
