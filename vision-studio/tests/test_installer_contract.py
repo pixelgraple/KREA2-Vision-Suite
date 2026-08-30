@@ -24,6 +24,12 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("betterdiscord.cli_*", self.source)
         self.assertIn("Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue", self.source)
 
+    def test_model_downloads_and_runtime_share_suite_models_folder(self):
+        self.assertIn("$modelRoot=Join-Path $installRoot 'models'", self.source)
+        self.assertIn("'LLAMA_CPP_MODEL_ROOT' $modelRoot", self.source)
+        self.assertIn("'-CacheRoot',(Join-Path $modelRoot '.downloads')", self.source)
+        self.assertIn("'-ModelRoot',$modelRoot", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

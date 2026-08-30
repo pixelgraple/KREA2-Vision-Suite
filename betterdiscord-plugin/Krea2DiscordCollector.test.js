@@ -259,6 +259,7 @@ if (presentSuitePackagingPaths.length === suitePackagingPaths.length) {
     const rootInstallerSource = fs.readFileSync(rootInstallerPath, "utf8");
     assert.equal(artifactManifest.model_installation.mode, "recommended_auto_optional");
     assert.equal(artifactManifest.model_installation.default_download, "8B");
+    assert.equal(artifactManifest.model_installation.default_root, "%LOCALAPPDATA%\\Krea2VisionSuite\\models");
     assert.equal(artifactManifest.models.length, 10);
     assert.deepEqual(artifactManifest.models.map(model => Number.parseInt(model.parameter_size, 10)), [2, 4, 8, 9, 12, 12, 26, 30, 31, 32]);
     for (const model of artifactManifest.models) {
@@ -274,6 +275,7 @@ if (presentSuitePackagingPaths.length === suitePackagingPaths.length) {
     assert.doesNotMatch(suiteInstallerSource, /babegen-prompter:9b-q5/);
     assert.doesNotMatch(suiteInstallerSource, /Ensure-PromptTextModel/);
     assert.match(suiteInstallerSource, /KREA2_DISCORD_VISION_TOKEN/);
+    assert.match(suiteInstallerSource, /LLAMA_CPP_MODEL_ROOT' \$modelRoot/);
     assert.match(suiteInstallerSource, /KREA2 Vision Suite\.lnk/);
     assert.match(suiteInstallerSource, /Stop-OwnedSuiteProcesses/);
     assert.match(suiteLauncherSource, /127\.0\.0\.1:11434\/api\/version/);

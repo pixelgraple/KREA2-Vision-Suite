@@ -28,7 +28,7 @@ Every runtime/model download is pinned to an immutable source revision and accep
 
 ## What setup configures automatically
 
-Setup installs the suite under `%LOCALAPPDATA%\Krea2VisionSuite`, while Vision GGUF pairs live under `%USERPROFILE%\Documents\KreaHereticModels`. It:
+Setup installs the suite under `%LOCALAPPDATA%\Krea2VisionSuite`, including one durable `%LOCALAPPDATA%\Krea2VisionSuite\models` folder used by both BetterDiscord's model installer and the local Vision runtime. It:
 
 - generates a private 32+ byte Vision token and writes the same value into Vision Studio and BetterDiscord's local configuration;
 - generates the shared machine-local Forge handoff credential and configures the Vision backend;

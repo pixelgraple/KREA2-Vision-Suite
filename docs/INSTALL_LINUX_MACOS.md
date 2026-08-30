@@ -50,6 +50,8 @@ Default locations:
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/Krea2VisionSuite` | `${XDG_CONFIG_HOME:-~/.config}/BetterDiscord/plugins` |
 | macOS | `~/Library/Application Support/Krea2VisionSuite` | `~/Library/Application Support/BetterDiscord/plugins` |
 
+Each installer creates a `models` folder inside the application-data location. BetterDiscord's model-install buttons and the local Vision runtime use that same folder for every downloaded body/projector pair.
+
 Override the application location with `KREA2_INSTALL_ROOT=/absolute/path` and Python with `PYTHON=/absolute/path/to/python3`.
 
 After installation, restart Discord completely, enable **Krea2DiscordCollector**, open its settings, and allow the Discord server where magnifier actions should appear.

@@ -31,7 +31,7 @@
   "model_installation": {
     "mode": "recommended_auto_optional",
     "default_download": "8B",
-    "default_root": "%USERPROFILE%\\Documents\\KreaHereticModels",
+    "default_root": "%LOCALAPPDATA%\\Krea2VisionSuite\\models",
     "required_model_quant": "2B:F16;4B:Q8_0;8B:Q8_0;9B-GLM:Q5_K_M;12B-Opus:Q8_0;12B-Heretic:Q8_0;26B-A4B:Q3_K_L;30B-A3B:Q2_K;31B:Q4_K_M;32B:Q4_K_M",
     "mmproj_policy": "per_model_pinned",
     "mmproj_preference": [

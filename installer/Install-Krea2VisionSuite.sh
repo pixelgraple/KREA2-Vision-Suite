@@ -35,7 +35,8 @@ if [[ ! -f "$plugin_source" || ! -f "$source_root/vision-studio/requirements.txt
     exit 1
 fi
 
-mkdir -p "$vision_root" "$plugin_root" "$install_root/logs"
+model_root="$install_root/models"
+mkdir -p "$vision_root" "$plugin_root" "$install_root/logs" "$model_root"
 cp -R "$source_root/vision-studio/." "$vision_root/"
 cp "$plugin_source" "$plugin_target"
 cp "$script_dir/Start-Krea2VisionSuite.sh" "$install_root/Start-Krea2VisionSuite.sh"
@@ -47,7 +48,7 @@ fi
 "$vision_root/.venv/bin/python" -m pip install --disable-pip-version-check -r "$vision_root/requirements.txt"
 
 vision_token="$(
-"$vision_root/.venv/bin/python" - "$vision_root/.env" <<'PY'
+"$vision_root/.venv/bin/python" - "$vision_root/.env" "$model_root" <<'PY'
 from __future__ import annotations
 import secrets
 import sys
@@ -70,6 +71,7 @@ updates = {
     "STUDIO_HOST": "127.0.0.1",
     "STUDIO_PORT": "7870",
     "STUDIO_USE_SHARED_GENERATION_QUEUE": "false",
+    "LLAMA_CPP_MODEL_ROOT": sys.argv[2],
 }
 kept = [line for line in lines if not any(line.startswith(f"{key}=") for key in updates)]
 kept.extend(f"{key}={value}" for key, value in updates.items())
@@ -134,6 +136,7 @@ KREA2 Vision Suite is installed for $platform.
 Backend: http://127.0.0.1:7870/health
 Plugin:  $plugin_target
 Mode:    Online API (no local GPU required)
+Models:  $model_root
 
 Restart Discord completely, enable Krea2DiscordCollector in BetterDiscord,
 then allow the Discord server you want to use from the plugin settings.

@@ -36,7 +36,7 @@ length and SHA-256 verification. Existing verified files are reused. Pass
 .\install_heretic_llamacpp.ps1 -InstallRoot 'D:\Krea2Vision\llama.cpp\b10590' -CacheRoot 'D:\Krea2Vision\downloads'
 
 .EXAMPLE
-.\install_heretic_llamacpp.ps1 -AdoptVerifiedRuntime -InstallRoot "$env:LOCALAPPDATA\Krea2Vision\llama.cpp\b10590" -CacheRoot "$env:USERPROFILE\Documents\KreaHereticModels\.downloads"
+.\install_heretic_llamacpp.ps1 -AdoptVerifiedRuntime -InstallRoot "$env:LOCALAPPDATA\Krea2Vision\llama.cpp\b10590" -CacheRoot "$env:LOCALAPPDATA\Krea2VisionSuite\models\.downloads"
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -50,11 +50,11 @@ param(
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string] $CacheRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KreaHereticModels\.downloads'),
+    [string] $CacheRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Krea2VisionSuite\models\.downloads'),
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string] $ModelRoot = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KreaHereticModels'),
+    [string] $ModelRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Krea2VisionSuite\models'),
 
     [Parameter()]
     [string] $ModelReadmeTemplatePath,
@@ -447,8 +447,8 @@ function Read-ArtifactManifest {
         [string]$manifest.model_installation.mmproj_policy -ne 'per_model_pinned') {
         throw 'The model installation policy must remain the reviewed ten-model exact body/projector set.'
     }
-    if ([string]$manifest.model_installation.default_root -ne '%USERPROFILE%\Documents\KreaHereticModels') {
-        throw 'The manifest model root is not the reviewed visible folder.'
+    if ([string]$manifest.model_installation.default_root -ne '%LOCALAPPDATA%\Krea2VisionSuite\models') {
+        throw 'The manifest model root is not the reviewed suite models folder.'
     }
     $projectorPreference = @($manifest.model_installation.mmproj_preference)
     if ($projectorPreference.Count -ne 2 -or

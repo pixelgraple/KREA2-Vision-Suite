@@ -42,12 +42,12 @@ Deploy `remote-gateway/` to the operator's HTTPS host, set its scoped Vast API k
 
 ### Manual Heretic llama.cpp folders
 
-The Studio never downloads GGUF files. Put manually obtained files under these exact folders:
+BetterDiscord's model-install buttons download pinned GGUF body/projector pairs into the suite's models folder. Manually obtained files may also be placed under these exact folders:
 
 ```text
-%USERPROFILE%\Documents\KreaHereticModels\2B
-%USERPROFILE%\Documents\KreaHereticModels\4B
-%USERPROFILE%\Documents\KreaHereticModels\8B
+%LOCALAPPDATA%\Krea2VisionSuite\models\2B
+%LOCALAPPDATA%\Krea2VisionSuite\models\4B
+%LOCALAPPDATA%\Krea2VisionSuite\models\8B
 ```
 
 The exact installed pairs are 2B F16 + Q8_0 projector, 4B Q8_0 + Q8_0 projector, and 8B Q8_0 + Q8_0 projector. Do not mix sizes or rename files. A llama.cpp model appears in the selector only when `llama-server.exe`, its quant-specific body, and its matching projector agree with the checked-in byte-size and SHA-256 manifest. Artifact paths, hashes, and the ephemeral loopback API key are never sent to the browser or stored in prompt history.
