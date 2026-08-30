@@ -207,6 +207,7 @@ class PromptChatMessage(BaseModel):
 
 class PromptChatRequest(BaseModel):
     model: str = PROMPT_CHAT_MODEL_ID
+    experience: str = Field(default="prompt_editor", min_length=6, max_length=24)
     messages: list[PromptChatMessage] = Field(min_length=1, max_length=16)
     temperature: float = Field(default=0.35, ge=0, le=1)
     max_tokens: int = Field(default=1536, ge=64, le=4096)
@@ -2389,22 +2390,31 @@ class Gateway:
         return released
 
     @staticmethod
+    def _prompt_chat_experience(payload: PromptChatRequest) -> str:
+        experience = payload.experience.strip().casefold()
+        if experience not in {"prompt_editor", "general_chat"}:
+            raise HTTPException(422, "The requested Qwen experience is not available.")
+        return experience
+
+    @staticmethod
     def _prompt_chat_content(payload: PromptChatRequest) -> list[dict[str, str]]:
+        experience = Gateway._prompt_chat_experience(payload)
+        label = "Qwen Chat" if experience == "general_chat" else "Prompt Editor"
         messages: list[dict[str, str]] = []
         total_chars = 0
         for item in payload.messages:
             role = item.role.strip().casefold()
             content = item.content.strip()
             if role not in {"user", "assistant"}:
-                raise HTTPException(422, "Prompt Editor accepts only user and assistant turns.")
+                raise HTTPException(422, f"{label} accepts only user and assistant turns.")
             if not content:
-                raise HTTPException(422, "Prompt Editor messages cannot be empty.")
+                raise HTTPException(422, f"{label} messages cannot be empty.")
             total_chars += len(content)
             messages.append({"role": role, "content": content})
         if messages[-1]["role"] != "user":
-            raise HTTPException(422, "Prompt Editor conversations must end with a user request.")
+            raise HTTPException(422, f"{label} conversations must end with a user request.")
         if total_chars > 48000:
-            raise HTTPException(413, "The Prompt Editor conversation is too large. Start a new chat.")
+            raise HTTPException(413, f"The {label} conversation is too large. Start a new chat.")
         return messages
 
     @staticmethod
@@ -2590,7 +2600,9 @@ class Gateway:
         request_id: str,
     ) -> dict[str, Any]:
         if payload.model != PROMPT_CHAT_MODEL_ID or payload.stream:
-            raise HTTPException(422, "Only the pinned Qwen 3.8 Prompt Editor model is available.")
+            raise HTTPException(422, "Only the pinned Qwen 3.8 Cloud model is available.")
+        experience = self._prompt_chat_experience(payload)
+        experience_label = "Qwen Chat" if experience == "general_chat" else "Qwen Prompt Editor"
         prompt_chat_api_key = self.config.prompt_chat_api_key
         if (
             not self.dedicated_configured()
@@ -2604,6 +2616,7 @@ class Gateway:
         messages = self._prompt_chat_content(payload)
         request_document = {
             "model": PROMPT_CHAT_MODEL_ID,
+            "experience": experience,
             "messages": messages,
             "temperature": payload.temperature,
             "max_tokens": payload.max_tokens,
@@ -2612,13 +2625,23 @@ class Gateway:
         request_digest = hashlib.sha256(
             json.dumps(request_document, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        system_prompt = (
-            "You are KREA2 Prompt Editor, an expert at creating and revising image-generation prompts. "
-            "When the user supplies a short concept instead of an existing prompt, expand it into one complete, highly detailed KREA2-compatible prompt while staying faithful to the requested subject, action, mood, and scene. "
-            "Preserve every visual fact the user did not ask to change, including subject, pose, anatomy, outfit, camera, lighting, setting, color, texture, and photographic character. "
-            "Make exactly the requested edits. When the user asks for a rewrite, return only the complete revised prompt with no preface, explanation, markdown fence, negative prompt, or commentary. "
-            "When the user asks a direct question, answer it briefly. You cannot see the source image; work only from the supplied prompt and conversation."
-        )
+        if experience == "general_chat":
+            system_prompt = (
+                "You are Qwen 3.8 Cloud Chat inside the KREA2 Vision Suite Discord plugin. "
+                "Act as a capable general-purpose conversational assistant for questions, explanations, writing, brainstorming, coding, debugging, planning, and image-prompt work. "
+                "Answer clearly and directly while preserving the ongoing conversation. "
+                "When the user asks you to create or return a text or code file, provide the complete file in a fenced code block and add filename=<safe-filename> to that fence header, for example ```python filename=app.py. "
+                "You can provide downloadable text and code contents but must not claim that a binary file was attached. "
+                "You cannot see Discord, the user's computer, or source images unless their relevant contents are included in the conversation."
+            )
+        else:
+            system_prompt = (
+                "You are KREA2 Prompt Editor, an expert at creating and revising image-generation prompts. "
+                "When the user supplies a short concept instead of an existing prompt, expand it into one complete, highly detailed KREA2-compatible prompt while staying faithful to the requested subject, action, mood, and scene. "
+                "Preserve every visual fact the user did not ask to change, including subject, pose, anatomy, outfit, camera, lighting, setting, color, texture, and photographic character. "
+                "Make exactly the requested edits. When the user asks for a rewrite, return only the complete revised prompt with no preface, explanation, markdown fence, negative prompt, or commentary. "
+                "When the user asks a direct question, answer it briefly. You cannot see the source image; work only from the supplied prompt and conversation."
+            )
         provider_payload = {
             **request_document,
             "messages": [{"role": "system", "content": system_prompt}, *messages],
@@ -2633,7 +2656,7 @@ class Gateway:
                 db, str(license_row["discord_user_id"])
             )
             if available_credits < PROMPT_CHAT_CREDIT_COST:
-                raise HTTPException(402, "Prompt Editor credits are exhausted. Purchase a Bitcoin credit pack.")
+                raise HTTPException(402, f"{experience_label} credits are exhausted. Purchase a Bitcoin credit pack.")
             requested_credit_ceiling = max(
                 PROMPT_CHAT_CREDIT_COST,
                 (payload.max_tokens + PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT - 1)
@@ -2686,6 +2709,7 @@ class Gateway:
                     return {
                         "reply": reply,
                         "model": PROMPT_CHAT_MODEL_ID,
+                        "experience": experience,
                         "credits_charged": charged_credits,
                         "output_tokens": output_tokens,
                         "output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
@@ -2723,7 +2747,7 @@ class Gateway:
                 )
                 raise HTTPException(
                     503,
-                    "Qwen Prompt Editor is warming or temporarily unavailable; no credit was charged.",
+                    f"{experience_label} is warming or temporarily unavailable; no credit was charged.",
                 ) from exc
         reserved = False
         failure_stage = "preparing"
@@ -2820,6 +2844,7 @@ class Gateway:
                 return {
                     "reply": reply,
                     "model": PROMPT_CHAT_MODEL_ID,
+                    "experience": experience,
                     "credits_charged": charged_credits,
                     "output_tokens": output_tokens,
                     "output_tokens_per_credit": PROMPT_CHAT_OUTPUT_TOKENS_PER_CREDIT,
@@ -2849,7 +2874,7 @@ class Gateway:
                 failure_stage,
                 safe_error,
             )
-            raise HTTPException(503, "Qwen Prompt Editor is warming or temporarily unavailable; no credit was charged.") from exc
+            raise HTTPException(503, f"{experience_label} is warming or temporarily unavailable; no credit was charged.") from exc
 
     def _prune_prompt_chat_runs(self) -> None:
         cutoff = time.monotonic() - PROMPT_CHAT_RESULT_TTL_SECONDS

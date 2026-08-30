@@ -31,6 +31,7 @@ Online inference means the selected image and bounded request metadata must leav
 - [What it does](#what-it-does)
 - [Platform support](#platform-support)
 - [Download and install](#download-and-install)
+- [Qwen 3.8 Discord Chat](#qwen-38-discord-chat)
 - [Qwen 3.8 Prompt Changer](#qwen-38-prompt-changer)
 - [Prompt quality, audit, and diagnostics](#prompt-quality-audit-and-diagnostics)
 - [How the Vision pipeline works](#how-the-vision-pipeline-works)
@@ -51,6 +52,7 @@ Online inference means the selected image and bounded request metadata must leav
 - Queues multiple jobs and reports queued, running, completed, and failed work.
 - Shows the exact requested and completed model for every result.
 - Includes a conversational **Qwen 3.8 Prompt Editor** that can create a complete KREA2 prompt from a few sentences or revise any part of an existing prompt through natural-language instructions.
+- Pins a separate **Q3.8** launcher above Discord's server icons for general Qwen chat, durable 32K conversations, and downloadable replies or generated text/code files.
 - Produces one V2 prompt by default or three optional reconstruction variations.
 - Audits subject count, pose, visible anatomy, clothing, expression, camera placement, lighting, and scene layout before returning prompts.
 - Supports local llama.cpp multimodal models and an operator-configured dedicated Vast GPU with one-model-at-a-time routing.
@@ -64,7 +66,7 @@ The supported product is intentionally focused on Discord image interrogation. T
 
 | Feature | Windows 10/11 | Linux | macOS |
 |---|---:|---:|---:|
-| BetterDiscord magnifier, metadata/YAML prompts, Prompt History, Qwen Prompt Editor, and region description | Supported | Supported | Supported |
+| BetterDiscord magnifier, metadata/YAML prompts, Prompt History, Qwen Chat, Qwen Prompt Editor, and region description | Supported | Supported | Supported |
 | Online API Vision | Supported | Supported | Supported |
 | Automated installation | Full PowerShell installer | Portable shell installer | Portable shell installer |
 | Local Ollama/llama.cpp Vision | Supported and verified | Supported with manual configuration | Experimental/manual |
@@ -77,7 +79,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.18.0-win64.zip](releases/Krea2VisionSuite-v0.18.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.19.0-win64.zip](releases/Krea2VisionSuite-v0.19.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -111,6 +113,16 @@ chmod +x installer/Install-Krea2VisionSuite.sh installer/Start-Krea2VisionSuite.
 The portable installer creates an isolated Python environment, installs the generated plugin in the current user's BetterDiscord plugin directory, creates matching private loopback credentials, selects V2 Online API by default, starts port `7870`, and verifies its health. It does not require a local GPU or model download. Restart Discord completely after installation.
 
 See [Linux and macOS installation](docs/INSTALL_LINUX_MACOS.md) for default paths, local-inference options, limitations, startup, and manual updates.
+
+## Qwen 3.8 Discord Chat
+
+The plugin pins a **Q3.8** icon above Discord's server icons. It stays outside the scrolling server list, so it remains available while changing servers, channels, threads, or direct messages. Selecting it opens a private general-purpose Qwen 3.8 conversation without altering the Discord channel underneath.
+
+Qwen Chat supports questions, explanations, writing, brainstorming, coding, debugging, planning, and prompt work. Complete conversations and unfinished drafts are stored only in BetterDiscord's local plugin data, survive modal/Discord/plugin restarts, and can be resumed through paginated history. A permanent 32K-token meter shows the inference window. Older inference context is summarized locally when required while the complete raw transcript remains in local history.
+
+Each assistant message can be copied or downloaded as Markdown. When Qwen returns fenced text or code, the plugin exposes each block as a separately downloadable file with a safe filename. The model does not create binary attachments and cannot inspect Discord or the computer unless the user includes the relevant text in the conversation.
+
+Qwen Chat uses the same pinned `heretic-3.8-q4-cloud` queue and billing contract as Prompt Editor: **1 Online API credit per started 350 output tokens**, exact unused-reservation refunds, and full refunds for failed, invalid, cancelled, or timed-out requests. See [Qwen 3.8 Discord Chat](docs/QWEN_38_DISCORD_CHAT.md) for usage, files, persistence, privacy, limits, and troubleshooting.
 
 ## Qwen 3.8 Prompt Changer
 

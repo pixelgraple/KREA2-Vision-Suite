@@ -175,6 +175,35 @@ class PromptChatGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job["credit_state"], "refunded")
             self.assertEqual(gateway._account_balance(db, "12345678901234567"), 60)
 
+    async def test_general_qwen_chat_uses_separate_protected_system_mode(self):
+        gateway, license_row = make_gateway(self.root)
+        FakeServerless.endpoint = FakeEndpoint()
+        payload = module.PromptChatRequest(
+            experience="general_chat",
+            messages=[{"role": "user", "content": "Create a small Python file named app.py."}],
+        )
+        request_id = hashlib.sha256(b"general-chat-success").hexdigest()
+        with patch.object(module, "CoroutineServerless", FakeServerless):
+            result = await gateway.prompt_chat(payload, license_row, request_id)
+
+        self.assertEqual(result["experience"], "general_chat")
+        self.assertEqual(result["credits_charged"], 1)
+        _, sent, _ = FakeServerless.endpoint.calls[0]
+        system = sent["messages"][0]["content"]
+        self.assertIn("general-purpose conversational assistant", system)
+        self.assertIn("filename=<safe-filename>", system)
+        self.assertNotIn("creating and revising image-generation prompts", system)
+        self.assertEqual(sent["messages"][-1]["content"], "Create a small Python file named app.py.")
+
+    def test_general_qwen_chat_rejects_unknown_experience(self):
+        payload = module.PromptChatRequest(
+            experience="unknown_chat",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+        with self.assertRaises(HTTPException) as invalid:
+            module.Gateway._prompt_chat_content(payload)
+        self.assertEqual(invalid.exception.status_code, 422)
+
     async def test_prompt_chat_charges_one_credit_per_started_350_output_tokens(self):
         gateway, license_row = make_gateway(self.root)
         FakeServerless.endpoint = FakeEndpoint(output_tokens=351)

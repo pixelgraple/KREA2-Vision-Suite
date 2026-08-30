@@ -16,17 +16,17 @@ const {
     normalizePromptEditorSession
 } = Plugin.helpers;
 
-assert.match(source, /@version 0\.18\.0/);
+assert.match(source, /@version 0\.19\.0/);
 assert.match(source, /const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal"/);
 assert.match(source, /const PROMPT_EDITOR_CONTEXT_TOKENS = 32768/);
-assert.match(source, /#\$\{PROMPT_EDITOR_MODAL_ID\}\[hidden\] \{ display: none !important; \}/);
+assert.match(source, /#\$\{PROMPT_EDITOR_MODAL_ID\}\[hidden\],/);
 assert.match(source, /const PROMPT_EDITOR_HISTORY_PAGE_SIZE = 6/);
 assert.match(source, /const PROMPT_EDITOR_TURN_PAGE_SIZE = 8/);
 assert.match(source, /brandPromptEditor\.textContent = "✦ Qwen Prompt Editor"/);
 assert.match(source, /brandPromptEditor\.addEventListener\("click", \(\) => this\.openPromptEditor\("", root\.ownerDocument \|\| document\)\)/);
 assert.match(source, /editWithQwen\.textContent = "✦ Edit with Qwen"/);
 assert.match(source, /editVariant\.textContent = "✦ Edit this prompt with Qwen"/);
-assert.match(source, /async requestPromptChat\(messages, signal\)/);
+assert.match(source, /async requestPromptChat\(messages, signal, options = \{\}\)/);
 assert.match(source, /this\.ensureRemoteCredits\(signal, "prompt-chat"\)/);
 assert.match(source, /\/v1\/prompt-chat\/jobs/);
 assert.match(source, /\/v1\/prompt-chat\/jobs\/\$\{requestId\}/);

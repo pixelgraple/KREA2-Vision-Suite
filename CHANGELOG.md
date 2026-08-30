@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-08-30
+
+- Pins a dedicated **Q3.8** launcher above Discord's server icons, moving the normal server list down while keeping Qwen Chat locked outside its scrolling region.
+- Adds a separate general-purpose Qwen 3.8 chat experience without changing the existing Vision or Prompt Editor workflows.
+- Persists complete local conversations and drafts across modal, Discord, and plugin restarts with paginated chat/message history and a permanent 32K context meter.
+- Compresses older inference context locally when needed while retaining the complete raw transcript in local history.
+- Adds reply copying, whole-chat Markdown downloads, reply Markdown downloads, and safe per-file downloads for fenced text/code returned by Qwen.
+- Reuses the existing dedicated GPU FIFO and exact billing contract: one credit per started 350 output tokens, unused reservations returned, and failed work refunded.
+- Adds a protected `general_chat` gateway mode so ordinary chat never inherits KREA2 Prompt Editor rewrite instructions.
+
 ## 0.18.0 - 2026-08-30
 
 - Adds a dedicated **Text to prompt** tab inside Qwen Prompt Editor: a user can enter a few plain-language sentences and receive one complete, detailed KREA2-ready prompt.

@@ -18,6 +18,6 @@ for (const text of [source, built]) {
 
 assert.match(source, /\["Describe region", "region"\]/);
 assert.match(source, /analyze\.textContent = "Describe selected region"/);
-assert.match(source, /async requestPromptChat\(messages, signal\)/);
+assert.match(source, /async requestPromptChat\(messages, signal, options = \{\}\)/);
 
 console.log("BetterDiscord region-inpaint removal regression passed.");

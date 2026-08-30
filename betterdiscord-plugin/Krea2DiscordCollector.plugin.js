@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.18.0
+ * @version 0.19.0
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -979,7 +979,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata, extractPromptFrom
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.18.0";
+const PLUGIN_VERSION = "0.19.0";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1133,6 +1133,8 @@ const HISTORY_ROOT_ID = "krea2-discord-history-root";
 const HISTORY_MODAL_ID = "krea2-discord-history-modal";
 const SOURCE_PROMPT_MODAL_ID = "krea2-discord-source-prompt-modal";
 const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal";
+const QWEN_CHAT_MODAL_ID = "krea2-discord-qwen-chat-modal";
+const QWEN_CHAT_LAUNCHER_ID = "krea2-discord-qwen-chat-launcher";
 const PROMPT_AUDIT_MODAL_ID = "krea2-discord-prompt-audit-modal";
 const PRODUCT_MODAL_ID = "krea2-discord-product-modal";
 const ONBOARDING_MODAL_ID = "krea2-discord-onboarding-modal";
@@ -1150,6 +1152,11 @@ const PROMPT_EDITOR_CONTEXT_INPUT_TOKENS = PROMPT_EDITOR_CONTEXT_TOKENS
 const PROMPT_EDITOR_MAX_GATEWAY_MESSAGES = 16;
 const PROMPT_EDITOR_MODE_EDIT = "edit";
 const PROMPT_EDITOR_MODE_CREATE = "create";
+const QWEN_CHAT_HISTORY_INDEX_KEY = "qwenChatHistoryIndexV1";
+const QWEN_CHAT_ACTIVE_SESSION_KEY = "qwenChatActiveSessionV1";
+const QWEN_CHAT_SESSION_KEY_PREFIX = "qwenChatSessionV1_";
+const QWEN_CHAT_HISTORY_PAGE_SIZE = 7;
+const QWEN_CHAT_TURN_PAGE_SIZE = 10;
 const ONBOARDING_VERSION = 9;
 
 function promptEditorSessionDataKey(rawId) {
@@ -1335,6 +1342,140 @@ function compactPromptEditorContext(messages, options = {}) {
         compacted: true,
         removedMessages: Math.max(0, bounded.length - recent.length)
     });
+}
+
+function qwenChatSessionDataKey(rawId) {
+    const id = String(rawId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+    if (!id) throw new Error("Qwen Chat session identifier is invalid.");
+    return `${QWEN_CHAT_SESSION_KEY_PREFIX}${id}`;
+}
+
+function qwenChatSessionTitle(value, fallback = "New Qwen chat") {
+    const title = String(value || "").replace(/\s+/g, " ").trim().slice(0, 72);
+    return title || String(fallback || "New Qwen chat").slice(0, 72);
+}
+
+function normalizeQwenChatSession(raw, fallbackId = "") {
+    const now = Date.now();
+    const id = String(raw?.id || fallbackId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+    if (!id) return null;
+    const messages = normalizePromptEditorMessages(raw?.messages);
+    const turns = normalizePromptEditorTurns(raw?.turns);
+    const firstUserText = turns.find(turn => turn.role === "user")?.text
+        || messages.find(message => message.role === "user")?.content
+        || raw?.draft;
+    const createdAt = Math.max(1, Math.trunc(Number(raw?.createdAt) || now));
+    const updatedAt = Math.max(createdAt, Math.trunc(Number(raw?.updatedAt) || createdAt));
+    return {
+        version: 1,
+        id,
+        title: qwenChatSessionTitle(raw?.title || firstUserText),
+        createdAt,
+        updatedAt,
+        draft: String(raw?.draft || "").slice(0, 12000),
+        messages,
+        turns,
+        summary: String(raw?.summary || "").slice(0, 12000),
+        compactions: Math.max(0, Math.trunc(Number(raw?.compactions) || 0)),
+        statusText: String(raw?.statusText || "Ready · output costs 1 credit per started 350 tokens; failures are refunded.").slice(0, 1000),
+        statusState: ["idle", "success", "error", "working"].includes(String(raw?.statusState || ""))
+            ? String(raw.statusState)
+            : "idle"
+    };
+}
+
+function normalizeQwenChatHistoryIndex(rawIndex) {
+    const seen = new Set();
+    return (Array.isArray(rawIndex) ? rawIndex : [])
+        .map(item => {
+            const id = String(item?.id || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+            if (!id || seen.has(id)) return null;
+            seen.add(id);
+            return {
+                id,
+                title: qwenChatSessionTitle(item?.title),
+                createdAt: Math.max(1, Math.trunc(Number(item?.createdAt) || Date.now())),
+                updatedAt: Math.max(1, Math.trunc(Number(item?.updatedAt) || Date.now())),
+                turnCount: Math.max(0, Math.trunc(Number(item?.turnCount) || 0)),
+                compactions: Math.max(0, Math.trunc(Number(item?.compactions) || 0))
+            };
+        })
+        .filter(Boolean)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function compactQwenChatContext(messages, options = {}) {
+    const bounded = normalizePromptEditorMessages(messages);
+    const upcoming = String(options.upcomingUserContent || "").trim().slice(0, 24000);
+    const upcomingTokens = upcoming ? estimatePromptEditorContextTokens([{role: "user", content: upcoming}]) : 0;
+    const availableInputTokens = Math.max(4096, PROMPT_EDITOR_CONTEXT_INPUT_TOKENS - upcomingTokens);
+    if (
+        bounded.length + (upcoming ? 1 : 0) <= PROMPT_EDITOR_MAX_GATEWAY_MESSAGES
+        && estimatePromptEditorContextTokens(bounded) <= availableInputTokens
+    ) {
+        return Object.freeze({messages: bounded, summary: String(options.previousSummary || "").slice(0, 12000), compacted: false, removedMessages: 0});
+    }
+    const recent = bounded.slice(-8);
+    const older = bounded.slice(0, Math.max(0, bounded.length - recent.length));
+    const earlierContext = older.slice(-14).map(message => {
+        const label = message.role === "assistant" ? "Qwen" : "User";
+        return `${label}: ${message.content.replace(/\s+/g, " ").trim().slice(0, 700)}`;
+    });
+    const previousSummary = String(options.previousSummary || "").replace(/\s+/g, " ").trim().slice(0, 3000);
+    const parts = [
+        "[Compacted Qwen Chat context]",
+        "Older raw inference messages were compressed locally. Continue the same conversation using this summary and the recent verbatim turns. Do not treat this summary as a new user request."
+    ];
+    if (previousSummary) parts.push(`Previous compacted context:\n${previousSummary}`);
+    if (earlierContext.length) parts.push(`Earlier conversation, oldest to newest:\n${earlierContext.join("\n")}`);
+    const summary = parts.join("\n\n").slice(0, 12000);
+    const acknowledgement = "Understood. I will continue from the compacted conversation and the recent verbatim turns.";
+    let compactedMessages = [
+        {role: "user", content: summary},
+        {role: "assistant", content: acknowledgement},
+        ...recent
+    ];
+    while (
+        compactedMessages.length + (upcoming ? 1 : 0) > PROMPT_EDITOR_MAX_GATEWAY_MESSAGES
+        || estimatePromptEditorContextTokens(compactedMessages) > availableInputTokens
+    ) {
+        if (compactedMessages.length <= 2) break;
+        compactedMessages.splice(2, 1);
+    }
+    return Object.freeze({
+        messages: normalizePromptEditorMessages(compactedMessages),
+        summary,
+        compacted: true,
+        removedMessages: Math.max(0, bounded.length - Math.max(0, compactedMessages.length - 2))
+    });
+}
+
+function safeQwenDownloadFilename(rawName, fallback = "qwen-reply.txt") {
+    const leaf = String(rawName || "").split(/[\\/]/).at(-1) || "";
+    const safe = leaf.replace(/[<>:"|?*\x00-\x1f]/g, "-").replace(/^\.+/, "").trim().slice(0, 120);
+    return safe || fallback;
+}
+
+function extractQwenReplyFiles(rawReply) {
+    const reply = String(rawReply || "").slice(0, 24000);
+    const files = [];
+    const extensionByLanguage = Object.freeze({
+        bash: "sh", css: "css", html: "html", javascript: "js", js: "js", json: "json",
+        markdown: "md", md: "md", php: "php", powershell: "ps1", python: "py", py: "py",
+        sql: "sql", text: "txt", txt: "txt", typescript: "ts", ts: "ts", xml: "xml", yaml: "yaml", yml: "yml"
+    });
+    const pattern = /```([^\r\n`]*)\r?\n([\s\S]*?)```/g;
+    let match;
+    while ((match = pattern.exec(reply)) && files.length < 8) {
+        const header = String(match[1] || "").trim();
+        const language = (header.match(/^([a-z0-9_+-]+)/i)?.[1] || "text").toLowerCase();
+        const named = header.match(/(?:^|\s)filename\s*=\s*["']?([^\s"']+)/i)?.[1];
+        const extension = extensionByLanguage[language] || "txt";
+        const filename = safeQwenDownloadFilename(named, `qwen-file-${files.length + 1}.${extension}`);
+        const content = String(match[2] || "").replace(/\r\n/g, "\n").slice(0, 24000);
+        if (content) files.push(Object.freeze({filename, language, content}));
+    }
+    return Object.freeze(files);
 }
 const DEFAULT_SAVE_FOLDER = path.join(String(process.env.USERPROFILE || process.env.HOME || "."), "Pictures", "Krea2Vision");
 const HERETIC_MODEL_SPECS = Object.freeze([
@@ -1983,8 +2124,10 @@ const CSS = `
 #${SOURCE_PROMPT_MODAL_ID} button,
 #${SOURCE_PROMPT_MODAL_ID} textarea,
 #${PROMPT_EDITOR_MODAL_ID} button,
+#${QWEN_CHAT_MODAL_ID} button,
 #${PROMPT_AUDIT_MODAL_ID} button,
 #${PROMPT_EDITOR_MODAL_ID} textarea,
+#${QWEN_CHAT_MODAL_ID} textarea,
 #${PROMPT_AUDIT_MODAL_ID} textarea {
     color: inherit;
     -webkit-text-fill-color: currentColor;
@@ -2000,6 +2143,13 @@ const CSS = `
     min-height: 0;
     box-shadow: -14px 0 32px rgba(0, 0, 0, .28);
 }
+
+.krea2-qwen-server-nav { position: relative !important; box-sizing: border-box !important; padding-top: 60px !important; }
+#${QWEN_CHAT_LAUNCHER_ID} { position: absolute; z-index: 5; top: 6px; left: 0; right: 0; height: 50px; display: grid; place-items: center; pointer-events: none; }
+#${QWEN_CHAT_LAUNCHER_ID} button { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 1px solid #6f7df5; border-radius: 50%; color: #fff; -webkit-text-fill-color: #fff; background: radial-gradient(circle at 30% 25%, #7686ff, #3a4397 62%, #222854); box-shadow: 0 5px 18px rgba(23,28,70,.48); cursor: pointer; pointer-events: auto; font: 800 10px/1 system-ui,sans-serif; letter-spacing: -.02em; transition: border-radius .16s ease, transform .16s ease, filter .16s ease; }
+#${QWEN_CHAT_LAUNCHER_ID} button:hover { border-radius: 14px; transform: translateY(-1px); filter: brightness(1.12); }
+#${QWEN_CHAT_LAUNCHER_ID} button:focus-visible { outline: 2px solid #c5ccff; outline-offset: 2px; }
+#${QWEN_CHAT_LAUNCHER_ID} button[data-busy="true"] { background: radial-gradient(circle at 30% 25%, #79cfaa, #2d7258 66%, #173b31); }
 
 #${HISTORY_ROOT_ID}[data-collapsed="true"] {
     width: 44px;
@@ -2305,12 +2455,15 @@ const CSS = `
 
 #${HISTORY_MODAL_ID},
 #${SOURCE_PROMPT_MODAL_ID},
-#${PROMPT_EDITOR_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
-#${PROMPT_EDITOR_MODAL_ID}[hidden] { display: none !important; }
+#${PROMPT_EDITOR_MODAL_ID},
+#${QWEN_CHAT_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
+#${PROMPT_EDITOR_MODAL_ID}[hidden],
+#${QWEN_CHAT_MODAL_ID}[hidden] { display: none !important; }
 #${PROMPT_AUDIT_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10001; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
 .krea2-history-dialog { width: min(760px, 92vw); max-height: min(760px, 88vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #343a45; border-radius: 14px; color: var(--krea2-text); background: #17191f; box-shadow: 0 28px 90px rgba(0,0,0,.62); }
 .krea2-history-dialog[data-source-prompt="true"] { width: min(900px, 94vw); }
 .krea2-history-dialog[data-prompt-editor="true"] { width: min(1180px, 96vw); max-height: min(900px, 94vh); }
+.krea2-history-dialog[data-qwen-chat="true"] { width: min(1220px, 96vw); max-height: min(920px, 95vh); }
 .krea2-prompt-editor-body { display: grid; min-height: 0; gap: 12px; overflow: hidden; }
 .krea2-prompt-editor-mode-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 5px; border: 1px solid #303744; border-radius: 10px; background: #11141a; }
 .krea2-prompt-editor-mode-tab { min-height: 38px; padding: 8px 12px; border: 1px solid transparent; border-radius: 8px; color: #aeb7c5; background: transparent; cursor: pointer; font-size: 10.5px; font-weight: 750; }
@@ -2372,6 +2525,17 @@ const CSS = `
 .krea2-prompt-editor-context-meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #5f70e8, #65c795); transition: width .18s ease; }
 .krea2-prompt-editor-context[data-near-limit="true"] .krea2-prompt-editor-context-meter > span { background: linear-gradient(90deg, #e0a545, #e36f61); }
 .krea2-prompt-editor-context-note { color: #8f9aaa; font-size: 8.5px; line-height: 1.4; }
+.krea2-qwen-chat-intro { display: flex; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid #343c50; border-radius: 9px; color: #cbd3e1; background: linear-gradient(135deg, #171c2a, #151923); font-size: 10px; line-height: 1.5; }
+.krea2-qwen-chat-intro strong { color: #fff; }
+.krea2-qwen-chat-transcript { min-height: 260px; max-height: 500px; }
+.krea2-qwen-chat-turn-label { margin-bottom: 6px; color: #9fa9b8; font-size: 8.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.krea2-qwen-chat-turn-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.krea2-qwen-chat-turn-actions button { min-height: 28px; padding: 5px 9px; border: 1px solid #3a4352; border-radius: 7px; color: #e9edf3; background: #20252d; cursor: pointer; font-size: 9px; font-weight: 700; }
+.krea2-qwen-chat-turn-actions button[data-file="true"] { border-color: #49648b; background: #1a2a3d; }
+.krea2-qwen-chat-compose { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: end; }
+.krea2-qwen-chat-input { box-sizing: border-box; width: 100%; min-height: 92px; max-height: 260px; resize: vertical; padding: 11px 12px; border: 1px solid #343b48; border-radius: 9px; color: #f3f5f7; -webkit-text-fill-color: #f3f5f7; background: #0f1217; font: 500 11px/1.55 system-ui,sans-serif; }
+.krea2-qwen-chat-send { min-width: 118px; min-height: 92px; padding: 10px 16px; border: 1px solid #6977f4; border-radius: 9px; color: #fff; background: #5865f2; cursor: pointer; font-weight: 780; }
+.krea2-qwen-chat-send:disabled { cursor: wait; opacity: .55; }
 .krea2-history-brand-editor { margin-left: auto; min-height: 24px; padding: 3px 8px; border: 1px solid #394252; border-radius: 7px; color: #dfe6f0; background: #171b22; cursor: pointer; font: 700 9px/1 system-ui,sans-serif; }
 .krea2-history-brand-editor:hover { border-color: #6977f4; background: #20263a; }
 .krea2-source-prompt-body { display: grid; gap: 14px; }
@@ -2591,13 +2755,15 @@ const CSS = `
     .krea2-quality-grid { grid-template-columns: 1fr; }
     .krea2-diagnostic-row { grid-template-columns: 1fr; gap: 3px; }
     .krea2-review-form, .krea2-score-grid, .krea2-repro-grid { grid-template-columns: 1fr; }
-    #${PROMPT_EDITOR_MODAL_ID} { padding: 8px; }
-    .krea2-history-dialog[data-prompt-editor="true"] { width: 100%; max-height: calc(100vh - 16px); }
+    #${PROMPT_EDITOR_MODAL_ID}, #${QWEN_CHAT_MODAL_ID} { padding: 8px; }
+    .krea2-history-dialog[data-prompt-editor="true"], .krea2-history-dialog[data-qwen-chat="true"] { width: 100%; max-height: calc(100vh - 16px); }
     .krea2-prompt-editor-body { overflow: auto; }
     .krea2-prompt-editor-workspace { grid-template-columns: 1fr; }
     .krea2-prompt-editor-history { max-height: 210px; }
     .krea2-prompt-editor-compose { grid-template-columns: 1fr; }
     .krea2-prompt-editor-send { min-height: 44px; }
+    .krea2-qwen-chat-compose { grid-template-columns: 1fr; }
+    .krea2-qwen-chat-send { min-height: 44px; }
 }
 `;
 
@@ -4695,6 +4861,12 @@ class Krea2DiscordCollector {
         this.promptEditorHistoryIndex = null;
         this.promptEditorActiveSessionId = "";
         this.promptEditorBusy = false;
+        this.qwenLauncherRoot = null;
+        this.qwenChatCleanup = null;
+        this.qwenChatHistoryIndex = null;
+        this.qwenChatActiveSessionId = "";
+        this.qwenChatBusy = false;
+        this.qwenChatDraft = null;
         this.promptAuditCleanup = null;
         this.promptEditorDraft = null;
         this.feedbackModalCleanup = null;
@@ -4786,6 +4958,7 @@ class Krea2DiscordCollector {
         }
         this.installContextMenus();
         this.ensureHistoryRail();
+        this.ensureQwenLauncher();
         void this.refreshHistory();
         this.historyPollTimer = setInterval(() => {
             if (this.historyRoot?.isConnected && (this.historyOverlayOpen || this.settings.historyCollapsed !== true)) void this.refreshHistory();
@@ -4799,6 +4972,7 @@ class Krea2DiscordCollector {
                 );
             });
             if (hasPotentialMessageImage) this.scheduleScan();
+            if (!this.qwenLauncherRoot?.isConnected) this.ensureQwenLauncher();
         });
         this.observer.observe(document.body, {
             childList: true,
@@ -4814,6 +4988,7 @@ class Krea2DiscordCollector {
             this.removeAllButtons();
             this.scheduleScan();
             this.ensureHistoryRail();
+            this.ensureQwenLauncher();
             void this.refreshHistory();
         }, 1000);
 
@@ -4858,6 +5033,12 @@ class Krea2DiscordCollector {
         this.promptEditorHistoryIndex = null;
         this.promptEditorActiveSessionId = "";
         this.promptEditorBusy = false;
+        this.qwenChatCleanup?.({destroy: true});
+        this.qwenChatCleanup = null;
+        this.qwenChatHistoryIndex = null;
+        this.qwenChatActiveSessionId = "";
+        this.qwenChatBusy = false;
+        this.qwenChatDraft = null;
         this.feedbackModalCleanup?.();
         this.feedbackModalCleanup = null;
         for (const objectUrl of this.historyThumbnailUrls.values()) this.revokeObjectUrl(objectUrl);
@@ -4885,6 +5066,7 @@ class Krea2DiscordCollector {
         document.getElementById(HISTORY_MODAL_ID)?.remove();
         document.getElementById(SOURCE_PROMPT_MODAL_ID)?.remove();
         document.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
+        document.getElementById(QWEN_CHAT_MODAL_ID)?.remove();
         document.getElementById(PROMPT_AUDIT_MODAL_ID)?.remove();
         document.getElementById(PRODUCT_MODAL_ID)?.remove();
         document.getElementById(ONBOARDING_MODAL_ID)?.remove();
@@ -4894,6 +5076,7 @@ class Krea2DiscordCollector {
         this.originalCache.clear();
         this.metadataProbeByKey.clear();
         this.visionInflightByRequest.clear();
+        this.removeQwenLauncher();
 
         for (const [image, handler] of this.imageLoadHandlers) image.removeEventListener("load", handler);
         this.imageLoadHandlers.clear();
@@ -5372,6 +5555,41 @@ class Krea2DiscordCollector {
                 this.scan();
             });
         }, 160);
+    }
+
+    removeQwenLauncher() {
+        this.qwenLauncherRoot?.remove();
+        this.qwenLauncherRoot = null;
+        document.getElementById(QWEN_CHAT_LAUNCHER_ID)?.remove();
+        for (const navigation of document.querySelectorAll(".krea2-qwen-server-nav")) {
+            navigation.classList.remove("krea2-qwen-server-nav");
+        }
+    }
+
+    ensureQwenLauncher() {
+        if (!this.running || !document.body) return;
+        const navigation = document.querySelector('nav[aria-label="Servers sidebar"]');
+        if (!(navigation instanceof HTMLElement)) return;
+        if (this.qwenLauncherRoot?.isConnected && this.qwenLauncherRoot.parentElement === navigation) {
+            const button = this.qwenLauncherRoot.querySelector("button");
+            if (button) button.dataset.busy = this.qwenChatBusy ? "true" : "false";
+            return;
+        }
+        this.removeQwenLauncher();
+        navigation.classList.add("krea2-qwen-server-nav");
+        const root = document.createElement("div");
+        root.id = QWEN_CHAT_LAUNCHER_ID;
+        root.setAttribute("aria-label", "Pinned Qwen 3.8 Chat launcher");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Q3.8";
+        button.title = "Open Qwen 3.8 Cloud Chat";
+        button.setAttribute("aria-label", "Open Qwen 3.8 Cloud Chat");
+        button.dataset.busy = this.qwenChatBusy ? "true" : "false";
+        button.addEventListener("click", () => this.openQwenChat(document));
+        root.append(button);
+        navigation.prepend(root);
+        this.qwenLauncherRoot = root;
     }
 
     ensureHistoryRail() {
@@ -8398,16 +8616,19 @@ class Krea2DiscordCollector {
         return JSON.parse(await readBoundedResponseText(response, HISTORY_MAX_RESPONSE_BYTES));
     }
 
-    async requestPromptChat(messages, signal) {
+    async requestPromptChat(messages, signal, options = {}) {
+        const experience = String(options.experience || "") === "general_chat" ? "general_chat" : "prompt_editor";
+        const label = experience === "general_chat" ? "Qwen Chat" : "Qwen Prompt Editor";
+        const maxTokens = Math.min(1536, Math.max(64, Math.trunc(Number(options.maxTokens) || 1536)));
         const boundedMessages = normalizePromptEditorMessages(messages);
         if (!boundedMessages.length || boundedMessages.at(-1)?.role !== "user") {
-            throw new Error("Qwen Prompt Editor requires a final user instruction.");
+            throw new Error(`${label} requires a final user message.`);
         }
         if (boundedMessages.length > PROMPT_EDITOR_MAX_GATEWAY_MESSAGES) {
-            throw new Error("The Qwen Prompt Editor context was not compacted before submission.");
+            throw new Error(`The ${label} context was not compacted before submission.`);
         }
         if (estimatePromptEditorContextTokens(boundedMessages) > PROMPT_EDITOR_CONTEXT_INPUT_TOKENS) {
-            throw new Error("The Qwen Prompt Editor context exceeds its 32K-token window and could not be compacted safely.");
+            throw new Error(`The ${label} context exceeds its 32K-token window and could not be compacted safely.`);
         }
         const license = await this.ensureRemoteCredits(signal, "prompt-chat");
         const requestId = createHash("sha256").update(randomBytes(48)).digest("hex");
@@ -8424,7 +8645,7 @@ class Krea2DiscordCollector {
                     .replace(/\s+/g, " ")
                     .trim()
                     .slice(0, 240);
-                throw new Error(`Qwen Prompt Editor ${phase} returned HTTP ${response.status} with ${contentType} instead of JSON${summary ? `: ${summary}` : "."}`);
+                throw new Error(`${label} ${phase} returned HTTP ${response.status} with ${contentType} instead of JSON${summary ? `: ${summary}` : "."}`);
             }
         };
         const response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/prompt-chat/jobs`, {
@@ -8440,19 +8661,19 @@ class Krea2DiscordCollector {
                 "X-Krea2-Request-Id": requestId,
                 "X-Krea2-Collector-Version": PLUGIN_VERSION
             },
-            body: JSON.stringify({model: "heretic-3.8-q4-cloud", messages: boundedMessages, temperature: 0.35, max_tokens: 1536, stream: false})
+            body: JSON.stringify({model: "heretic-3.8-q4-cloud", experience, messages: boundedMessages, temperature: 0.35, max_tokens: maxTokens, stream: false})
         });
         const accepted = await parseGatewayJson(response, "submission");
-        if (!response.ok) throw new Error(String(accepted?.detail || `Qwen Prompt Editor failed with HTTP ${response.status}.`));
+        if (!response.ok) throw new Error(String(accepted?.detail || `${label} failed with HTTP ${response.status}.`));
         if (accepted?.request_id !== requestId || !["queued", "running", "completed"].includes(String(accepted?.status || ""))) {
-            throw new Error("Qwen Prompt Editor returned an invalid job acknowledgement.");
+            throw new Error(`${label} returned an invalid job acknowledgement.`);
         }
         let result = accepted;
         const deadline = Date.now() + (8 * 60 * 1000);
         let transientFailures = 0;
         while (result?.status !== "completed") {
-            if (signal?.aborted) throw new DOMException("The Prompt Editor request was cancelled.", "AbortError");
-            if (Date.now() >= deadline) throw new Error("Qwen Prompt Editor did not complete within 8 minutes; any reserved credit will be refunded automatically.");
+            if (signal?.aborted) throw new DOMException(`The ${label} request was cancelled.`, "AbortError");
+            if (Date.now() >= deadline) throw new Error(`${label} did not complete within 8 minutes; any reserved credit will be refunded automatically.`);
             await new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     signal?.removeEventListener?.("abort", onAbort);
@@ -8460,7 +8681,7 @@ class Krea2DiscordCollector {
                 }, 1500);
                 const onAbort = () => {
                     clearTimeout(timer);
-                    reject(new DOMException("The Prompt Editor request was cancelled.", "AbortError"));
+                    reject(new DOMException(`The ${label} request was cancelled.`, "AbortError"));
                 };
                 signal?.addEventListener?.("abort", onAbort, {once: true});
             });
@@ -8478,9 +8699,9 @@ class Krea2DiscordCollector {
                     }
                 });
                 result = await parseGatewayJson(poll, "status check");
-                if (!poll.ok) throw new Error(String(result?.detail || `Qwen Prompt Editor failed with HTTP ${poll.status}.`));
+                if (!poll.ok) throw new Error(String(result?.detail || `${label} failed with HTTP ${poll.status}.`));
                 if (result?.request_id !== requestId || !["queued", "running", "completed"].includes(String(result?.status || ""))) {
-                    throw new Error("Qwen Prompt Editor returned an invalid job status.");
+                    throw new Error(`${label} returned an invalid job status.`);
                 }
                 transientFailures = 0;
             }
@@ -8498,20 +8719,22 @@ class Krea2DiscordCollector {
             !reply
             || reply.length > 24000
             || result?.model !== "heretic-3.8-q4-cloud"
+            || String(result?.experience || "prompt_editor") !== experience
             || !Number.isInteger(outputTokens)
             || outputTokens < 1
             || outputTokensPerCredit !== 350
             || !Number.isInteger(creditsCharged)
             || creditsCharged !== Math.ceil(outputTokens / outputTokensPerCredit)
         ) {
-            throw new Error("Qwen Prompt Editor returned an invalid reply.");
+            throw new Error(`${label} returned an invalid reply.`);
         }
         return Object.freeze({
             reply,
             model: result.model,
             creditsCharged,
             outputTokens,
-            availableCredits: Number(result.available_credits)
+            availableCredits: Number(result.available_credits),
+            experience
         });
     }
 
@@ -9335,6 +9558,495 @@ class Krea2DiscordCollector {
         syncDraft(true);
         renderHistory();
         (editorMode === PROMPT_EDITOR_MODE_CREATE ? instruction : (promptBox.value ? instruction : promptBox)).focus();
+    }
+
+    loadQwenChatHistoryIndex() {
+        if (Array.isArray(this.qwenChatHistoryIndex)) return this.qwenChatHistoryIndex;
+        let loaded = [];
+        try { loaded = this.api.Data.load(QWEN_CHAT_HISTORY_INDEX_KEY); }
+        catch (error) { this.log("warn", "Could not load Qwen Chat history index", error); }
+        this.qwenChatHistoryIndex = normalizeQwenChatHistoryIndex(loaded);
+        try {
+            this.qwenChatActiveSessionId = String(this.api.Data.load(QWEN_CHAT_ACTIVE_SESSION_KEY) || "")
+                .replace(/[^a-z0-9_-]/gi, "")
+                .slice(0, 80);
+        }
+        catch { this.qwenChatActiveSessionId = ""; }
+        return this.qwenChatHistoryIndex;
+    }
+
+    loadQwenChatSession(rawId) {
+        const id = String(rawId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+        if (!id) return null;
+        try { return normalizeQwenChatSession(this.api.Data.load(qwenChatSessionDataKey(id)), id); }
+        catch (error) {
+            this.log("warn", "Could not load Qwen Chat session", error);
+            return null;
+        }
+    }
+
+    persistQwenChatSession(rawSession, {activate = true} = {}) {
+        const session = normalizeQwenChatSession(rawSession, rawSession?.id);
+        if (!session) throw new Error("Qwen Chat session could not be saved.");
+        session.updatedAt = Date.now();
+        const firstUser = session.turns.find(turn => turn.role === "user")?.text
+            || session.messages.find(message => message.role === "user")?.content
+            || session.draft;
+        session.title = qwenChatSessionTitle(firstUser, session.title);
+        this.api.Data.save(qwenChatSessionDataKey(session.id), session);
+        const index = this.loadQwenChatHistoryIndex();
+        const metadata = {
+            id: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: session.turns.length,
+            compactions: session.compactions
+        };
+        const existing = index.findIndex(item => item.id === session.id);
+        if (existing >= 0) index.splice(existing, 1);
+        index.unshift(metadata);
+        this.qwenChatHistoryIndex = normalizeQwenChatHistoryIndex(index);
+        this.api.Data.save(QWEN_CHAT_HISTORY_INDEX_KEY, this.qwenChatHistoryIndex);
+        if (activate) {
+            this.qwenChatActiveSessionId = session.id;
+            this.api.Data.save(QWEN_CHAT_ACTIVE_SESSION_KEY, session.id);
+        }
+        return session;
+    }
+
+    createQwenChatSession() {
+        const now = Date.now();
+        const id = `${now.toString(36)}_${randomBytes(9).toString("hex")}`;
+        return this.persistQwenChatSession({
+            version: 1,
+            id,
+            title: "New Qwen chat",
+            createdAt: now,
+            updatedAt: now,
+            draft: "",
+            messages: [],
+            turns: [],
+            summary: "",
+            compactions: 0,
+            statusText: "Ready · output costs 1 credit per started 350 tokens; failures are refunded.",
+            statusState: "idle"
+        });
+    }
+
+    openQwenChat(modalDocument = document) {
+        const existing = modalDocument.getElementById(QWEN_CHAT_MODAL_ID);
+        if (existing) {
+            existing.hidden = false;
+            existing.querySelector("textarea")?.focus();
+            return;
+        }
+        this.loadQwenChatHistoryIndex();
+        let session = this.qwenChatActiveSessionId ? this.loadQwenChatSession(this.qwenChatActiveSessionId) : null;
+        if (!session && this.qwenChatHistoryIndex.length) session = this.loadQwenChatSession(this.qwenChatHistoryIndex[0].id);
+        if (!session && this.qwenChatDraft) {
+            session = this.createQwenChatSession();
+            Object.assign(session, this.qwenChatDraft, {id: session.id, version: 1, createdAt: session.createdAt});
+            session = this.persistQwenChatSession(session);
+            this.qwenChatDraft = null;
+        }
+        if (!session) session = this.createQwenChatSession();
+
+        let messages = normalizePromptEditorMessages(session.messages);
+        let turns = normalizePromptEditorTurns(session.turns);
+        let summary = String(session.summary || "").slice(0, 12000);
+        let busy = false;
+        let historyPage = 1;
+        let turnPage = Math.max(1, Math.ceil(turns.length / QWEN_CHAT_TURN_PAGE_SIZE));
+        let persistTimer = null;
+        const controller = new AbortController();
+
+        const overlay = modalDocument.createElement("div");
+        overlay.id = QWEN_CHAT_MODAL_ID;
+        const dialog = modalDocument.createElement("section");
+        dialog.className = "krea2-history-dialog";
+        dialog.dataset.qwenChat = "true";
+        dialog.setAttribute("role", "dialog");
+        dialog.setAttribute("aria-modal", "true");
+        dialog.setAttribute("aria-label", "Qwen 3.8 Cloud Chat");
+
+        const head = modalDocument.createElement("div");
+        head.className = "krea2-history-dialog-head";
+        const heading = modalDocument.createElement("h2");
+        heading.textContent = "Qwen 3.8 Cloud · Chat";
+        const close = modalDocument.createElement("button");
+        close.type = "button";
+        close.textContent = "×";
+        close.setAttribute("aria-label", "Close Qwen Chat");
+        head.append(heading, close);
+
+        const body = modalDocument.createElement("div");
+        body.className = "krea2-history-dialog-body krea2-prompt-editor-body";
+        const intro = modalDocument.createElement("div");
+        intro.className = "krea2-qwen-chat-intro";
+        intro.innerHTML = "<strong>Private Qwen chat inside Discord.</strong> Ask questions, write or debug code, brainstorm, or request complete text/code files. Chats are saved only on this computer. Output costs 1 Online API credit per started 350 tokens; failed work is refunded.";
+
+        const workspace = modalDocument.createElement("div");
+        workspace.className = "krea2-prompt-editor-workspace";
+        const historyPanel = modalDocument.createElement("aside");
+        historyPanel.className = "krea2-prompt-editor-history";
+        const historyHead = modalDocument.createElement("div");
+        historyHead.className = "krea2-prompt-editor-history-head";
+        const historyTitle = modalDocument.createElement("strong");
+        historyTitle.textContent = "Chat history";
+        const historyHelp = modalDocument.createElement("span");
+        historyHelp.textContent = "Saved locally. Select a conversation to continue.";
+        historyHead.append(historyTitle, historyHelp);
+        const historyList = modalDocument.createElement("div");
+        historyList.className = "krea2-prompt-editor-session-list";
+        const historyPagination = modalDocument.createElement("div");
+        historyPagination.className = "krea2-prompt-editor-history-pagination";
+        const historyPrevious = modalDocument.createElement("button");
+        historyPrevious.type = "button";
+        historyPrevious.textContent = "‹";
+        const historyPageLabel = modalDocument.createElement("span");
+        const historyNext = modalDocument.createElement("button");
+        historyNext.type = "button";
+        historyNext.textContent = "›";
+        historyPagination.append(historyPrevious, historyPageLabel, historyNext);
+        historyPanel.append(historyHead, historyList, historyPagination);
+
+        const main = modalDocument.createElement("main");
+        main.className = "krea2-prompt-editor-main";
+        const transcript = modalDocument.createElement("div");
+        transcript.className = "krea2-prompt-editor-transcript krea2-qwen-chat-transcript";
+        const turnPagination = modalDocument.createElement("div");
+        turnPagination.className = "krea2-prompt-editor-turn-pagination";
+        const turnPrevious = modalDocument.createElement("button");
+        turnPrevious.type = "button";
+        turnPrevious.textContent = "‹";
+        const turnPageLabel = modalDocument.createElement("span");
+        const turnNext = modalDocument.createElement("button");
+        turnNext.type = "button";
+        turnNext.textContent = "›";
+        turnPagination.append(turnPrevious, turnPageLabel, turnNext);
+
+        const context = modalDocument.createElement("div");
+        context.className = "krea2-prompt-editor-context";
+        const contextLine = modalDocument.createElement("div");
+        contextLine.className = "krea2-prompt-editor-context-line";
+        const contextName = modalDocument.createElement("strong");
+        contextName.textContent = "32K model context";
+        const contextCount = modalDocument.createElement("span");
+        contextLine.append(contextName, contextCount);
+        const contextMeter = modalDocument.createElement("div");
+        contextMeter.className = "krea2-prompt-editor-context-meter";
+        const contextFill = modalDocument.createElement("span");
+        contextMeter.append(contextFill);
+        const contextNote = modalDocument.createElement("div");
+        contextNote.className = "krea2-prompt-editor-context-note";
+        context.append(contextLine, contextMeter, contextNote);
+
+        const compose = modalDocument.createElement("div");
+        compose.className = "krea2-qwen-chat-compose";
+        const input = modalDocument.createElement("textarea");
+        input.className = "krea2-qwen-chat-input";
+        input.maxLength = 12000;
+        input.placeholder = "Message Qwen… Ask a question, request code, or say: create a complete file named app.py";
+        input.value = session.draft;
+        const send = modalDocument.createElement("button");
+        send.type = "button";
+        send.className = "krea2-qwen-chat-send";
+        send.textContent = "Send";
+        compose.append(input, send);
+        const status = modalDocument.createElement("div");
+        status.className = "krea2-prompt-editor-status";
+        status.textContent = session.statusText;
+        status.dataset.state = session.statusState;
+        main.append(transcript, turnPagination, context, compose, status);
+        workspace.append(historyPanel, main);
+        body.append(intro, workspace);
+
+        const actions = modalDocument.createElement("div");
+        actions.className = "krea2-history-dialog-actions";
+        const newChat = modalDocument.createElement("button");
+        newChat.type = "button";
+        newChat.className = "krea2-history-action";
+        newChat.textContent = "New chat";
+        const downloadChat = modalDocument.createElement("button");
+        downloadChat.type = "button";
+        downloadChat.className = "krea2-history-action";
+        downloadChat.textContent = "Download chat";
+        const done = modalDocument.createElement("button");
+        done.type = "button";
+        done.className = "krea2-history-action";
+        done.dataset.primary = "true";
+        done.textContent = "Close";
+        actions.append(newChat, downloadChat, done);
+        dialog.append(head, body, actions);
+        overlay.append(dialog);
+        modalDocument.body.append(overlay);
+
+        const downloadText = (filename, content, mime = "text/plain;charset=utf-8") => {
+            const view = modalDocument.defaultView || window;
+            const url = view.URL.createObjectURL(new view.Blob([content], {type: mime}));
+            const anchor = modalDocument.createElement("a");
+            anchor.href = url;
+            anchor.download = safeQwenDownloadFilename(filename);
+            anchor.click();
+            setTimeout(() => view.URL.revokeObjectURL(url), 1000);
+        };
+        const saveSessionNow = () => {
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            persistTimer = null;
+            session = this.persistQwenChatSession({
+                ...session,
+                draft: input.value.slice(0, input.maxLength),
+                messages: messages.map(message => ({role: message.role, content: message.content})),
+                turns: turns.map(turn => ({role: turn.role, text: turn.text, createdAt: turn.createdAt})),
+                summary,
+                statusText: status.textContent,
+                statusState: status.dataset.state || "idle"
+            });
+            this.qwenChatDraft = null;
+            return session;
+        };
+        const syncDraft = (immediate = false) => {
+            session.draft = input.value.slice(0, input.maxLength);
+            session.messages = messages.map(message => ({role: message.role, content: message.content}));
+            session.turns = turns.map(turn => ({role: turn.role, text: turn.text, createdAt: turn.createdAt}));
+            session.summary = summary;
+            session.statusText = status.textContent;
+            session.statusState = status.dataset.state || "idle";
+            if (immediate) return saveSessionNow();
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            persistTimer = setTimeout(() => {
+                try { saveSessionNow(); }
+                catch (error) { this.log("error", "Could not save Qwen Chat conversation", error); }
+            }, 250);
+            return session;
+        };
+        const renderContext = () => {
+            const pending = input.value.trim();
+            const meterMessages = pending ? [...messages, {role: "user", content: pending}] : messages;
+            const inputTokens = estimatePromptEditorContextTokens(meterMessages);
+            const used = Math.min(PROMPT_EDITOR_CONTEXT_TOKENS, inputTokens + PROMPT_EDITOR_OUTPUT_RESERVE_TOKENS + PROMPT_EDITOR_SYSTEM_RESERVE_TOKENS);
+            const percentage = Math.min(100, Math.max(0, (used / PROMPT_EDITOR_CONTEXT_TOKENS) * 100));
+            contextCount.textContent = `${used.toLocaleString()} / ${PROMPT_EDITOR_CONTEXT_TOKENS.toLocaleString()} tokens`;
+            contextFill.style.width = `${percentage.toFixed(1)}%`;
+            context.dataset.nearLimit = percentage >= 85 ? "true" : "false";
+            contextNote.textContent = session.compactions > 0
+                ? `${session.compactions} compaction${session.compactions === 1 ? "" : "s"} · older inference context was summarized locally; full paginated history is retained.`
+                : `${PROMPT_EDITOR_CONTEXT_INPUT_TOKENS.toLocaleString()} input tokens remain available after protected system and reply space. Compaction is automatic.`;
+        };
+        const createTurnElement = turn => {
+            const card = modalDocument.createElement("div");
+            card.className = "krea2-prompt-editor-turn";
+            card.dataset.role = turn.role;
+            const label = modalDocument.createElement("div");
+            label.className = "krea2-qwen-chat-turn-label";
+            label.textContent = turn.role === "assistant" ? "Qwen 3.8" : "You";
+            const text = modalDocument.createElement("div");
+            text.textContent = turn.text;
+            card.append(label, text);
+            if (turn.role === "assistant") {
+                const turnActions = modalDocument.createElement("div");
+                turnActions.className = "krea2-qwen-chat-turn-actions";
+                const copy = modalDocument.createElement("button");
+                copy.type = "button";
+                copy.textContent = "Copy reply";
+                copy.addEventListener("click", async () => {
+                    try { await (modalDocument.defaultView?.navigator || navigator).clipboard.writeText(turn.text); copy.textContent = "Copied"; }
+                    catch { this.toast("Discord could not copy the Qwen reply.", "error"); }
+                });
+                const replyDownload = modalDocument.createElement("button");
+                replyDownload.type = "button";
+                replyDownload.textContent = "Download reply (.md)";
+                replyDownload.addEventListener("click", () => downloadText(`qwen-reply-${turn.createdAt || Date.now()}.md`, turn.text, "text/markdown;charset=utf-8"));
+                turnActions.append(copy, replyDownload);
+                for (const file of extractQwenReplyFiles(turn.text)) {
+                    const fileButton = modalDocument.createElement("button");
+                    fileButton.type = "button";
+                    fileButton.dataset.file = "true";
+                    fileButton.textContent = `Download ${file.filename}`;
+                    fileButton.addEventListener("click", () => downloadText(file.filename, file.content));
+                    turnActions.append(fileButton);
+                }
+                card.append(turnActions);
+            }
+            return card;
+        };
+        const renderTranscript = () => {
+            transcript.replaceChildren();
+            const pageCount = Math.max(1, Math.ceil(turns.length / QWEN_CHAT_TURN_PAGE_SIZE));
+            turnPage = Math.min(pageCount, Math.max(1, turnPage));
+            const start = (turnPage - 1) * QWEN_CHAT_TURN_PAGE_SIZE;
+            const page = turns.slice(start, start + QWEN_CHAT_TURN_PAGE_SIZE);
+            if (!page.length) {
+                const empty = modalDocument.createElement("div");
+                empty.className = "krea2-prompt-editor-transcript-empty";
+                empty.textContent = "Start a private conversation with Qwen 3.8.";
+                transcript.append(empty);
+            }
+            else for (const turn of page) transcript.append(createTurnElement(turn));
+            turnPageLabel.textContent = `Messages ${turnPage} / ${pageCount} · ${turns.length} total`;
+            turnPrevious.disabled = turnPage <= 1;
+            turnNext.disabled = turnPage >= pageCount;
+            transcript.scrollTop = transcript.scrollHeight;
+        };
+        const loadSessionIntoEditor = id => {
+            if (busy || this.qwenChatBusy) return;
+            syncDraft(true);
+            const loaded = this.loadQwenChatSession(id);
+            if (!loaded) return;
+            session = this.persistQwenChatSession(loaded);
+            messages = normalizePromptEditorMessages(session.messages);
+            turns = normalizePromptEditorTurns(session.turns);
+            summary = session.summary;
+            input.value = session.draft;
+            status.textContent = session.statusText;
+            status.dataset.state = session.statusState;
+            turnPage = Math.max(1, Math.ceil(turns.length / QWEN_CHAT_TURN_PAGE_SIZE));
+            renderTranscript();
+            renderContext();
+            renderHistory();
+            input.focus();
+        };
+        const renderHistory = () => {
+            const index = this.loadQwenChatHistoryIndex();
+            const pageCount = Math.max(1, Math.ceil(index.length / QWEN_CHAT_HISTORY_PAGE_SIZE));
+            historyPage = Math.min(pageCount, Math.max(1, historyPage));
+            historyList.replaceChildren();
+            for (const item of index.slice((historyPage - 1) * QWEN_CHAT_HISTORY_PAGE_SIZE, historyPage * QWEN_CHAT_HISTORY_PAGE_SIZE)) {
+                const button = modalDocument.createElement("button");
+                button.type = "button";
+                button.className = "krea2-prompt-editor-session";
+                button.dataset.active = item.id === session.id ? "true" : "false";
+                const title = modalDocument.createElement("strong");
+                title.textContent = item.title;
+                const meta = modalDocument.createElement("span");
+                meta.textContent = `${new Date(item.updatedAt).toLocaleString()} · ${item.turnCount} messages`;
+                button.append(title, meta);
+                button.addEventListener("click", () => loadSessionIntoEditor(item.id));
+                historyList.append(button);
+            }
+            historyPageLabel.textContent = `Page ${historyPage} / ${pageCount} · ${index.length} chats`;
+            historyPrevious.disabled = historyPage <= 1;
+            historyNext.disabled = historyPage >= pageCount;
+        };
+        const setStatus = (text, state = "idle") => {
+            status.textContent = text;
+            status.dataset.state = state;
+            syncDraft();
+            renderContext();
+        };
+        const cleanup = ({destroy = false} = {}) => {
+            syncDraft(true);
+            if (!destroy) { overlay.hidden = true; return; }
+            controller.abort();
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            modalDocument.removeEventListener("keydown", onKey, true);
+            overlay.remove();
+            this.qwenChatBusy = false;
+            this.ensureQwenLauncher();
+            if (this.qwenChatCleanup === cleanup) this.qwenChatCleanup = null;
+        };
+        const submit = async () => {
+            if (busy) return;
+            const request = input.value.trim();
+            if (request.length < 2) return setStatus("Write a message for Qwen first.", "error");
+            const compacted = compactQwenChatContext(messages, {previousSummary: summary, upcomingUserContent: request});
+            if (compacted.compacted) {
+                messages = compacted.messages.map(message => ({...message}));
+                summary = compacted.summary;
+                session.compactions += 1;
+            }
+            messages.push({role: "user", content: request});
+            turns.push({role: "user", text: request, createdAt: Date.now()});
+            input.value = "";
+            turnPage = Math.max(1, Math.ceil(turns.length / QWEN_CHAT_TURN_PAGE_SIZE));
+            renderTranscript();
+            busy = true;
+            this.qwenChatBusy = true;
+            this.ensureQwenLauncher();
+            send.disabled = true;
+            newChat.disabled = true;
+            send.textContent = "Qwen is working…";
+            setStatus(compacted.compacted
+                ? "Older model context was summarized locally; connecting with the preserved 32K working window…"
+                : "Connecting to Qwen 3.8 Cloud…", "working");
+            try {
+                const result = await this.requestPromptChat(messages, controller.signal, {experience: "general_chat"});
+                messages.push({role: "assistant", content: result.reply});
+                turns.push({role: "assistant", text: result.reply, createdAt: Date.now()});
+                const afterReply = compactQwenChatContext(messages, {previousSummary: summary});
+                if (afterReply.compacted) {
+                    messages = afterReply.messages.map(message => ({...message}));
+                    summary = afterReply.summary;
+                    session.compactions += 1;
+                }
+                turnPage = Math.max(1, Math.ceil(turns.length / QWEN_CHAT_TURN_PAGE_SIZE));
+                renderTranscript();
+                setStatus(`Reply complete · ${result.creditsCharged} credit${result.creditsCharged === 1 ? "" : "s"} used · ${result.outputTokens} output tokens · ${result.availableCredits} credits remaining.`, "success");
+                if (overlay.hidden) this.toast("Qwen Chat reply is ready. Open the pinned Q3.8 icon to continue.", "success");
+            }
+            catch (error) {
+                messages.pop();
+                turns.pop();
+                input.value = request;
+                renderTranscript();
+                if (error?.name !== "AbortError") setStatus(error instanceof Error ? error.message : String(error), "error");
+            }
+            finally {
+                busy = false;
+                this.qwenChatBusy = false;
+                this.ensureQwenLauncher();
+                send.disabled = false;
+                newChat.disabled = false;
+                send.textContent = "Send";
+                syncDraft(true);
+                renderContext();
+                renderHistory();
+            }
+        };
+        const onKey = event => {
+            if (overlay.hidden) return;
+            if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation?.(); cleanup(); }
+            else if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !busy) { event.preventDefault(); void submit(); }
+        };
+        this.qwenChatCleanup = cleanup;
+        modalDocument.addEventListener("keydown", onKey, true);
+        close.addEventListener("click", cleanup);
+        done.addEventListener("click", cleanup);
+        overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
+        send.addEventListener("click", () => void submit());
+        input.addEventListener("input", () => { syncDraft(); renderContext(); });
+        historyPrevious.addEventListener("click", () => { historyPage -= 1; renderHistory(); });
+        historyNext.addEventListener("click", () => { historyPage += 1; renderHistory(); });
+        turnPrevious.addEventListener("click", () => { turnPage -= 1; renderTranscript(); });
+        turnNext.addEventListener("click", () => { turnPage += 1; renderTranscript(); });
+        newChat.addEventListener("click", () => {
+            if (busy || this.qwenChatBusy) return setStatus("Wait for the current reply before starting a new chat.", "error");
+            syncDraft(true);
+            session = this.createQwenChatSession();
+            messages = [];
+            turns = [];
+            summary = "";
+            input.value = "";
+            historyPage = 1;
+            turnPage = 1;
+            renderTranscript();
+            renderContext();
+            renderHistory();
+            setStatus("New private Qwen conversation started.");
+            input.focus();
+        });
+        downloadChat.addEventListener("click", () => {
+            if (!turns.length) return setStatus("There is no conversation to download yet.", "error");
+            const content = turns.map(turn => `${turn.role === "assistant" ? "Qwen 3.8" : "You"}\n${turn.text}`).join("\n\n---\n\n");
+            downloadText(`qwen-chat-${session.id}.md`, content, "text/markdown;charset=utf-8");
+            setStatus("Conversation downloaded locally.", "success");
+        });
+        renderTranscript();
+        renderContext();
+        renderHistory();
+        syncDraft(true);
+        input.focus();
     }
 
     openVerifiedExternal(rawUrl, purpose) {
@@ -11626,6 +12338,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     buildPromptEditorUserContent,
     classifyPromptMetadata,
     compactPromptEditorContext,
+    compactQwenChatContext,
     comparisonPromptSidecarPath,
     cosineSimilarity,
     chooseBestMediaUrl,
@@ -11640,6 +12353,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     estimatePromptEditorContextTokens,
     estimatePromptEditorTextTokens,
     evaluatePromptValue,
+    extractQwenReplyFiles,
     extractMetadataDocumentPrompt,
     extractConfidentPrompt,
     extractMediaProvenance,
@@ -11679,6 +12393,8 @@ Krea2DiscordCollector.helpers = Object.freeze({
     normalizePromptEditorHistoryIndex,
     normalizePromptEditorMode,
     normalizePromptEditorSession,
+    normalizeQwenChatHistoryIndex,
+    normalizeQwenChatSession,
     normalizeMediaUrl,
     normalizePromptPreset,
     normalizeStoredSubmissionKey,
@@ -11710,6 +12426,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     savePromptSidecar,
     saveVisionPromptSidecar,
     safeModelFilePart,
+    safeQwenDownloadFilename,
     sanitizePromptFeedbackRecord,
     sanitizeOperationalErrorText,
     sanitizeFilename,
