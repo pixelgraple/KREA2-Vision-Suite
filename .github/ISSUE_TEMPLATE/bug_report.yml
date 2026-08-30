@@ -28,7 +28,6 @@ body:
       options:
         - Local GPU
         - Vast Online API
-        - Legacy Ollama hybrid
     validations:
       required: true
   - type: textarea

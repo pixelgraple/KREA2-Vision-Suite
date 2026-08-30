@@ -24,8 +24,6 @@ from ..services.discord_vision import (
     DiscordVisionSafetyRejected,
     DiscordVisionService,
     HERETIC_MODEL_IDS,
-    LEGACY_MODEL_ID,
-    MODEL_LABEL,
     PIPELINE_ID,
 )
 from ..services.forge_vram_handoff import ForgeHandoffError
@@ -920,25 +918,16 @@ def public_discord_models(request:Request,response:Response):
             "execution":"remote_serverless" if remote else "local_shared_gpu",
         })
         available.append(item)
-    available.append({
-        "public_id":LEGACY_MODEL_ID,
-        "label":f"Legacy Ollama hybrid — {MODEL_LABEL}",
-        "backend":"ollama",
-        "local_gpu":True,
-        "context_cap":32768,
-        "max_output_cap":4096,
-        "estimated_vram_mb":0,
-        "last_measured_peak_mb":0,
-        "safety_reserve_mb":max(0,settings.llama_cpp_vram_headroom_mb),
-        "admission_tolerance_mb":VRAM_ADMISSION_JITTER_MB,
-        "admission_required_mb":0,
-        "available_vram_mb":memory.free_mb if memory else None,
-        "total_vram_mb":memory.total_mb if memory else None,
-        "allocation_target_mb":max(0,settings.llama_cpp_model_allocation_target_mb),
-        "over_allocation_target":False,
-        "admission_passes_now":True,
-    })
-    preferred=settings.model if settings.model in {item["public_id"] for item in available} else LEGACY_MODEL_ID
+    available_ids={item["public_id"] for item in available}
+    preferred=(
+        settings.model
+        if settings.model in available_ids
+        else "llamacpp::heretic-8b-q8_0"
+        if "llamacpp::heretic-8b-q8_0" in available_ids
+        else available[0]["public_id"]
+        if available
+        else None
+    )
     return {"preferred":preferred,"models":available}
 
 class ModelInstallRequest(BaseModel):

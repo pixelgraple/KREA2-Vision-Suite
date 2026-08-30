@@ -77,7 +77,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.16.2-win64.zip](releases/Krea2VisionSuite-v0.16.2-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.16.3-win64.zip](releases/Krea2VisionSuite-v0.16.3-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -192,7 +192,7 @@ Modern Qwen3-VL and Gemma Heretic models perform both visual analysis and final 
 
 The three prompts may vary in sentence rhythm and emphasis, but they must describe the same image. A validator rejects malformed JSON, refusals, negative prompts, duplicated variants, unsupported facts, overly short output, and LoRA syntax enclosed in angle brackets. A bounded repair or per-variant fallback can recover usable model output without discarding the audited image evidence.
 
-The optional `babegen-prompter:9b-q5` model exists only for the explicitly selected legacy compatibility route. Modern Qwen/Gemma Vision output is not automatically rewritten by that legacy prompter.
+Every selectable local or Online API model is multimodal and writes its own KREA2 prompt from the supplied image. The retired legacy Ollama hybrid and its separate `babegen-prompter:9b-q5` rewrite pass are no longer installed or offered, avoiding an unnecessary model download and a second pass that could dilute visual evidence. The separately opened Qwen Prompt Editor remains available for deliberate user-requested edits.
 
 ## Optional eight-example KREA2 guidance
 

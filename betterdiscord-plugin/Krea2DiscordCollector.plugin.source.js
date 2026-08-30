@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.16.2
+ * @version 0.16.3
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -26,7 +26,7 @@ catch {
 }
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.16.2";
+const PLUGIN_VERSION = "0.16.3";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -357,8 +357,7 @@ const VISION_MODEL_OPTIONS = Object.freeze([
     ["Heretic — Gemma 4 26B-A4B Q3_K_L (24,576 MiB estimate)", "llamacpp::gemma4-26b-a4b-heretic-q3_k_l"],
     ["Abliterated — Qwen3-VL 30B-A3B Q2_K (18,432 MiB estimate)", "llamacpp::qwen3-vl-30b-a3b-abliterated-q2_k"],
     ["Heretic — Gemma 4 31B Q4_K_M (24,576 MiB estimate)", "llamacpp::gemma4-31b-heretic-q4_k_m"],
-    ["Heretic — Qwen3-VL 32B Q4_K_M (26,624 MiB estimate)", "llamacpp::qwen3-vl-32b-heretic-q4_k_m"],
-    ["Legacy Ollama hybrid", "discord::legacy-ollama-hybrid"]
+    ["Heretic — Qwen3-VL 32B Q4_K_M (26,624 MiB estimate)", "llamacpp::qwen3-vl-32b-heretic-q4_k_m"]
 ]);
 const ONLINE_VISION_MODEL_ID = "vast::gemma4-26b-a4b-heretic-q3_k_l";
 const ONLINE_VISION_MODEL_LABEL = "Online API — Gemma 4 26B-A4B Heretic Q3_K_L (24 GB remote GPU)";
@@ -3084,7 +3083,6 @@ function historyJobMatchesModel(job, modelId) {
     if (modelId === "llamacpp::gemma4-12b-heretic-q8_0") return /\b12b\b/.test(model) && /gemma/.test(model) && /heretic/.test(model) && !/opus/.test(model);
     if (modelId === "llamacpp::gemma4-31b-heretic-q4_k_m") return /\b31b\b/.test(model) && /gemma/.test(model);
     if (modelId === "llamacpp::qwen3-vl-32b-heretic-q4_k_m") return /\b32b\b/.test(model) && /qwen/.test(model);
-    if (modelId === "discord::legacy-ollama-hybrid") return /legacy|trueinterrogate|babegen/.test(model);
     return false;
 }
 
@@ -4675,8 +4673,7 @@ class Krea2DiscordCollector {
             const payload = await this.fetchProductJson("/api/discord-models");
             const order = new Map([
                 ...HERETIC_MODEL_SPECS.map((item, index) => [item.public_id, index]),
-                [ONLINE_VISION_MODEL_ID, HERETIC_MODEL_SPECS.length],
-                ["discord::legacy-ollama-hybrid", HERETIC_MODEL_SPECS.length + 1]
+                [ONLINE_VISION_MODEL_ID, HERETIC_MODEL_SPECS.length]
             ]);
             this.interrogateModels = (Array.isArray(payload?.models) ? payload.models : [])
                 .filter(item => item && VISION_MODEL_IDS.has(String(item.public_id || "")))
@@ -7203,26 +7200,85 @@ class Krea2DiscordCollector {
         }
         const license = await this.ensureRemoteCredits(signal, "prompt-chat");
         const requestId = createHash("sha256").update(randomBytes(48)).digest("hex");
-        const response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/prompt-chat/completions`, {
+        const authorization = `Krea2License ${license.licenseId}.${license.licenseToken}`;
+        const parseGatewayJson = async (response, phase) => {
+            const responseText = await readBoundedResponseText(response, 128 * 1024);
+            try { return JSON.parse(responseText); }
+            catch {
+                const contentType = String(response.headers?.get?.("content-type") || "unknown content type").split(";")[0];
+                const summary = responseText
+                    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+                    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+                    .replace(/<[^>]+>/g, " ")
+                    .replace(/\s+/g, " ")
+                    .trim()
+                    .slice(0, 240);
+                throw new Error(`Qwen Prompt Editor ${phase} returned HTTP ${response.status} with ${contentType} instead of JSON${summary ? `: ${summary}` : "."}`);
+            }
+        };
+        const response = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/prompt-chat/jobs`, {
             method: "POST",
             redirect: "manual",
             maxRedirects: 0,
-            timeout: 8 * 60 * 1000,
+            timeout: 30000,
             signal,
             headers: {
                 Accept: "application/json",
                 "Content-Type": "application/json",
-                Authorization: `Krea2License ${license.licenseId}.${license.licenseToken}`,
+                Authorization: authorization,
                 "X-Krea2-Request-Id": requestId,
                 "X-Krea2-Collector-Version": PLUGIN_VERSION
             },
             body: JSON.stringify({model: "heretic-3.8-q4-cloud", messages: boundedMessages, temperature: 0.35, max_tokens: 1536, stream: false})
         });
-        const responseText = await readBoundedResponseText(response, 128 * 1024);
-        let result;
-        try { result = JSON.parse(responseText); }
-        catch { throw new Error("Qwen Prompt Editor returned invalid JSON."); }
-        if (!response.ok) throw new Error(String(result?.detail || `Qwen Prompt Editor failed with HTTP ${response.status}.`));
+        const accepted = await parseGatewayJson(response, "submission");
+        if (!response.ok) throw new Error(String(accepted?.detail || `Qwen Prompt Editor failed with HTTP ${response.status}.`));
+        if (accepted?.request_id !== requestId || !["queued", "running", "completed"].includes(String(accepted?.status || ""))) {
+            throw new Error("Qwen Prompt Editor returned an invalid job acknowledgement.");
+        }
+        let result = accepted;
+        const deadline = Date.now() + (8 * 60 * 1000);
+        let transientFailures = 0;
+        while (result?.status !== "completed") {
+            if (signal?.aborted) throw new DOMException("The Prompt Editor request was cancelled.", "AbortError");
+            if (Date.now() >= deadline) throw new Error("Qwen Prompt Editor did not complete within 8 minutes; any reserved credit will be refunded automatically.");
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    signal?.removeEventListener?.("abort", onAbort);
+                    resolve();
+                }, 1500);
+                const onAbort = () => {
+                    clearTimeout(timer);
+                    reject(new DOMException("The Prompt Editor request was cancelled.", "AbortError"));
+                };
+                signal?.addEventListener?.("abort", onAbort, {once: true});
+            });
+            try {
+                const poll = await this.api.Net.fetch(`${REMOTE_GATEWAY_URL}/v1/prompt-chat/jobs/${requestId}`, {
+                    method: "GET",
+                    redirect: "manual",
+                    maxRedirects: 0,
+                    timeout: 30000,
+                    signal,
+                    headers: {
+                        Accept: "application/json",
+                        Authorization: authorization,
+                        "X-Krea2-Collector-Version": PLUGIN_VERSION
+                    }
+                });
+                result = await parseGatewayJson(poll, "status check");
+                if (!poll.ok) throw new Error(String(result?.detail || `Qwen Prompt Editor failed with HTTP ${poll.status}.`));
+                if (result?.request_id !== requestId || !["queued", "running", "completed"].includes(String(result?.status || ""))) {
+                    throw new Error("Qwen Prompt Editor returned an invalid job status.");
+                }
+                transientFailures = 0;
+            }
+            catch (error) {
+                if (error?.name === "AbortError") throw error;
+                transientFailures += 1;
+                if (transientFailures >= 4 || !/HTTP 5\d\d|fetch|network|socket|timed? out/i.test(String(error?.message || error))) throw error;
+            }
+        }
         const reply = String(result?.reply || "").trim();
         if (!reply || reply.length > 24000 || result?.model !== "heretic-3.8-q4-cloud" || result?.credits_charged !== 1) {
             throw new Error("Qwen Prompt Editor returned an invalid reply.");

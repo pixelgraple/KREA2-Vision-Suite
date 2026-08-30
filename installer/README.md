@@ -16,7 +16,7 @@ The installer:
 - installs or repairs the backend-only Vision service while preserving `.env`, models, logs, and its virtual environment;
 - creates private loopback Vision and Forge-handoff tokens and writes the matching plugin/service configuration automatically;
 - installs the pinned, hash-verified llama.cpp runtime, automatically downloads the recommended 8B Heretic body/projector pair by default, and verifies all model files it finds;
-- installs and verifies the pinned `babegen-prompter:9b-q5` Ollama model;
+- uses the selected multimodal Vision model to write the final prompt directly, with no separate prompt-writer download;
 - creates desktop Start/Repair BAT files and a hidden Windows-login launcher that starts Ollama compatibility and the Vision backend only when needed;
 - starts the backend and verifies its loopback health, selected Vision model, startup registration, and installed plugin SHA-256.
 

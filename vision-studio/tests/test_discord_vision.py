@@ -2512,6 +2512,40 @@ class DiscordVisionApiTests(unittest.TestCase):
         self.jobs.close()
         self.temporary.cleanup()
 
+    def test_public_model_catalog_contains_only_multimodal_vision_models(self):
+        models = [
+            {
+                "public_id": "llamacpp::heretic-8b-q8_0",
+                "label": "Heretic 8B",
+                "local_gpu": True,
+                "context_cap": 4096,
+                "estimated_vram_mb": 8192,
+            },
+            {
+                "public_id": "vast::gemma4-26b-a4b-heretic-q3_k_l",
+                "label": "Online API",
+                "local_gpu": False,
+                "context_cap": 4096,
+                "estimated_vram_mb": 0,
+            },
+        ]
+        telemetry = Mock()
+        telemetry.get.return_value = {}
+        with patch.object(api_module, "public_model_statuses", return_value=models), patch.object(
+            api_module, "available_model_specs", return_value=[]
+        ), patch.object(api_module, "MeasuredPeakStore", return_value=telemetry), patch.object(
+            api_module, "query_gpu_memory", return_value=Mock(free_mb=24000, total_mb=24576)
+        ):
+            client = TestClient(self.app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7870")
+            response = client.get("/api/discord-models")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        public_ids = {item["public_id"] for item in payload["models"]}
+        self.assertEqual(payload["preferred"], "llamacpp::heretic-8b-q8_0")
+        self.assertNotIn("discord::legacy-ollama-hybrid", public_ids)
+        self.assertNotIn("babegen-prompter:9b-q5", json.dumps(payload))
+
     def post(
         self,
         client,

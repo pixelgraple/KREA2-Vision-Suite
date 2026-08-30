@@ -126,7 +126,7 @@ assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION}), false)
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION - 1, acceptedAt: Date.now()}), false);
 assert.equal(isCurrentPrivacyReceipt({version: PRIVACY_RECEIPT_VERSION, acceptedAt: Date.now()}), true);
 assert.equal(visionModelDisplayName("llamacpp::heretic-8b-q8_0"), "Heretic — Qwen3-VL 8B Q8_0");
-assert.equal(visionModelDisplayName("discord::legacy-ollama-hybrid"), "Legacy Ollama hybrid");
+assert.equal(effectiveVisionModel({...DEFAULT_SETTINGS, visionExecutionMode: "local", visionModel: "discord::legacy-ollama-hybrid"}), DEFAULT_SETTINGS.visionModel);
 assert.equal(visionModelDisplayName("custom::model"), "custom::model");
 assert.equal(normalizeVisionExecutionMode("ONLINE"), "online");
 assert.equal(normalizeVisionExecutionMode("anything-else"), "local");
@@ -271,7 +271,8 @@ if (presentSuitePackagingPaths.length === suitePackagingPaths.length) {
         assert.match(suiteInstallerSource, new RegExp(packageId.replaceAll(".", "\\.")));
     }
     assert.match(suiteInstallerSource, /Krea2DiscordCollector\.config\.json/);
-    assert.match(suiteInstallerSource, /babegen-prompter:9b-q5/);
+    assert.doesNotMatch(suiteInstallerSource, /babegen-prompter:9b-q5/);
+    assert.doesNotMatch(suiteInstallerSource, /Ensure-PromptTextModel/);
     assert.match(suiteInstallerSource, /KREA2_DISCORD_VISION_TOKEN/);
     assert.match(suiteInstallerSource, /KREA2 Vision Suite\.lnk/);
     assert.match(suiteInstallerSource, /Stop-OwnedSuiteProcesses/);
@@ -625,7 +626,7 @@ assert.deepEqual(
         classification: "usable",
         prompt: detailedVisionPrompt,
         prompt_variants: detailedVisionPromptVariants,
-        model: "trueinterrogate-qwen25:latest + babegen-prompter:9b-q5",
+        model: "llamacpp::heretic-8b-q8_0",
         prompt_words: 384,
         pipeline_id: VISION_PIPELINE_ID,
         dataset_guidance: disabledDatasetGuidance,
@@ -634,7 +635,7 @@ assert.deepEqual(
     {
         prompt: normalizedDetailedVisionPrompt,
         prompt_variants: detailedVisionPromptVariants,
-        model: "trueinterrogate-qwen25:latest + babegen-prompter:9b-q5",
+        model: "llamacpp::heretic-8b-q8_0",
         prompt_words: 384,
         pipeline_id: VISION_PIPELINE_ID,
         dataset_guidance: disabledDatasetGuidance

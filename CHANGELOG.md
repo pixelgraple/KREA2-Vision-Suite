@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.16.3 - 2026-08-29
+
+- Removes the retired Legacy Ollama hybrid from BetterDiscord and the loopback model catalog.
+- Stops downloading or verifying the separate `babegen-prompter:9b-q5` model; every selectable local or Online API Vision model now writes its own prompt directly from the image.
+- Preserves the separately opened Qwen Prompt Editor and forward-ports its asynchronous cloud job submission and polling transport.
+
 ## 0.16.2 - 2026-08-29
 
 - Removes Region Inpaint Prompt Correction, its mask-and-rewrite interface, and its combined four-credit preflight path.

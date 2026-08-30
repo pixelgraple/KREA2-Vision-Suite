@@ -12,6 +12,7 @@ param(
     [switch] $NoDiscordRestart,
     [switch] $SkipPythonPackages,
     [switch] $SkipLlamaCppRuntime,
+    # Retained as a no-op so older automatic updaters can install this release.
     [switch] $SkipPromptTextModel,
     [ValidateRange(0,2147483647)]
     [int] $PreviousVisionPid = 0
@@ -57,16 +58,6 @@ $models = [ordered]@{
     '30B-A3B-Abliterated' = [pscustomobject]@{Name='Qwen3-VL 30B-A3B Abliterated Q2_K';PublicId='llamacpp::qwen3-vl-30b-a3b-abliterated-q2_k';Estimate=18432;Reserve=4096;Required=22528;DownloadBytes=[long]11970760960;Card='https://huggingface.co/mradermacher/Qwen3-VL-30B-A3B-Instruct-abliterated-GGUF'}
     '31B' = [pscustomobject]@{Name='Gemma 4 31B Heretic Q4_K_M';PublicId='llamacpp::gemma4-31b-heretic-q4_k_m';Estimate=24576;Reserve=4096;Required=28672;DownloadBytes=[long]19887789376;Card='https://huggingface.co/llmfan46/gemma-4-31B-it-uncensored-heretic-GGUF'}
     '32B' = [pscustomobject]@{Name='Qwen3-VL 32B Heretic Q4_K_M';PublicId='llamacpp::qwen3-vl-32b-heretic-q4_k_m';Estimate=26624;Reserve=4096;Required=30720;DownloadBytes=[long]20983456064;Card='https://huggingface.co/llmfan46/Qwen3-VL-32B-Instruct-ultra-uncensored-heretic-GGUF'}
-}
-
-$promptModel = [pscustomobject]@{
-    Name = 'Qwen3.5 9B Heretic Q5_K_M prompt writer'
-    OllamaName = 'babegen-prompter:9b-q5'
-    FileName = 'Qwen3.5-9B-heretic-ARA-Refusals5-Q5_K_M.gguf'
-    Size = [long]6467969376
-    Sha256 = '2dae48449a550889f6ece7abe9fde738648bfdc8c172bab58d0d4b2aae22fd0b'
-    Url = 'https://huggingface.co/NullpoLab/Qwen3.5-9B-Heretic-ARA-Refusals5-GGUF/resolve/1191ba394d2203f3f1b085843a3b63c872ae84b1/Qwen3.5-9B-heretic-ARA-Refusals5-Q5_K_M.gguf?download=true'
-    Card = 'https://huggingface.co/NullpoLab/Qwen3.5-9B-Heretic-ARA-Refusals5-GGUF'
 }
 
 function Write-Step { param([string] $Text); Write-Host ''; Write-Host ("== {0}" -f $Text) -ForegroundColor Cyan }
@@ -363,21 +354,6 @@ function Receive-PinnedFile {
     Move-Item -LiteralPath $partial -Destination $Destination -Force
 }
 
-function Ensure-PromptTextModel {
-    if($SkipPromptTextModel){return}
-    & $script:OllamaExecutable show $promptModel.OllamaName *> $null
-    if($LASTEXITCODE -eq 0){Write-Host ('Ollama text model already installed: {0}' -f $promptModel.OllamaName) -ForegroundColor Green;return}
-    Write-Step ('Downloading and verifying '+$promptModel.Name)
-    $modelDirectory=Join-Path $installRoot 'models\prompt-writer';$ggufPath=Join-Path $modelDirectory $promptModel.FileName
-    Receive-PinnedFile $promptModel.Url $ggufPath $promptModel.Size $promptModel.Sha256
-    $modelfile=Join-Path $modelDirectory 'Modelfile'
-    $modelfileText=@(('FROM ./{0}' -f $promptModel.FileName),'PARAMETER num_ctx 4096','PARAMETER temperature 0.35','PARAMETER top_p 0.9','SYSTEM You are a concise image-generation prompt writer. Follow the caller schema exactly.') -join "`r`n"
-    [IO.File]::WriteAllText($modelfile,$modelfileText+"`r`n",[Text.UTF8Encoding]::new($false))
-    Invoke-Checked $script:OllamaExecutable @('create',$promptModel.OllamaName,'-f',$modelfile) $modelDirectory
-    & $script:OllamaExecutable show $promptModel.OllamaName *> $null
-    if($LASTEXITCODE -ne 0){throw 'Ollama did not register the verified legacy prompt-composer model.'}
-}
-
 function Install-Launchers {
     Copy-CodeTree $PSScriptRoot $installedInstallerRoot
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-Krea2VisionSuite.ps1') -Destination (Join-Path $installRoot 'Start-Krea2VisionSuite.ps1') -Force
@@ -439,7 +415,6 @@ function Verify-Installation {
     Wait-Endpoint 'Vision backend' 'http://127.0.0.1:7870/health' 180
     if(-not(Test-Endpoint 'http://127.0.0.1:11434/api/version')){throw 'Ollama health verification failed.'}
     if($SelectedPublicId){$catalog=Invoke-RestMethod -Uri 'http://127.0.0.1:7870/api/discord-models' -TimeoutSec 240;$installed=@($catalog.models|Where-Object{$_.public_id -eq $SelectedPublicId});if($installed.Count -ne 1){throw ('Selected Vision model was not reported as installed: {0}' -f $SelectedPublicId)}}
-    if(-not $SkipPromptTextModel){& $script:OllamaExecutable show $promptModel.OllamaName *> $null;if($LASTEXITCODE -ne 0){throw 'Legacy Ollama prompt-composer model verification failed.'}}
     $installedHash=(Get-FileHash -LiteralPath $pluginTarget -Algorithm SHA256).Hash.ToLowerInvariant();$sourceHash=(Get-FileHash -LiteralPath $pluginSource -Algorithm SHA256).Hash.ToLowerInvariant();if($installedHash -ne $sourceHash){throw 'Installed plugin hash does not match the release bundle.'}
     if(-not $NoStartup -and -not(Test-Path -LiteralPath (Join-Path $startup 'KREA2 Vision Suite.lnk') -PathType Leaf)){throw 'Windows startup registration was not created.'}
     return [ordered]@{vision_health='ok';ollama_health='ok';selected_model=$SelectedPublicId;plugin_sha256=$installedHash;startup_registered=-not $NoStartup}
@@ -476,7 +451,7 @@ if($Mode -ne 'PluginOnly'){
     if(-not $visionToken){$visionToken=Get-EnvValue $visionEnv 'KREA2_DISCORD_VISION_TOKEN'};if(-not $visionToken -or $visionToken.Length -lt 32){$visionToken=New-RandomSecret -Bytes 48}
     Set-EnvValue $visionEnv 'KREA2_DISCORD_VISION_TOKEN' $visionToken;Set-EnvValue $visionEnv 'QWEN_BACKEND' 'llama_cpp';Set-EnvValue $visionEnv 'QWEN_MODEL' $selectedPublicId;Set-EnvValue $visionEnv 'LLAMA_CPP_MODEL_ROOT' (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KreaHereticModels');Set-EnvValue $visionEnv 'STUDIO_FORGE_HANDOFF_TOKEN_FILE' $forgeTokenFile
     if(-not $SkipLlamaCppRuntime){Write-Step 'Installing the verified llama.cpp runtime and Vision model';$runtimeInstaller=Join-Path $visionTarget 'scripts\install_heretic_llamacpp.ps1';$runtimeArguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$runtimeInstaller,'-InstallRoot',(Join-Path $env:LOCALAPPDATA 'Krea2Vision\llama.cpp\b10590'),'-CacheRoot',(Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KreaHereticModels\.downloads'),'-ModelRoot',(Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KreaHereticModels'),'-VerifyManualModels');if($Model -ne 'None'){$runtimeArguments+=@('-DownloadModels',$Model)};Invoke-Checked 'powershell.exe' $runtimeArguments}
-    Ensure-PromptTextModel;Install-Launchers;Stop-OwnedSuiteProcesses
+    Install-Launchers;Stop-OwnedSuiteProcesses
 }elseif(-not $visionToken){$visionToken=New-RandomSecret -Bytes 48}
 
 Configure-Plugin $visionToken $selectedPublicId
@@ -484,7 +459,7 @@ if($Mode -ne 'PluginOnly'){$verification=Verify-Installation $(if($Model -eq 'No
 else{$installedHash=(Get-FileHash -LiteralPath $pluginTarget -Algorithm SHA256).Hash.ToLowerInvariant();$sourceHash=(Get-FileHash -LiteralPath $pluginSource -Algorithm SHA256).Hash.ToLowerInvariant();if($installedHash -ne $sourceHash){throw 'Installed plugin hash does not match the release bundle.'};$verification=[ordered]@{plugin_sha256=$installedHash;plugin_only=$true}}
 
 [IO.Directory]::CreateDirectory($installRoot)|Out-Null
-$receipt=[ordered]@{schema_version=1;release_version=$suiteVersion;installed_at=[DateTimeOffset]::Now.ToString('o');mode=$Mode;install_root=$installRoot;vision_model=$selectedPublicId;prompt_model=$(if($SkipPromptTextModel){$null}else{$promptModel.OllamaName});plugin_path=$pluginTarget;verification=$verification}
+$receipt=[ordered]@{schema_version=1;release_version=$suiteVersion;installed_at=[DateTimeOffset]::Now.ToString('o');mode=$Mode;install_root=$installRoot;vision_model=$selectedPublicId;prompt_model=$null;plugin_path=$pluginTarget;verification=$verification}
 [IO.File]::WriteAllText($receiptPath,($receipt|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
 Start-Discord
 Write-Host '';Write-Host 'KREA2 Vision Suite is installed, configured, running, and registered for Windows startup.' -ForegroundColor Green

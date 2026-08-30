@@ -52,11 +52,9 @@ The variants must remain semantically consistent. The pipeline strips angle-brac
 
 If batched structured output is malformed, a bounded fallback writes each variant separately from the same audited evidence. This is formatting recovery, not a second visual analysis.
 
-## Modern models versus the legacy prompter
+## One multimodal model, no automatic rewrite model
 
-For modern multimodal Qwen/Gemma routes, the selected Vision model writes and audits its own final prompts. This avoids losing image evidence through a second unrelated text model.
-
-`babegen-prompter:9b-q5` remains available only in the explicitly selected legacy Ollama hybrid. It is useful for compatibility with older setups but is not required for Gemma or Qwen Heretic routes.
+The selected multimodal Qwen/Gemma model writes and audits its own final prompts from the image. BetterDiscord no longer offers the legacy Ollama hybrid and the installer no longer downloads `babegen-prompter:9b-q5`. This avoids losing visual evidence through an unrelated automatic rewrite model. The Qwen Prompt Editor is separate and runs only after a user explicitly asks it to change or audit a prompt.
 
 ## Output guarantees and limits
 

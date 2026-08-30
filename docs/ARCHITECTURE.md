@@ -44,7 +44,7 @@ Vision Studio is a FastAPI service bound to `127.0.0.1:7870`. It owns image vali
 
 ### Local models
 
-The llama.cpp provider launches a selected GGUF body with its matching multimodal projector. Quantization-specific IDs prevent telemetry or measured VRAM from one quantization being reused for another. The optional Ollama route exists for legacy compatibility; modern Qwen/Gemma routes are not silently rewritten by the legacy prompter.
+The llama.cpp provider launches a selected GGUF body with its matching multimodal projector. Quantization-specific IDs prevent telemetry or measured VRAM from one quantization being reused for another. The selected multimodal Qwen/Gemma model both observes the image and writes the resulting KREA2 prompt; no automatic second-stage prompter is installed or exposed.
 
 ### Vast Serverless worker
 
