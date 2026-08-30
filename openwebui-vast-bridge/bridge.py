@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import os
 import time
 import uuid
@@ -56,6 +57,18 @@ AUTO_CONTINUE_MAX_SEGMENTS = max(
     min(4, int(CONFIG.get("auto_continue_max_segments", 3))),
 )
 MODEL_CONTEXT_TOKENS = max(4096, int(CONFIG.get("model_context_tokens", 32768)))
+CONTEXT_TARGET_INPUT_TOKENS = max(
+    2048,
+    min(MODEL_CONTEXT_TOKENS - 1024, int(CONFIG.get("context_target_input_tokens", 12288))),
+)
+CONTEXT_TEMPLATE_RESERVE_TOKENS = max(
+    256,
+    int(CONFIG.get("context_template_reserve_tokens", 1024)),
+)
+CONTEXT_SUMMARY_MAX_CHARS = max(
+    256,
+    int(CONFIG.get("context_summary_max_chars", 1800)),
+)
 MAX_PARALLEL_REQUESTS = max(1, min(8, int(CONFIG.get("max_parallel_requests", 1))))
 VAST_REQUEST_GATE = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 
@@ -105,7 +118,155 @@ def _unwrap_response(result: Any) -> dict[str, Any]:
     return result
 
 
-def _clean_payload(body: Any) -> tuple[dict[str, Any], int, bool]:
+def _estimate_text_tokens(value: Any) -> int:
+    """Conservative tokenizer-free estimate for mixed prose, code, and Unicode."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if not text:
+        return 0
+    utf8_bytes = len(text.encode("utf-8"))
+    return max(math.ceil(len(text) / 3), math.ceil(utf8_bytes / 3))
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    return 8 + _estimate_text_tokens(message)
+
+
+def _clip_text(value: str, token_budget: int) -> str:
+    text = str(value or "")
+    if _estimate_text_tokens(text) <= token_budget:
+        return text
+    if token_budget <= 32:
+        return text[-max(16, token_budget * 2):]
+    char_budget = max(96, token_budget * 2)
+    head_chars = max(48, char_budget // 3)
+    tail_chars = max(48, char_budget - head_chars)
+    marker = "\n\n[...older text compacted locally to fit the 32K cloud context...]\n\n"
+    clipped = f"{text[:head_chars]}{marker}{text[-tail_chars:]}"
+    while _estimate_text_tokens(clipped) > token_budget and tail_chars > 48:
+        tail_chars = max(48, int(tail_chars * 0.85))
+        head_chars = max(48, int(head_chars * 0.85))
+        clipped = f"{text[:head_chars]}{marker}{text[-tail_chars:]}"
+    return clipped
+
+
+def _clip_message(message: dict[str, Any], token_budget: int) -> dict[str, Any]:
+    clipped = dict(message)
+    content = clipped.get("content")
+    if isinstance(content, str):
+        clipped["content"] = _clip_text(content, max(32, token_budget - 12))
+    else:
+        serialized = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+        clipped["content"] = _clip_text(serialized, max(32, token_budget - 12))
+    return clipped
+
+
+def _compact_messages(
+    messages: list[Any],
+    input_token_budget: int,
+) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
+    normalized = [dict(message) for message in messages if isinstance(message, dict)]
+    before_tokens = sum(_estimate_message_tokens(message) for message in normalized)
+    if before_tokens <= input_token_budget:
+        return normalized, {
+            "compacted": False,
+            "before_tokens": before_tokens,
+            "after_tokens": before_tokens,
+            "omitted_messages": 0,
+        }
+
+    system_messages: list[dict[str, Any]] = []
+    conversation: list[dict[str, Any]] = []
+    for message in normalized:
+        if str(message.get("role") or "").lower() in {"system", "developer"} and not conversation:
+            system_messages.append(message)
+        else:
+            conversation.append(message)
+
+    # Keep the first instruction block, the newest turns, and a short local digest.
+    # Open WebUI remains the source of truth for the complete raw transcript.
+    system_budget = min(max(1024, input_token_budget // 4), 4096)
+    retained_system: list[dict[str, Any]] = []
+    used = 0
+    for message in system_messages:
+        remaining = system_budget - used
+        if remaining < 64:
+            break
+        clipped = _clip_message(message, remaining)
+        retained_system.append(clipped)
+        used += _estimate_message_tokens(clipped)
+
+    recent_budget = max(512, input_token_budget - used - 768)
+    recent_reversed: list[dict[str, Any]] = []
+    recent_used = 0
+    omitted_count = 0
+    for message in reversed(conversation):
+        tokens = _estimate_message_tokens(message)
+        remaining = recent_budget - recent_used
+        if remaining >= tokens:
+            recent_reversed.append(message)
+            recent_used += tokens
+            continue
+        if not recent_reversed and remaining >= 64:
+            clipped = _clip_message(message, remaining)
+            recent_reversed.append(clipped)
+            recent_used += _estimate_message_tokens(clipped)
+        omitted_count += 1
+    recent = list(reversed(recent_reversed))
+    omitted = conversation[:max(0, len(conversation) - len(recent_reversed))]
+
+    digest_parts: list[str] = []
+    digest_chars = 0
+    for message in omitted[-12:]:
+        role = str(message.get("role") or "message").lower()
+        content = message.get("content")
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        text = " ".join(text.split())
+        if not text:
+            continue
+        excerpt = text[:220]
+        part = f"{role}: {excerpt}"
+        if digest_chars + len(part) > CONTEXT_SUMMARY_MAX_CHARS:
+            break
+        digest_parts.append(part)
+        digest_chars += len(part)
+    digest: dict[str, Any] | None = None
+    if digest_parts:
+        digest = {
+            "role": "system",
+            "content": (
+                "[Local 32K context compaction: older raw turns were removed only from this outbound "
+                "model request; the complete conversation remains in Open WebUI history. Recent older "
+                "turn excerpts follow.]\n" + "\n".join(digest_parts)
+            ),
+        }
+
+    compacted = [*retained_system]
+    if digest is not None:
+        compacted.append(digest)
+    compacted.extend(recent)
+    while compacted and sum(_estimate_message_tokens(item) for item in compacted) > input_token_budget:
+        removable = next(
+            (index for index, item in enumerate(compacted[:-1]) if item.get("role") != "system"),
+            None,
+        )
+        if removable is None:
+            if len(compacted) == 1:
+                compacted[0] = _clip_message(compacted[0], input_token_budget)
+                break
+            compacted.pop(1 if len(compacted) > 1 else 0)
+        else:
+            compacted.pop(removable)
+
+    after_tokens = sum(_estimate_message_tokens(message) for message in compacted)
+    return compacted, {
+        "compacted": True,
+        "before_tokens": before_tokens,
+        "after_tokens": after_tokens,
+        "omitted_messages": max(omitted_count, len(normalized) - len(compacted)),
+    }
+
+
+def _clean_payload(body: Any) -> tuple[dict[str, Any], int, bool, dict[str, int | bool]]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
     payload = dict(body)
@@ -136,7 +297,17 @@ def _clean_payload(body: Any) -> tuple[dict[str, Any], int, bool]:
     payload["chat_template_kwargs"] = template_kwargs
     stream = bool(payload.get("stream", False))
     payload["stream"] = stream
-    return payload, max_tokens, stream
+    non_message_payload = {key: value for key, value in payload.items() if key != "messages"}
+    overhead_tokens = _estimate_text_tokens(non_message_payload) + CONTEXT_TEMPLATE_RESERVE_TOKENS
+    input_budget = min(
+        CONTEXT_TARGET_INPUT_TOKENS,
+        max(512, MODEL_CONTEXT_TOKENS - max_tokens - overhead_tokens),
+    )
+    compacted_messages, context_info = _compact_messages(messages, input_budget)
+    payload["messages"] = compacted_messages
+    context_info["input_budget"] = input_budget
+    context_info["output_budget"] = max_tokens
+    return payload, max_tokens, stream, context_info
 
 
 async def _request_vast(payload: dict[str, Any], cost: int, *, stream: bool) -> Any:
@@ -369,7 +540,13 @@ async def _sse_stream(payload: dict[str, Any], cost: int) -> AsyncIterator[bytes
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "endpoint": ENDPOINT, "model": MODEL}
+    return {
+        "ok": True,
+        "endpoint": ENDPOINT,
+        "model": MODEL,
+        "model_context_tokens": MODEL_CONTEXT_TOKENS,
+        "target_input_tokens": CONTEXT_TARGET_INPUT_TOKENS,
+    }
 
 
 @app.get("/v1/models")
@@ -388,15 +565,24 @@ async def chat_completions(
         body = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON request") from exc
-    payload, cost, stream = _clean_payload(body)
+    payload, cost, stream, context_info = _clean_payload(body)
+    context_headers = {
+        "X-Krea2-Context-Compacted": "true" if context_info["compacted"] else "false",
+        "X-Krea2-Context-Tokens": str(context_info["after_tokens"]),
+        "X-Krea2-Context-Budget": str(context_info["input_budget"]),
+    }
     if stream:
         return StreamingResponse(
             _sse_stream(payload, cost),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                **context_headers,
+            },
         )
     try:
         result = await _request_vast(payload, cost, stream=False)
-        return JSONResponse(_unwrap_response(result))
+        return JSONResponse(_unwrap_response(result), headers=context_headers)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)[:500]) from exc

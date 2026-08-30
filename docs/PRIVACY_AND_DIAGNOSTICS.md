@@ -8,6 +8,7 @@ KREA2 is designed around data minimization, explicit feature boundaries, and loc
 - No contact list, friend list, server membership, or general message collection.
 - No full-resolution image library.
 - Discord Prompt History is the intentional local exception: generated prompts and sanitized job metadata remain in private local SQLite until the user selects **Clear history**.
+- Qwen Prompt Editor conversations are a second intentional local exception: full editor transcripts are stored in BetterDiscord's private plugin data so closing the modal or restarting Discord does not erase them. They are never added to Discord messages or Prompt History SQLite automatically.
 - Optional network features are separately named and disclosed.
 - Required operational error reporting is limited to technical fields and excludes user content.
 - Credentials, logs, runtime data, models, and user content are excluded from the public repository.
@@ -23,6 +24,10 @@ The plugin keeps 640 px preview thumbnails, each capped at 2 MiB, in the user's 
 Online mode is disabled unless an operator configures an approved endpoint and private credential in the local broker environment. The image must leave the PC for remote inference. The included Vast worker is designed to process request content in memory and does not intentionally persist images or prompts to worker disk.
 
 An operator exposing online mode to other users must add per-user authentication, quotas, revocation, rate limits, transport security, abuse controls, and a published retention policy. The included local-first configuration is not by itself a public SaaS gateway.
+
+The Qwen Prompt Editor keeps its complete paginated transcript only in BetterDiscord's local plugin data. Each active inference request uses a bounded 32K working context. When that working context fills, older raw turns are replaced by a compact local summary for subsequent model requests; the full local transcript remains available in the editor's history. Closing the editor only hides it and does not cancel an in-flight reply. The KREA2 gateway forwards the bounded request for inference but does not store the conversation text.
+
+Open WebUI is a separate client with separate history. Its local Vast bridge bounds only the outbound copy sent to the cloud model and does not edit or delete the conversation stored by Open WebUI.
 
 ## KREA2 guidance and contribution
 

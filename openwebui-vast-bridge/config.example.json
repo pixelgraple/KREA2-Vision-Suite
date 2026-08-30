@@ -7,5 +7,8 @@
   "max_tokens_limit": 16384,
   "default_max_tokens": 8192,
   "auto_continue_max_segments": 3,
-  "model_context_tokens": 32768
+  "model_context_tokens": 32768,
+  "context_target_input_tokens": 12288,
+  "context_template_reserve_tokens": 1024,
+  "context_summary_max_chars": 1800
 }

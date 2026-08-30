@@ -209,7 +209,9 @@ The KREA2 gateway:
 - stores bounded operational/accounting metadata such as request ID, request digest, account/license association, model ID, credit state, and timestamps;
 - returns the reply, confirmed model ID, exact credit charge, and remaining balance.
 
-The BetterDiscord plugin keeps the current prompt, typed instruction, transcript, and recovery draft only in memory for the running Discord session. Reloading the plugin or Discord discards that recovery state. Selecting **New chat** clears the conversation context while leaving the current prompt available.
+The BetterDiscord plugin stores each Prompt Editor conversation privately in its local plugin data. Closing the modal only hides it and does not cancel an in-flight edit. Conversations, the current prompt, typed instructions, full transcripts, and compaction receipts survive Discord and plugin restarts. The history sidebar and message transcript are both paginated, and selecting **New chat** archives the current conversation before opening a fresh session with the current prompt still available.
+
+The local history is separate from the model's active context. The full raw conversation remains available for review, but only a bounded rolling context is sent for inference. No local Prompt Editor history is uploaded as a separate dataset or stored by the KREA2 gateway.
 
 The source image is not sent to the Prompt Changer endpoint. If a prompt came from Vision, only the prompt text you place in the editor is used for the edit request.
 
@@ -224,7 +226,8 @@ The editor and gateway enforce several boundaries:
 - model thinking is disabled and hidden reasoning tags are removed from returned text;
 - the current prompt is limited to 18,000 characters;
 - each editing instruction is limited to 3,000 characters;
-- the complete server conversation is limited to 48,000 characters;
+- the model context is a visible 32,768-token window, with 1,536 tokens reserved for the reply and 1,024 reserved for protected system/chat formatting;
+- when the working context approaches that boundary, older model messages are summarized locally and their raw copies are deleted from the inference context while the full paginated local transcript is retained;
 - a returned reply must be nonempty and no larger than 24,000 characters;
 - the plugin validates the response model ID and confirms `credits_charged` is exactly `1`;
 - a request ID is bound to one license and one exact request digest, preventing altered replay;
@@ -238,10 +241,10 @@ The Qwen worker can scale down when idle to avoid continuous GPU charges. The fi
 
 While waiting:
 
-- keep the editor open when possible;
+- the editor may be closed safely; closing only hides it and the active request continues;
 - do not repeatedly press **Send to Qwen**;
 - the button remains disabled for the active request;
-- closing the editor cancels the client request and preserves the typed draft in session memory;
+- reopen **Qwen Prompt Editor** to return to the same running or completed conversation;
 - a failed or cancelled request is refunded if a credit was reserved.
 
 The editor allows a bounded remote request window of up to eight minutes because cold infrastructure can be slower than a warm reply. A long wait does not itself mean that multiple credits are being charged.
@@ -264,9 +267,9 @@ The cloud worker did not become ready, timed out, returned unusable output, or h
 
 The server rejected a replay. Send the instruction again; the plugin creates a fresh random request ID for every send.
 
-### “The Prompt Editor conversation is too large”
+### The 32K context meter is nearly full
 
-Select **New chat**, confirm the best revision is in **Current KREA2 prompt**, and continue from that version.
+No manual action is normally required. Before the next request exceeds the model window, the plugin creates a bounded local summary around the latest canonical prompt, removes the older raw messages from inference context, and keeps every original message in paginated local history. Select **New chat** only when you intentionally want a separate conversation.
 
 ### The result changed details I wanted preserved
 

@@ -77,7 +77,7 @@ Every push and pull request runs the Python broker and BetterDiscord test suites
 
 ### Windows
 
-Download [Krea2VisionSuite-v0.16.3-win64.zip](releases/Krea2VisionSuite-v0.16.3-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
+Download [Krea2VisionSuite-v0.17.0-win64.zip](releases/Krea2VisionSuite-v0.17.0-win64.zip). Right-click the ZIP, choose **Properties**, enable **Unblock**, apply the change, extract it, and run:
 
 ```text
 START HERE - INSTALL.bat
@@ -118,7 +118,7 @@ The Discord-native **Qwen Prompt Editor** lets users paste or open a complete KR
 
 The editor is available from the KREA2 Vision header, completed Vision results, Prompt History, and locally extracted metadata/YAML prompts. It uses the pinned `heretic-3.8-q4-cloud` model and costs exactly **1 Online API credit per successful reply**. Opening, typing, copying, selecting a revision, or starting a new chat is free; failed, cancelled, invalid, or timed-out requests refund the reservation automatically.
 
-Qwen edits text only—it does not receive the source image. Users should explicitly correct any image fact the original prompt got wrong. Conversation content is forwarded for inference but is not stored in the KREA2 gateway database; the recoverable draft lives only in the current Discord session.
+Qwen edits text only—it does not receive the source image. Users should explicitly correct any image fact the original prompt got wrong. Conversation content is forwarded for inference but is not stored in the KREA2 gateway database. Complete Prompt Editor conversations are stored privately on the user's computer, survive modal/Discord/plugin restarts, and can be resumed through paginated history. A visible 32K-token meter tracks the active inference window; once it fills, older model context is summarized locally and removed from the request while the complete raw conversation remains in local history.
 
 See the complete [Qwen 3.8 Prompt Changer guide](docs/QWEN_38_PROMPT_CHANGER.md) for workflows, dozens of editable attributes, example instructions, multi-turn usage, credit behavior, privacy, reliability controls, cold-start behavior, troubleshooting, the technical request contract, and the difference between Prompt Changer and Vision interrogation.
 

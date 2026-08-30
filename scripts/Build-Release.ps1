@@ -55,6 +55,7 @@ $sourceDirectories = @(
     'betterdiscord-plugin',
     'docs',
     'installer',
+    'openwebui-vast-bridge',
     'vision-studio',
     'vast-serverless-gemma26'
 )

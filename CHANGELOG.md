@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.17.0 - 2026-08-30
+
+- Makes Qwen Prompt Editor conversations durable local history that survives closing the modal, Discord restarts, and plugin reloads; the private gateway still stores no conversation text.
+- Closing the editor now hides it without cancelling an in-flight cloud edit, and reopening it resumes the same working conversation.
+- Fixes Discord theme CSS overriding the editor's hidden state, so the close icon, Close button, Escape, and backdrop click visibly dismiss the modal without deleting its session.
+- Adds paginated conversation history and paginated message transcripts, with any prior session available to resume.
+- Shows the active `32,768`-token model-context budget at all times, including reserved system/reply capacity.
+- Replaces destructive 14-message resets with local rolling-context compaction: older model context is summarized and deleted from the inference window while the full raw conversation remains in paginated local history.
+- Adds an independent Open WebUI bridge guard that compacts oversized outbound conversations to a 12K working set inside the cloud model's 32K allocation while leaving Open WebUI's stored history unchanged.
+
 ## 0.16.3 - 2026-08-29
 
 - Removes the retired Legacy Ollama hybrid from BetterDiscord and the loopback model catalog.

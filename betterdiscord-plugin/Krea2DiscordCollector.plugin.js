@@ -1,7 +1,7 @@
 /**
  * @name Krea2DiscordCollector
  * @author uroligh
- * @version 0.16.3
+ * @version 0.17.0
  * @description Local or online Discord Vision, metadata-first prompts, and a private Qwen 3.8 cloud prompt editor.
  */
 
@@ -979,7 +979,7 @@ const {parsePngPromptMetadata: parseHardenedPngPromptMetadata, extractPromptFrom
 })();
 
 const PLUGIN_NAME = "Krea2DiscordCollector";
-const PLUGIN_VERSION = "0.16.3";
+const PLUGIN_VERSION = "0.17.0";
 const STYLE_ID = "krea2-discord-collector-style";
 const BUTTON_CLASS = "krea2-discord-collector-button";
 const VISION_BUTTON_CLASS = "krea2-discord-vision-button";
@@ -1136,7 +1136,181 @@ const PROMPT_EDITOR_MODAL_ID = "krea2-discord-prompt-editor-modal";
 const PROMPT_AUDIT_MODAL_ID = "krea2-discord-prompt-audit-modal";
 const PRODUCT_MODAL_ID = "krea2-discord-product-modal";
 const ONBOARDING_MODAL_ID = "krea2-discord-onboarding-modal";
+const PROMPT_EDITOR_HISTORY_INDEX_KEY = "promptEditorHistoryIndexV2";
+const PROMPT_EDITOR_ACTIVE_SESSION_KEY = "promptEditorActiveSessionV2";
+const PROMPT_EDITOR_SESSION_KEY_PREFIX = "promptEditorSessionV2_";
+const PROMPT_EDITOR_HISTORY_PAGE_SIZE = 6;
+const PROMPT_EDITOR_TURN_PAGE_SIZE = 8;
+const PROMPT_EDITOR_CONTEXT_TOKENS = 32768;
+const PROMPT_EDITOR_OUTPUT_RESERVE_TOKENS = 1536;
+const PROMPT_EDITOR_SYSTEM_RESERVE_TOKENS = 1024;
+const PROMPT_EDITOR_CONTEXT_INPUT_TOKENS = PROMPT_EDITOR_CONTEXT_TOKENS
+    - PROMPT_EDITOR_OUTPUT_RESERVE_TOKENS
+    - PROMPT_EDITOR_SYSTEM_RESERVE_TOKENS;
+const PROMPT_EDITOR_MAX_GATEWAY_MESSAGES = 16;
 const ONBOARDING_VERSION = 9;
+
+function promptEditorSessionDataKey(rawId) {
+    const id = String(rawId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+    if (!id) throw new Error("Prompt Editor session identifier is invalid.");
+    return `${PROMPT_EDITOR_SESSION_KEY_PREFIX}${id}`;
+}
+
+function estimatePromptEditorTextTokens(value) {
+    const text = String(value || "");
+    if (!text) return 0;
+    let nonAscii = 0;
+    for (const character of text) {
+        if (character.codePointAt(0) > 0x7f) nonAscii += 1;
+    }
+    const ascii = Math.max(0, text.length - nonAscii);
+    const wordFloor = (text.trim().match(/\S+/g) || []).length * 1.15;
+    return Math.max(1, Math.ceil(Math.max((ascii / 4) + (nonAscii * 1.25), wordFloor)));
+}
+
+function estimatePromptEditorContextTokens(messages) {
+    return (Array.isArray(messages) ? messages : []).reduce(
+        (total, message) => total + 6 + estimatePromptEditorTextTokens(message?.content),
+        4
+    );
+}
+
+function normalizePromptEditorMessages(rawMessages) {
+    return (Array.isArray(rawMessages) ? rawMessages : [])
+        .filter(message => message?.role === "user" || message?.role === "assistant")
+        .map(message => ({
+            role: message.role,
+            content: String(message.content || "").trim().slice(0, 24000)
+        }))
+        .filter(message => message.content);
+}
+
+function normalizePromptEditorTurns(rawTurns) {
+    return (Array.isArray(rawTurns) ? rawTurns : [])
+        .filter(turn => turn?.role === "user" || turn?.role === "assistant")
+        .map(turn => ({
+            role: turn.role,
+            text: String(turn.text || "").slice(0, 24000),
+            createdAt: Math.max(0, Math.trunc(Number(turn.createdAt) || 0))
+        }))
+        .filter(turn => turn.text);
+}
+
+function promptEditorSessionTitle(prompt, fallback = "Untitled prompt") {
+    const title = String(prompt || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 72);
+    return title || String(fallback || "Untitled prompt").slice(0, 72);
+}
+
+function normalizePromptEditorSession(raw, fallbackId = "") {
+    const now = Date.now();
+    const cleanFallbackId = String(fallbackId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+    const id = String(raw?.id || cleanFallbackId).replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+    if (!id) return null;
+    const prompt = String(raw?.prompt || "").slice(0, 18000);
+    const latestReply = String(raw?.latestReply || "").slice(0, 24000);
+    const createdAt = Math.max(1, Math.trunc(Number(raw?.createdAt) || now));
+    const updatedAt = Math.max(createdAt, Math.trunc(Number(raw?.updatedAt) || createdAt));
+    return {
+        version: 2,
+        id,
+        title: promptEditorSessionTitle(raw?.title || prompt),
+        createdAt,
+        updatedAt,
+        prompt,
+        instruction: String(raw?.instruction || "").slice(0, 3000),
+        messages: normalizePromptEditorMessages(raw?.messages),
+        turns: normalizePromptEditorTurns(raw?.turns),
+        latestReply,
+        summary: String(raw?.summary || "").slice(0, 12000),
+        compactions: Math.max(0, Math.trunc(Number(raw?.compactions) || 0)),
+        statusText: String(raw?.statusText || "Ready · 1 credit is charged only after a successful reply.").slice(0, 1000),
+        statusState: ["idle", "success", "error", "working"].includes(String(raw?.statusState || ""))
+            ? String(raw.statusState)
+            : "idle"
+    };
+}
+
+function normalizePromptEditorHistoryIndex(rawIndex) {
+    const seen = new Set();
+    return (Array.isArray(rawIndex) ? rawIndex : [])
+        .map(item => {
+            const id = String(item?.id || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+            if (!id || seen.has(id)) return null;
+            seen.add(id);
+            return {
+                id,
+                title: promptEditorSessionTitle(item?.title),
+                createdAt: Math.max(1, Math.trunc(Number(item?.createdAt) || Date.now())),
+                updatedAt: Math.max(1, Math.trunc(Number(item?.updatedAt) || Date.now())),
+                turnCount: Math.max(0, Math.trunc(Number(item?.turnCount) || 0)),
+                compactions: Math.max(0, Math.trunc(Number(item?.compactions) || 0))
+            };
+        })
+        .filter(Boolean)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function compactPromptEditorContext(messages, options = {}) {
+    const bounded = normalizePromptEditorMessages(messages);
+    const upcoming = String(options.upcomingUserContent || "").trim().slice(0, 24000);
+    const upcomingTokens = upcoming ? estimatePromptEditorContextTokens([{role: "user", content: upcoming}]) : 0;
+    const availableInputTokens = Math.max(4096, PROMPT_EDITOR_CONTEXT_INPUT_TOKENS - upcomingTokens);
+    if (
+        bounded.length + (upcoming ? 1 : 0) <= PROMPT_EDITOR_MAX_GATEWAY_MESSAGES
+        && estimatePromptEditorContextTokens(bounded) <= availableInputTokens
+    ) {
+        return Object.freeze({messages: bounded, summary: String(options.previousSummary || "").slice(0, 12000), compacted: false, removedMessages: 0});
+    }
+
+    const canonicalPrompt = String(options.latestReply || options.currentPrompt || "").trim().slice(0, 24000);
+    const earlierRequests = bounded
+        .filter(message => message.role === "user" && !message.content.startsWith("[Compacted Prompt Editor context]"))
+        .map(message => {
+            const revisionMarker = message.content.lastIndexOf("Requested revision:");
+            const value = revisionMarker >= 0 ? message.content.slice(revisionMarker + 19) : message.content;
+            return value.replace(/\s+/g, " ").trim().slice(0, 500);
+        })
+        .filter(Boolean)
+        .slice(-12);
+    const previousSummary = String(options.previousSummary || "").replace(/\s+/g, " ").trim().slice(0, 2500);
+    const summaryParts = [
+        "[Compacted Prompt Editor context]",
+        "The raw model context before this point was compressed locally. Continue from the canonical prompt below and preserve every established detail unless the user explicitly asks to change it.",
+        canonicalPrompt ? `Canonical KREA2 prompt:\n${canonicalPrompt}` : "Canonical KREA2 prompt: unavailable; rely on the recent turns below."
+    ];
+    if (previousSummary) summaryParts.push(`Previous compacted context:\n${previousSummary}`);
+    if (earlierRequests.length) summaryParts.push(`Earlier requested changes, oldest to newest:\n${earlierRequests.map((text, index) => `${index + 1}. ${text}`).join("\n")}`);
+    const summary = summaryParts.join("\n\n").slice(0, 12000);
+    const acknowledgement = "Understood. I will use the canonical prompt and compacted edit history as the established context, preserving prior changes unless the user requests otherwise.";
+    const summaryMessages = [
+        {role: "user", content: summary},
+        {role: "assistant", content: acknowledgement}
+    ];
+    let recent = bounded.slice(-6);
+    let compactedMessages = [...summaryMessages, ...recent];
+    while (
+        recent.length
+        && (
+            compactedMessages.length + (upcoming ? 1 : 0) > PROMPT_EDITOR_MAX_GATEWAY_MESSAGES
+            || estimatePromptEditorContextTokens(compactedMessages) > availableInputTokens
+        )
+    ) {
+        recent = recent.slice(1);
+        compactedMessages = [...summaryMessages, ...recent];
+    }
+    if (estimatePromptEditorContextTokens(compactedMessages) > availableInputTokens) {
+        compactedMessages = summaryMessages;
+    }
+    return Object.freeze({
+        messages: normalizePromptEditorMessages(compactedMessages),
+        summary,
+        compacted: true,
+        removedMessages: Math.max(0, bounded.length - recent.length)
+    });
+}
 const DEFAULT_SAVE_FOLDER = path.join(String(process.env.USERPROFILE || process.env.HOME || "."), "Pictures", "Krea2Vision");
 const HERETIC_MODEL_SPECS = Object.freeze([
     Object.freeze({
@@ -2107,19 +2281,43 @@ const CSS = `
 #${HISTORY_MODAL_ID},
 #${SOURCE_PROMPT_MODAL_ID},
 #${PROMPT_EDITOR_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10000; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
+#${PROMPT_EDITOR_MODAL_ID}[hidden] { display: none !important; }
 #${PROMPT_AUDIT_MODAL_ID} { --krea2-text: #f3f5f7; --krea2-muted: #a8b0bd; position: fixed; z-index: 10001; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--krea2-text); -webkit-text-fill-color: var(--krea2-text); background: rgba(5, 7, 10, .78); backdrop-filter: blur(4px); }
 .krea2-history-dialog { width: min(760px, 92vw); max-height: min(760px, 88vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #343a45; border-radius: 14px; color: var(--krea2-text); background: #17191f; box-shadow: 0 28px 90px rgba(0,0,0,.62); }
 .krea2-history-dialog[data-source-prompt="true"] { width: min(900px, 94vw); }
-.krea2-history-dialog[data-prompt-editor="true"] { width: min(920px, 94vw); max-height: min(860px, 92vh); }
-.krea2-prompt-editor-body { display: grid; min-height: 0; gap: 12px; overflow: auto; }
+.krea2-history-dialog[data-prompt-editor="true"] { width: min(1180px, 96vw); max-height: min(900px, 94vh); }
+.krea2-prompt-editor-body { display: grid; min-height: 0; gap: 12px; overflow: hidden; }
 .krea2-prompt-editor-explanation { padding: 11px 13px; border: 1px solid #313949; border-radius: 9px; color: #c8d1df; background: #171d28; font-size: 11px; line-height: 1.55; }
+.krea2-prompt-editor-workspace { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 0; gap: 12px; }
+.krea2-prompt-editor-history { display: flex; min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid #303744; border-radius: 10px; background: #11141a; }
+.krea2-prompt-editor-history-head { padding: 11px 12px 9px; border-bottom: 1px solid #2c323d; }
+.krea2-prompt-editor-history-head strong { display: block; color: #eef1f6; font-size: 11px; }
+.krea2-prompt-editor-history-head span { display: block; margin-top: 3px; color: #919bab; font-size: 9px; line-height: 1.4; }
+.krea2-prompt-editor-session-list { display: grid; min-height: 0; flex: 1; align-content: start; gap: 6px; overflow: auto; padding: 8px; }
+.krea2-prompt-editor-session { display: block; width: 100%; padding: 9px 10px; overflow: hidden; border: 1px solid #2d3440; border-radius: 8px; color: #dce2ea; background: #191d24; cursor: pointer; text-align: left; }
+.krea2-prompt-editor-session:hover { border-color: #505d77; background: #202631; }
+.krea2-prompt-editor-session[data-active="true"] { border-color: #6574e8; background: #232b4a; }
+.krea2-prompt-editor-session strong,
+.krea2-prompt-editor-session span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.krea2-prompt-editor-session strong { font-size: 10px; }
+.krea2-prompt-editor-session span { margin-top: 4px; color: #929cab; font-size: 8.5px; }
+.krea2-prompt-editor-history-pagination,
+.krea2-prompt-editor-turn-pagination { display: flex; align-items: center; gap: 6px; padding: 8px; border-top: 1px solid #2c323d; }
+.krea2-prompt-editor-history-pagination span,
+.krea2-prompt-editor-turn-pagination span { min-width: 0; flex: 1; color: #919bab; font-size: 9px; text-align: center; }
+.krea2-prompt-editor-history-pagination button,
+.krea2-prompt-editor-turn-pagination button { min-width: 30px; min-height: 28px; padding: 4px 8px; border: 1px solid #353d4a; border-radius: 7px; color: #e2e7ee; background: #20252d; cursor: pointer; font-weight: 750; }
+.krea2-prompt-editor-history-pagination button:disabled,
+.krea2-prompt-editor-turn-pagination button:disabled { cursor: default; opacity: .4; }
+.krea2-prompt-editor-main { display: grid; min-height: 0; align-content: start; gap: 12px; overflow: auto; padding-right: 2px; }
 .krea2-prompt-editor-field { display: grid; gap: 6px; }
 .krea2-prompt-editor-field > label { color: #a8b0bd; font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
 .krea2-prompt-editor-prompt,
 .krea2-prompt-editor-instruction { box-sizing: border-box; width: 100%; resize: vertical; border: 1px solid #343b48; border-radius: 9px; color: #f3f5f7; -webkit-text-fill-color: #f3f5f7; background: #0f1217; font: 500 11px/1.55 system-ui,sans-serif; }
 .krea2-prompt-editor-prompt { min-height: 150px; padding: 12px; }
 .krea2-prompt-editor-instruction { min-height: 74px; padding: 10px 12px; }
-.krea2-prompt-editor-transcript { display: grid; max-height: 250px; gap: 8px; overflow: auto; padding: 2px; }
+.krea2-prompt-editor-transcript { display: grid; min-height: 76px; max-height: 250px; align-content: start; gap: 8px; overflow: auto; padding: 2px; }
+.krea2-prompt-editor-transcript-empty { padding: 18px 12px; color: #8e98a8; font-size: 10px; text-align: center; }
 .krea2-prompt-editor-turn { padding: 10px 12px; border: 1px solid #303744; border-radius: 10px; color: #dfe4ec; background: #1a1e25; font-size: 11px; line-height: 1.52; white-space: pre-wrap; }
 .krea2-prompt-editor-turn[data-role="user"] { margin-left: 12%; border-color: #3e4978; background: #202641; }
 .krea2-prompt-editor-turn[data-role="assistant"] { margin-right: 6%; border-color: #315c47; background: #14261d; }
@@ -2131,6 +2329,14 @@ const CSS = `
 .krea2-prompt-editor-status { min-height: 18px; color: #a8b0bd; font-size: 10px; line-height: 1.45; }
 .krea2-prompt-editor-status[data-state="error"] { color: #ffb4b8; }
 .krea2-prompt-editor-status[data-state="success"] { color: #a9edc1; }
+.krea2-prompt-editor-context { display: grid; gap: 6px; padding: 9px 11px; border: 1px solid #313949; border-radius: 9px; background: #141923; }
+.krea2-prompt-editor-context-line { display: flex; align-items: center; gap: 8px; color: #aeb8c7; font-size: 9.5px; }
+.krea2-prompt-editor-context-line strong { color: #eef2f7; }
+.krea2-prompt-editor-context-line span:last-child { margin-left: auto; color: #8f9aaa; }
+.krea2-prompt-editor-context-meter { height: 6px; overflow: hidden; border-radius: 999px; background: #272e3a; }
+.krea2-prompt-editor-context-meter > span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #5f70e8, #65c795); transition: width .18s ease; }
+.krea2-prompt-editor-context[data-near-limit="true"] .krea2-prompt-editor-context-meter > span { background: linear-gradient(90deg, #e0a545, #e36f61); }
+.krea2-prompt-editor-context-note { color: #8f9aaa; font-size: 8.5px; line-height: 1.4; }
 .krea2-history-brand-editor { margin-left: auto; min-height: 24px; padding: 3px 8px; border: 1px solid #394252; border-radius: 7px; color: #dfe6f0; background: #171b22; cursor: pointer; font: 700 9px/1 system-ui,sans-serif; }
 .krea2-history-brand-editor:hover { border-color: #6977f4; background: #20263a; }
 .krea2-source-prompt-body { display: grid; gap: 14px; }
@@ -2329,6 +2535,7 @@ const CSS = `
     #${HISTORY_ROOT_ID}[data-overlay="true"] .krea2-history-scheduler { margin: 0 14px 8px; }
     .krea2-history-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .krea2-history-result { grid-template-columns: 132px minmax(0, 1fr); }
+    .krea2-prompt-editor-workspace { grid-template-columns: 190px minmax(0, 1fr); }
     .krea2-onboarding-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
@@ -2349,6 +2556,13 @@ const CSS = `
     .krea2-quality-grid { grid-template-columns: 1fr; }
     .krea2-diagnostic-row { grid-template-columns: 1fr; gap: 3px; }
     .krea2-review-form, .krea2-score-grid, .krea2-repro-grid { grid-template-columns: 1fr; }
+    #${PROMPT_EDITOR_MODAL_ID} { padding: 8px; }
+    .krea2-history-dialog[data-prompt-editor="true"] { width: 100%; max-height: calc(100vh - 16px); }
+    .krea2-prompt-editor-body { overflow: auto; }
+    .krea2-prompt-editor-workspace { grid-template-columns: 1fr; }
+    .krea2-prompt-editor-history { max-height: 210px; }
+    .krea2-prompt-editor-compose { grid-template-columns: 1fr; }
+    .krea2-prompt-editor-send { min-height: 44px; }
 }
 `;
 
@@ -4440,6 +4654,9 @@ class Krea2DiscordCollector {
         this.historyModalCleanup = null;
         this.sourcePromptModalCleanup = null;
         this.promptEditorCleanup = null;
+        this.promptEditorHistoryIndex = null;
+        this.promptEditorActiveSessionId = "";
+        this.promptEditorBusy = false;
         this.promptAuditCleanup = null;
         this.promptEditorDraft = null;
         this.feedbackModalCleanup = null;
@@ -4595,11 +4812,14 @@ class Krea2DiscordCollector {
         this.historyModalCleanup = null;
         this.sourcePromptModalCleanup?.();
         this.sourcePromptModalCleanup = null;
-        this.promptEditorCleanup?.();
+        this.promptEditorCleanup?.({destroy: true});
         this.promptEditorCleanup = null;
         this.promptAuditCleanup?.();
         this.promptAuditCleanup = null;
         this.promptEditorDraft = null;
+        this.promptEditorHistoryIndex = null;
+        this.promptEditorActiveSessionId = "";
+        this.promptEditorBusy = false;
         this.feedbackModalCleanup?.();
         this.feedbackModalCleanup = null;
         for (const objectUrl of this.historyThumbnailUrls.values()) this.revokeObjectUrl(objectUrl);
@@ -8141,15 +8361,15 @@ class Krea2DiscordCollector {
     }
 
     async requestPromptChat(messages, signal) {
-        const boundedMessages = (Array.isArray(messages) ? messages : [])
-            .filter(message => message?.role === "user" || message?.role === "assistant")
-            .map(message => ({role: message.role, content: String(message.content || "").trim().slice(0, 24000)}))
-            .filter(message => message.content);
+        const boundedMessages = normalizePromptEditorMessages(messages);
         if (!boundedMessages.length || boundedMessages.at(-1)?.role !== "user") {
             throw new Error("Qwen Prompt Editor requires a final user instruction.");
         }
-        if (boundedMessages.reduce((total, message) => total + message.content.length, 0) > 48000) {
-            throw new Error("The Qwen Prompt Editor conversation is too large. Start a new chat.");
+        if (boundedMessages.length > PROMPT_EDITOR_MAX_GATEWAY_MESSAGES) {
+            throw new Error("The Qwen Prompt Editor context was not compacted before submission.");
+        }
+        if (estimatePromptEditorContextTokens(boundedMessages) > PROMPT_EDITOR_CONTEXT_INPUT_TOKENS) {
+            throw new Error("The Qwen Prompt Editor context exceeds its 32K-token window and could not be compacted safely.");
         }
         const license = await this.ensureRemoteCredits(signal, "prompt-chat");
         const requestId = createHash("sha256").update(randomBytes(48)).digest("hex");
@@ -8409,24 +8629,123 @@ class Krea2DiscordCollector {
         question.focus();
     }
 
+    loadPromptEditorHistoryIndex() {
+        if (Array.isArray(this.promptEditorHistoryIndex)) return this.promptEditorHistoryIndex;
+        let loaded = [];
+        try { loaded = this.api.Data.load(PROMPT_EDITOR_HISTORY_INDEX_KEY); }
+        catch (error) { this.log("warn", "Could not load Prompt Editor history index", error); }
+        this.promptEditorHistoryIndex = normalizePromptEditorHistoryIndex(loaded);
+        try {
+            this.promptEditorActiveSessionId = String(this.api.Data.load(PROMPT_EDITOR_ACTIVE_SESSION_KEY) || "")
+                .replace(/[^a-z0-9_-]/gi, "")
+                .slice(0, 80);
+        }
+        catch { this.promptEditorActiveSessionId = ""; }
+        return this.promptEditorHistoryIndex;
+    }
+
+    loadPromptEditorSession(sessionId) {
+        const id = String(sessionId || "").replace(/[^a-z0-9_-]/gi, "").slice(0, 80);
+        if (!id) return null;
+        try {
+            return normalizePromptEditorSession(this.api.Data.load(promptEditorSessionDataKey(id)), id);
+        }
+        catch (error) {
+            this.log("warn", "Could not load Prompt Editor session", error);
+            return null;
+        }
+    }
+
+    persistPromptEditorSession(rawSession, {activate = true} = {}) {
+        const session = normalizePromptEditorSession(rawSession, rawSession?.id);
+        if (!session) throw new Error("Prompt Editor session could not be saved.");
+        session.updatedAt = Date.now();
+        session.title = promptEditorSessionTitle(session.prompt || session.latestReply, session.title);
+        this.api.Data.save(promptEditorSessionDataKey(session.id), session);
+        const index = this.loadPromptEditorHistoryIndex();
+        const metadata = {
+            id: session.id,
+            title: session.title,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            turnCount: session.turns.length,
+            compactions: session.compactions
+        };
+        const existing = index.findIndex(item => item.id === session.id);
+        if (existing >= 0) index.splice(existing, 1);
+        index.unshift(metadata);
+        this.promptEditorHistoryIndex = normalizePromptEditorHistoryIndex(index);
+        this.api.Data.save(PROMPT_EDITOR_HISTORY_INDEX_KEY, this.promptEditorHistoryIndex);
+        if (activate) {
+            this.promptEditorActiveSessionId = session.id;
+            this.api.Data.save(PROMPT_EDITOR_ACTIVE_SESSION_KEY, session.id);
+        }
+        return session;
+    }
+
+    createPromptEditorSession(initialPrompt = "") {
+        const now = Date.now();
+        const id = `${now.toString(36)}_${randomBytes(9).toString("hex")}`;
+        return this.persistPromptEditorSession({
+            version: 2,
+            id,
+            title: promptEditorSessionTitle(initialPrompt),
+            createdAt: now,
+            updatedAt: now,
+            prompt: String(initialPrompt || "").slice(0, 18000),
+            instruction: "",
+            messages: [],
+            turns: [],
+            latestReply: "",
+            summary: "",
+            compactions: 0,
+            statusText: "Ready · 1 credit is charged only after a successful reply.",
+            statusState: "idle"
+        });
+    }
+
     openPromptEditor(initialPrompt = "", modalDocument = document) {
         const suppliedPrompt = String(initialPrompt || "").trim().slice(0, 18000);
-        this.promptEditorCleanup?.();
-        const restoredDraft = suppliedPrompt ? null : this.promptEditorDraft;
-        modalDocument.getElementById(PROMPT_EDITOR_MODAL_ID)?.remove();
+        const existingOverlay = modalDocument.getElementById(PROMPT_EDITOR_MODAL_ID);
+        if (existingOverlay) {
+            if (suppliedPrompt && !this.promptEditorBusy) {
+                this.promptEditorCleanup?.({destroy: true});
+            }
+            else {
+                existingOverlay.hidden = false;
+                existingOverlay.querySelector(".krea2-prompt-editor-instruction, .krea2-prompt-editor-prompt")?.focus();
+                if (suppliedPrompt && this.promptEditorBusy) {
+                    this.toast("The current Qwen edit is still running. It was reopened without replacing the conversation.", "info");
+                }
+                return;
+            }
+        }
+        this.loadPromptEditorHistoryIndex();
+        let session = null;
+        if (suppliedPrompt) session = this.createPromptEditorSession(suppliedPrompt);
+        else if (this.promptEditorActiveSessionId) session = this.loadPromptEditorSession(this.promptEditorActiveSessionId);
+        if (!session && this.promptEditorHistoryIndex.length) session = this.loadPromptEditorSession(this.promptEditorHistoryIndex[0].id);
+        if (!session && this.promptEditorDraft) {
+            session = this.createPromptEditorSession(this.promptEditorDraft.prompt || "");
+            Object.assign(session, this.promptEditorDraft, {id: session.id, version: 2, createdAt: session.createdAt});
+            session = this.persistPromptEditorSession(session);
+            this.promptEditorDraft = null;
+        }
+        if (!session) session = this.createPromptEditorSession("");
+        if (session.statusState === "working") {
+            session.statusState = "idle";
+            session.statusText = "The previous Discord/plugin session ended while Qwen was working. Your conversation was retained; resend the unfinished instruction if needed.";
+            session = this.persistPromptEditorSession(session);
+        }
         const controller = new AbortController();
-        let messages = Array.isArray(restoredDraft?.messages)
-            ? restoredDraft.messages
-                .filter(message => message?.role === "user" || message?.role === "assistant")
-                .map(message => ({role: message.role, content: String(message.content || "").slice(0, 24000)}))
-            : [];
-        let turns = Array.isArray(restoredDraft?.turns)
-            ? restoredDraft.turns
-                .filter(turn => turn?.role === "user" || turn?.role === "assistant")
-                .map(turn => ({role: turn.role, text: String(turn.text || "").slice(0, 24000)}))
-            : [];
+        let messages = normalizePromptEditorMessages(session.messages);
+        let turns = normalizePromptEditorTurns(session.turns);
         let busy = false;
-        let latestReply = String(restoredDraft?.latestReply || "").slice(0, 24000);
+        let latestReply = String(session.latestReply || "").slice(0, 24000);
+        let summary = String(session.summary || "").slice(0, 12000);
+        let historyPage = 1;
+        let turnPage = Math.max(1, Math.ceil(turns.length / PROMPT_EDITOR_TURN_PAGE_SIZE));
+        let persistTimer = null;
 
         const overlay = modalDocument.createElement("div");
         overlay.id = PROMPT_EDITOR_MODAL_ID;
@@ -8453,7 +8772,37 @@ class Krea2DiscordCollector {
         body.className = "krea2-history-dialog-body krea2-prompt-editor-body";
         const explanation = modalDocument.createElement("div");
         explanation.className = "krea2-prompt-editor-explanation";
-        explanation.textContent = "Paste a KREA2 prompt, then describe the change you want—pose, outfit, camera, lighting, setting, wording, or anything else. Qwen preserves details you did not ask to change. Each successful reply costs 1 Online API credit; failures are refunded. This conversation is sent to the private cloud model for inference and is not stored by the KREA2 gateway. A recovery draft stays only in this running Discord session until you choose New chat or reload the plugin.";
+        explanation.textContent = "Paste a KREA2 prompt, then describe the change you want—pose, outfit, camera, lighting, setting, wording, or anything else. Qwen preserves details you did not ask to change. Each successful reply costs 1 Online API credit; failures are refunded. Conversations are stored privately on this computer and survive closing Discord; the KREA2 gateway still does not store them. The active model context uses a visible 32K-token window, and older raw model context is compressed locally while the full paginated conversation remains in local history.";
+
+        const workspace = modalDocument.createElement("div");
+        workspace.className = "krea2-prompt-editor-workspace";
+        const historyPanel = modalDocument.createElement("aside");
+        historyPanel.className = "krea2-prompt-editor-history";
+        const historyHead = modalDocument.createElement("div");
+        historyHead.className = "krea2-prompt-editor-history-head";
+        const historyTitle = modalDocument.createElement("strong");
+        historyTitle.textContent = "Conversation history";
+        const historyHelp = modalDocument.createElement("span");
+        historyHelp.textContent = "Saved locally. Choose any conversation to resume it.";
+        historyHead.append(historyTitle, historyHelp);
+        const historyList = modalDocument.createElement("div");
+        historyList.className = "krea2-prompt-editor-session-list";
+        const historyPagination = modalDocument.createElement("div");
+        historyPagination.className = "krea2-prompt-editor-history-pagination";
+        const historyPrevious = modalDocument.createElement("button");
+        historyPrevious.type = "button";
+        historyPrevious.textContent = "‹";
+        historyPrevious.setAttribute("aria-label", "Previous conversation-history page");
+        const historyPageLabel = modalDocument.createElement("span");
+        const historyNext = modalDocument.createElement("button");
+        historyNext.type = "button";
+        historyNext.textContent = "›";
+        historyNext.setAttribute("aria-label", "Next conversation-history page");
+        historyPagination.append(historyPrevious, historyPageLabel, historyNext);
+        historyPanel.append(historyHead, historyList, historyPagination);
+
+        const editorMain = modalDocument.createElement("div");
+        editorMain.className = "krea2-prompt-editor-main";
 
         const promptField = modalDocument.createElement("div");
         promptField.className = "krea2-prompt-editor-field";
@@ -8463,12 +8812,40 @@ class Krea2DiscordCollector {
         promptBox.className = "krea2-prompt-editor-prompt";
         promptBox.placeholder = "Paste the prompt you want to revise…";
         promptBox.maxLength = 18000;
-        promptBox.value = suppliedPrompt || String(restoredDraft?.prompt || "").slice(0, 18000);
+        promptBox.value = String(session.prompt || suppliedPrompt || "").slice(0, 18000);
         promptField.append(promptLabel, promptBox);
 
         const transcript = modalDocument.createElement("div");
         transcript.className = "krea2-prompt-editor-transcript";
         transcript.setAttribute("aria-live", "polite");
+        const turnPagination = modalDocument.createElement("div");
+        turnPagination.className = "krea2-prompt-editor-turn-pagination";
+        const turnPrevious = modalDocument.createElement("button");
+        turnPrevious.type = "button";
+        turnPrevious.textContent = "‹";
+        turnPrevious.setAttribute("aria-label", "Previous conversation page");
+        const turnPageLabel = modalDocument.createElement("span");
+        const turnNext = modalDocument.createElement("button");
+        turnNext.type = "button";
+        turnNext.textContent = "›";
+        turnNext.setAttribute("aria-label", "Next conversation page");
+        turnPagination.append(turnPrevious, turnPageLabel, turnNext);
+
+        const context = modalDocument.createElement("div");
+        context.className = "krea2-prompt-editor-context";
+        const contextLine = modalDocument.createElement("div");
+        contextLine.className = "krea2-prompt-editor-context-line";
+        const contextName = modalDocument.createElement("strong");
+        contextName.textContent = "32K model context";
+        const contextCount = modalDocument.createElement("span");
+        contextLine.append(contextName, contextCount);
+        const contextMeter = modalDocument.createElement("div");
+        contextMeter.className = "krea2-prompt-editor-context-meter";
+        const contextFill = modalDocument.createElement("span");
+        contextMeter.append(contextFill);
+        const contextNote = modalDocument.createElement("div");
+        contextNote.className = "krea2-prompt-editor-context-note";
+        context.append(contextLine, contextMeter, contextNote);
 
         const compose = modalDocument.createElement("div");
         compose.className = "krea2-prompt-editor-compose";
@@ -8480,7 +8857,7 @@ class Krea2DiscordCollector {
         instruction.className = "krea2-prompt-editor-instruction";
         instruction.placeholder = "Example: Keep everything else, but turn her head toward the camera and make the lighting warmer.";
         instruction.maxLength = 3000;
-        instruction.value = String(restoredDraft?.instruction || "").slice(0, 3000);
+        instruction.value = String(session.instruction || "").slice(0, 3000);
         instructionField.append(instructionLabel, instruction);
         const send = modalDocument.createElement("button");
         send.type = "button";
@@ -8489,9 +8866,11 @@ class Krea2DiscordCollector {
         compose.append(instructionField, send);
         const status = modalDocument.createElement("div");
         status.className = "krea2-prompt-editor-status";
-        status.textContent = String(restoredDraft?.statusText || "Ready · 1 credit is charged only after a successful reply.");
-        status.dataset.state = String(restoredDraft?.statusState || "idle");
-        body.append(explanation, promptField, transcript, compose, status);
+        status.textContent = String(session.statusText || "Ready · 1 credit is charged only after a successful reply.");
+        status.dataset.state = String(session.statusState || "idle");
+        editorMain.append(promptField, transcript, turnPagination, context, compose, status);
+        workspace.append(historyPanel, editorMain);
+        body.append(explanation, workspace);
 
         const actions = modalDocument.createElement("div");
         actions.className = "krea2-history-dialog-actions";
@@ -8513,24 +8892,56 @@ class Krea2DiscordCollector {
         overlay.append(dialog);
         modalDocument.body.append(overlay);
 
-        const syncDraft = () => {
-            this.promptEditorDraft = {
+        const saveSessionNow = () => {
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            persistTimer = null;
+            session = this.persistPromptEditorSession({
+                ...session,
                 prompt: promptBox.value.slice(0, promptBox.maxLength),
                 instruction: instruction.value.slice(0, instruction.maxLength),
                 messages: messages.map(message => ({role: message.role, content: message.content})),
-                turns: turns.map(turn => ({role: turn.role, text: turn.text})),
+                turns: turns.map(turn => ({role: turn.role, text: turn.text, createdAt: turn.createdAt})),
                 latestReply,
+                summary,
                 statusText: status.textContent,
                 statusState: status.dataset.state || "idle"
-            };
+            });
+            this.promptEditorDraft = null;
+            return session;
         };
-        const setStatus = (text, state = "idle") => {
-            status.textContent = text;
-            status.dataset.state = state;
-            syncDraft();
+        const syncDraft = (immediate = false) => {
+            session.prompt = promptBox.value.slice(0, promptBox.maxLength);
+            session.instruction = instruction.value.slice(0, instruction.maxLength);
+            session.messages = messages.map(message => ({role: message.role, content: message.content}));
+            session.turns = turns.map(turn => ({role: turn.role, text: turn.text, createdAt: turn.createdAt}));
+            session.latestReply = latestReply;
+            session.summary = summary;
+            session.statusText = status.textContent;
+            session.statusState = status.dataset.state || "idle";
+            if (immediate) return saveSessionNow();
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            persistTimer = setTimeout(() => {
+                try { saveSessionNow(); }
+                catch (error) { this.log("error", "Could not save Prompt Editor conversation", error); }
+            }, 250);
+            return session;
         };
-        const appendTurn = (role, text, record = true) => {
-            if (record) turns.push({role, text: String(text)});
+        const renderContext = () => {
+            const pendingInstruction = instruction.value.trim();
+            const meterMessages = pendingInstruction
+                ? [...messages, {role: "user", content: pendingInstruction}]
+                : messages;
+            const inputTokens = estimatePromptEditorContextTokens(meterMessages);
+            const usedTokens = Math.min(PROMPT_EDITOR_CONTEXT_TOKENS, inputTokens + PROMPT_EDITOR_OUTPUT_RESERVE_TOKENS + PROMPT_EDITOR_SYSTEM_RESERVE_TOKENS);
+            const percentage = Math.min(100, Math.max(0, (usedTokens / PROMPT_EDITOR_CONTEXT_TOKENS) * 100));
+            contextCount.textContent = `${usedTokens.toLocaleString()} / ${PROMPT_EDITOR_CONTEXT_TOKENS.toLocaleString()} tokens`;
+            contextFill.style.width = `${percentage.toFixed(1)}%`;
+            context.dataset.nearLimit = percentage >= 85 ? "true" : "false";
+            contextNote.textContent = session.compactions > 0
+                ? `${session.compactions} context compaction${session.compactions === 1 ? "" : "s"} · older raw model context was deleted after summarization; full local history remains below.`
+                : `${PROMPT_EDITOR_CONTEXT_INPUT_TOKENS.toLocaleString()} input tokens are available after reserving system and reply space. Compaction is automatic.`;
+        };
+        const createTurnElement = (role, text) => {
             const turn = modalDocument.createElement("div");
             turn.className = "krea2-prompt-editor-turn";
             turn.dataset.role = role;
@@ -8562,21 +8973,102 @@ class Krea2DiscordCollector {
                 turnActions.append(use, copyReply);
                 turn.append(turnActions);
             }
-            transcript.append(turn);
+            return turn;
+        };
+        const renderTranscript = () => {
+            transcript.replaceChildren();
+            const pageCount = Math.max(1, Math.ceil(turns.length / PROMPT_EDITOR_TURN_PAGE_SIZE));
+            turnPage = Math.min(pageCount, Math.max(1, turnPage));
+            if (!turns.length) {
+                const empty = modalDocument.createElement("div");
+                empty.className = "krea2-prompt-editor-transcript-empty";
+                empty.textContent = "No edits yet. Your complete conversation will remain here after closing or restarting Discord.";
+                transcript.append(empty);
+            }
+            else {
+                const start = (turnPage - 1) * PROMPT_EDITOR_TURN_PAGE_SIZE;
+                for (const item of turns.slice(start, start + PROMPT_EDITOR_TURN_PAGE_SIZE)) {
+                    transcript.append(createTurnElement(item.role, item.text));
+                }
+            }
+            turnPageLabel.textContent = `Messages ${turnPage} / ${pageCount} · ${turns.length} total`;
+            turnPrevious.disabled = turnPage <= 1;
+            turnNext.disabled = turnPage >= pageCount;
             transcript.scrollTop = transcript.scrollHeight;
         };
-        const cleanup = () => {
-            if (busy) {
-                status.textContent = "The in-flight edit was cancelled; your prompt and typed instruction were recovered.";
-                status.dataset.state = "idle";
+        const loadSessionIntoEditor = sessionId => {
+            if (busy || this.promptEditorBusy) return;
+            syncDraft(true);
+            const loaded = this.loadPromptEditorSession(sessionId);
+            if (!loaded) return;
+            session = loaded;
+            messages = normalizePromptEditorMessages(session.messages);
+            turns = normalizePromptEditorTurns(session.turns);
+            latestReply = String(session.latestReply || "");
+            summary = String(session.summary || "");
+            promptBox.value = session.prompt;
+            instruction.value = session.instruction;
+            status.textContent = session.statusText;
+            status.dataset.state = session.statusState;
+            this.promptEditorActiveSessionId = session.id;
+            this.api.Data.save(PROMPT_EDITOR_ACTIVE_SESSION_KEY, session.id);
+            turnPage = Math.max(1, Math.ceil(turns.length / PROMPT_EDITOR_TURN_PAGE_SIZE));
+            renderTranscript();
+            renderContext();
+            renderHistory();
+            instruction.focus();
+        };
+        const renderHistory = () => {
+            const index = this.loadPromptEditorHistoryIndex();
+            const pageCount = Math.max(1, Math.ceil(index.length / PROMPT_EDITOR_HISTORY_PAGE_SIZE));
+            historyPage = Math.min(pageCount, Math.max(1, historyPage));
+            historyList.replaceChildren();
+            const start = (historyPage - 1) * PROMPT_EDITOR_HISTORY_PAGE_SIZE;
+            for (const item of index.slice(start, start + PROMPT_EDITOR_HISTORY_PAGE_SIZE)) {
+                const button = modalDocument.createElement("button");
+                button.type = "button";
+                button.className = "krea2-prompt-editor-session";
+                button.dataset.active = item.id === session.id ? "true" : "false";
+                const title = modalDocument.createElement("strong");
+                title.textContent = item.title;
+                const meta = modalDocument.createElement("span");
+                meta.textContent = `${new Date(item.updatedAt).toLocaleString()} · ${item.turnCount} messages`;
+                button.append(title, meta);
+                button.addEventListener("click", () => loadSessionIntoEditor(item.id));
+                historyList.append(button);
             }
+            historyPageLabel.textContent = `Page ${historyPage} / ${pageCount} · ${index.length} chats`;
+            historyPrevious.disabled = historyPage <= 1;
+            historyNext.disabled = historyPage >= pageCount;
+        };
+        const setStatus = (text, state = "idle") => {
+            status.textContent = text;
+            status.dataset.state = state;
             syncDraft();
+            renderContext();
+        };
+        const appendTurn = (role, text, record = true) => {
+            if (record) turns.push({role, text: String(text), createdAt: Date.now()});
+            turnPage = Math.max(1, Math.ceil(turns.length / PROMPT_EDITOR_TURN_PAGE_SIZE));
+            renderTranscript();
+            syncDraft();
+        };
+        const cleanup = ({destroy = false} = {}) => {
+            syncDraft(true);
+            if (!destroy) {
+                overlay.hidden = true;
+                return;
+            }
             controller.abort();
+            if (persistTimer !== null) clearTimeout(persistTimer);
+            persistTimer = null;
             modalDocument.removeEventListener("keydown", onKey, true);
             overlay.remove();
+            this.promptEditorBusy = false;
             if (this.promptEditorCleanup === cleanup) this.promptEditorCleanup = null;
         };
         const onKey = event => {
+            if (overlay.hidden) return;
             if (event.key === "Escape") {
                 event.preventDefault();
                 event.stopImmediatePropagation?.();
@@ -8593,16 +9085,28 @@ class Krea2DiscordCollector {
         done.addEventListener("click", cleanup);
         overlay.addEventListener("click", event => { if (event.target === overlay) cleanup(); });
         clear.addEventListener("click", () => {
+            if (busy || this.promptEditorBusy) return setStatus("Wait for the current edit to finish before starting a new chat.", "error");
+            syncDraft(true);
+            session = this.createPromptEditorSession(promptBox.value);
             messages = [];
             turns = [];
             latestReply = "";
-            transcript.replaceChildren();
+            summary = "";
             instruction.value = "";
+            turnPage = 1;
+            historyPage = 1;
+            renderTranscript();
+            renderContext();
+            renderHistory();
             setStatus("New session started. The current prompt is still available above.");
             instruction.focus();
         });
-        promptBox.addEventListener("input", syncDraft);
-        instruction.addEventListener("input", syncDraft);
+        historyPrevious.addEventListener("click", () => { historyPage -= 1; renderHistory(); });
+        historyNext.addEventListener("click", () => { historyPage += 1; renderHistory(); });
+        turnPrevious.addEventListener("click", () => { turnPage -= 1; renderTranscript(); });
+        turnNext.addEventListener("click", () => { turnPage += 1; renderTranscript(); });
+        promptBox.addEventListener("input", () => { syncDraft(); renderContext(); });
+        instruction.addEventListener("input", () => { syncDraft(); renderContext(); });
         copyPrompt.addEventListener("click", async () => {
             const value = promptBox.value.trim() || latestReply;
             if (!value) return setStatus("Paste or generate a prompt first.", "error");
@@ -8620,30 +9124,50 @@ class Krea2DiscordCollector {
             const request = instruction.value.trim();
             if (currentPrompt.length < 20) return setStatus("Paste a complete KREA2 prompt first.", "error");
             if (request.length < 2) return setStatus("Describe the change you want Qwen to make.", "error");
-            if (messages.length >= 14) {
-                messages = [];
-                turns = [];
-                transcript.replaceChildren();
-                setStatus("The long chat was compacted around the current prompt.");
-            }
             const userContent = messages.length
                 ? request
                 : `Current KREA2 prompt:\n\n${currentPrompt}\n\nRequested revision:\n${request}`;
+            const compacted = compactPromptEditorContext(messages, {
+                currentPrompt,
+                latestReply,
+                previousSummary: summary,
+                upcomingUserContent: userContent
+            });
+            if (compacted.compacted) {
+                messages = compacted.messages.map(message => ({...message}));
+                summary = compacted.summary;
+                session.compactions += 1;
+            }
             messages.push({role: "user", content: userContent});
             appendTurn("user", request);
             instruction.value = "";
             busy = true;
+            this.promptEditorBusy = true;
+            overlay.dataset.busy = "true";
             send.disabled = true;
             clear.disabled = true;
             send.textContent = "Qwen is working…";
-            setStatus("Connecting to Qwen 3.8 Cloud. A cold worker may take a little longer…");
+            setStatus(compacted.compacted
+                ? "Older model context was summarized locally; connecting to Qwen with the preserved 32K working window…"
+                : "Connecting to Qwen 3.8 Cloud. A cold worker may take a little longer…", "working");
             try {
                 const result = await this.requestPromptChat(messages, controller.signal);
                 const reply = result.reply;
                 messages.push({role: "assistant", content: reply});
                 latestReply = reply;
                 appendTurn("assistant", reply);
+                const afterReply = compactPromptEditorContext(messages, {
+                    currentPrompt,
+                    latestReply,
+                    previousSummary: summary
+                });
+                if (afterReply.compacted) {
+                    messages = afterReply.messages.map(message => ({...message}));
+                    summary = afterReply.summary;
+                    session.compactions += 1;
+                }
                 setStatus(`Reply complete · 1 credit used · ${result.availableCredits} credits remaining.`, "success");
+                if (overlay.hidden) this.toast("Qwen Prompt Editor reply is ready. Open Prompt Editor to continue.", "success");
             }
             catch (error) {
                 messages.pop();
@@ -8651,14 +9175,21 @@ class Krea2DiscordCollector {
             }
             finally {
                 busy = false;
+                this.promptEditorBusy = false;
+                overlay.dataset.busy = "false";
                 send.disabled = false;
                 clear.disabled = false;
                 send.textContent = "Send to Qwen";
+                syncDraft(true);
+                renderContext();
+                renderHistory();
             }
         };
         send.addEventListener("click", () => void submit());
-        for (const turn of turns.slice()) appendTurn(turn.role, turn.text, false);
-        syncDraft();
+        renderTranscript();
+        renderContext();
+        syncDraft(true);
+        renderHistory();
         (promptBox.value ? instruction : promptBox).focus();
     }
 
@@ -10903,6 +11434,7 @@ Krea2DiscordCollector.helpers = Object.freeze({
     buildVisionMultipartBody,
     buildConfirmationModalContent,
     classifyPromptMetadata,
+    compactPromptEditorContext,
     comparisonPromptSidecarPath,
     cosineSimilarity,
     chooseBestMediaUrl,
@@ -10914,6 +11446,8 @@ Krea2DiscordCollector.helpers = Object.freeze({
     detectImageFormat,
     effectiveVisionPromptCount,
     effectiveVisionModel,
+    estimatePromptEditorContextTokens,
+    estimatePromptEditorTextTokens,
     evaluatePromptValue,
     extractMetadataDocumentPrompt,
     extractConfidentPrompt,
@@ -10951,6 +11485,8 @@ Krea2DiscordCollector.helpers = Object.freeze({
     normalizeDatasetGuidanceState,
     normalizePoseCheck,
     normalizePromptFeedbackText,
+    normalizePromptEditorHistoryIndex,
+    normalizePromptEditorSession,
     normalizeMediaUrl,
     normalizePromptPreset,
     normalizeStoredSubmissionKey,

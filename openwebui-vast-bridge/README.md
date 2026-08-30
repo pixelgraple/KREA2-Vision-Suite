@@ -11,6 +11,18 @@ endpoint that remains at zero ready workers must return a timeout instead of
 leaving Open WebUI waiting for 30 minutes. Long responses that are actively
 streaming still need to finish within this request deadline.
 
+## 32K context guard
+
+Open WebUI keeps the complete raw conversation in its own history. Before each
+cloud request, this bridge now measures the outbound context against the
+model's 32K window. If the request is too large, it preserves the initial
+instructions and newest turns, adds a short local digest of older turns, and
+removes the older raw turns from that one outbound request. This prevents a
+long chat from failing with `exceed_context_size_error`; it does not erase the
+visible Open WebUI conversation. The default outbound input target is 12K
+tokens so a long prompt can also finish prefill within the serverless request
+deadline; the model itself still runs with its full 32K context allocation.
+
 ## Windows installation
 
 1. Create a dedicated Vast API key with only the permissions required for this

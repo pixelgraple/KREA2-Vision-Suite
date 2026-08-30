@@ -35,6 +35,9 @@ $configPath = Join-Path $InstallRoot 'config.json'
     default_max_tokens = 8192
     auto_continue_max_segments = 3
     model_context_tokens = 32768
+    context_target_input_tokens = 12288
+    context_template_reserve_tokens = 1024
+    context_summary_max_chars = 1800
 } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 
 # Keep the long-lived Vast credential readable only by the current Windows user.
