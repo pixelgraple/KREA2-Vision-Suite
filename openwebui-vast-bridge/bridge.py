@@ -47,6 +47,10 @@ MODEL = CONFIG["model"].strip()
 VAST_API_KEY = CONFIG["vast_api_key"].strip()
 BRIDGE_API_KEY = CONFIG["bridge_api_key"].strip()
 REQUEST_TIMEOUT = float(CONFIG.get("request_timeout", 240))
+SSE_KEEPALIVE_SECONDS = max(
+    1.0,
+    min(30.0, float(CONFIG.get("stream_keepalive_seconds", 10))),
+)
 MAX_TOKENS_LIMIT = int(CONFIG.get("max_tokens_limit", 16384))
 DEFAULT_MAX_TOKENS = max(
     1,
@@ -420,14 +424,38 @@ async def _sse_stream(payload: dict[str, Any], cost: int) -> AsyncIterator[bytes
                 segment_payload = payload
                 generated_content = ""
                 for segment_index in range(AUTO_CONTINUE_MAX_SEGMENTS):
-                    result = await endpoint.request(
-                        "/v1/chat/completions",
-                        segment_payload,
-                        cost=int(segment_payload.get("max_tokens") or cost),
-                        timeout=REQUEST_TIMEOUT,
-                        retry=True,
-                        stream=True,
+                    # Vast can spend several minutes activating a cold worker.
+                    # Await the SDK request in a task and emit legal SSE comments
+                    # while it is pending. Open WebUI ignores the comments, but
+                    # they keep the local response alive instead of presenting a
+                    # misleading dead connection while the worker is warming.
+                    request_task = asyncio.create_task(
+                        endpoint.request(
+                            "/v1/chat/completions",
+                            segment_payload,
+                            cost=int(segment_payload.get("max_tokens") or cost),
+                            timeout=REQUEST_TIMEOUT,
+                            retry=True,
+                            stream=True,
+                        )
                     )
+                    try:
+                        while True:
+                            try:
+                                result = await asyncio.wait_for(
+                                    asyncio.shield(request_task),
+                                    timeout=SSE_KEEPALIVE_SECONDS,
+                                )
+                                break
+                            except TimeoutError:
+                                yield b": krea2-worker-warming\n\n"
+                    finally:
+                        if not request_task.done():
+                            request_task.cancel()
+                            try:
+                                await request_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
                     source = _stream_source(result)
                     finish_reason = None
                     terminal_event = None

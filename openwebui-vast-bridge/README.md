@@ -6,10 +6,13 @@ model named `heretic-3.8-q4-cloud`.
 
 ## Timeout policy
 
-The default request timeout is **240 seconds (4 minutes)**. A Serverless
-endpoint that remains at zero ready workers must return a timeout instead of
-leaving Open WebUI waiting for 30 minutes. Long responses that are actively
-streaming still need to finish within this request deadline.
+The default request timeout is **600 seconds (10 minutes)**. A streamed request
+emits an invisible SSE keepalive every 10 seconds while Vast activates a cold
+worker, so Open WebUI does not abandon an otherwise healthy activation at the
+old four-minute boundary. An endpoint that still cannot provide a worker within
+the bounded 10-minute window returns an error instead of hanging indefinitely.
+Long responses that are actively streaming still need to finish within this
+request deadline.
 
 ## 32K context guard
 

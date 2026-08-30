@@ -31,6 +31,8 @@ class Endpoint:
 
     async def request(self, route, payload, **kwargs):
         self.requests.append(payload)
+        if len(self.requests) == 1:
+            await asyncio.sleep(0.015)
         fence = "`" * 3
         if len(self.requests) == 1:
             events = [
@@ -61,6 +63,7 @@ class Client:
 
 async def main():
     bridge.CoroutineServerless = Client
+    bridge.SSE_KEEPALIVE_SECONDS = 0.005
     Endpoint.requests.clear()
     payload = {
         "model": bridge.MODEL,
@@ -72,6 +75,7 @@ async def main():
     text = b"".join(chunks).decode("utf-8")
     assert len(Endpoint.requests) == 2
     assert text.count("data: [DONE]") == 1
+    assert ": krea2-worker-warming" in text
     assert "x = 1" in text
     assert len(Endpoint.requests[1]["messages"]) == 3
     assert Endpoint.requests[1]["messages"][1]["role"] == "assistant"
