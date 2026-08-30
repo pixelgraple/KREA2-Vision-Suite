@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixes older Open WebUI conversations that contain later system/developer messages by merging those instructions into the single leading system block required by the dedicated Qwen template.
+- Makes dedicated Open WebUI upstream rejections return bounded JSON instead of a misleading plain-text 500 / invalid-JSON error.
+
 ## 0.17.1 - 2026-08-30
 
 - Makes the $1.50 / 1,200-credit starter pack a server-enforced one-time purchase.

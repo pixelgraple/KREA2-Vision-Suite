@@ -24,6 +24,10 @@ long chat from failing with `exceed_context_size_error`; it does not erase the
 visible Open WebUI conversation. The default outbound input target is 12K
 tokens so a long prompt can also finish prefill within the serverless request
 deadline; the model itself still runs with its full 32K context allocation.
+Saved chats may contain additional system or developer records after ordinary
+conversation turns. The strict dedicated Qwen template rejects that ordering,
+so the bridge merges every such instruction into one leading system block for
+the outbound request only. Open WebUI's stored and visible history is unchanged.
 
 ## Windows installation
 

@@ -8,7 +8,9 @@ import time
 import unittest
 from pathlib import Path
 
-from app import Config, Gateway
+from fastapi.testclient import TestClient
+
+from app import Config, Gateway, create_app
 
 
 class FakeResponse:
@@ -26,6 +28,7 @@ class RecordingDedicatedHttp:
         self.active = 0
         self.max_active = 0
         self.guard = threading.Lock()
+        self.failure_response: FakeResponse | None = None
 
     def get(self, url: str, **kwargs):
         return FakeResponse(
@@ -40,6 +43,8 @@ class RecordingDedicatedHttp:
         )
 
     def post(self, url: str, **kwargs):
+        if self.failure_response is not None:
+            return self.failure_response
         with self.guard:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -133,6 +138,26 @@ class DedicatedRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(self.gateway._dedicated_queue_depth, 0)
+
+    async def test_openwebui_upstream_rejection_is_bounded_json_not_plain_text_500(self):
+        self.http.failure_response = FakeResponse(
+            400,
+            {"error": {"message": "System message must be at the beginning"}},
+        )
+        client = TestClient(create_app(self.gateway.config, http=self.http))
+        response = client.post(
+            "/v1/openwebui/chat/completions",
+            headers={"Authorization": f"Bearer {('d' * 64)}"},
+            json={
+                "model": "heretic-3.8-q4-cloud",
+                "messages": [{"role": "user", "content": "Continue the old chat."}],
+                "max_tokens": 64,
+            },
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.headers["content-type"], "application/json")
+        self.assertIn("Dedicated Qwen rejected", response.json()["detail"])
+        self.assertNotIn("System message", response.text)
 
 
 if __name__ == "__main__":

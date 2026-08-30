@@ -3567,11 +3567,25 @@ def create_app(config: Config | None = None, *, http: Any = requests) -> FastAPI
         messages = payload.get("messages") if isinstance(payload, dict) else None
         if not isinstance(messages, list) or not messages:
             raise HTTPException(422, "OpenWebUI messages must be a non-empty array.")
-        return await gateway._dedicated_completion(
-            payload,
-            model=DEDICATED_QWEN_MODEL_ID,
-            timeout_seconds=gateway.config.prompt_chat_timeout_seconds,
-        )
+        try:
+            return await gateway._dedicated_completion(
+                payload,
+                model=DEDICATED_QWEN_MODEL_ID,
+                timeout_seconds=gateway.config.prompt_chat_timeout_seconds,
+            )
+        except RuntimeError as exc:
+            # Never let Starlette convert an upstream model rejection into a
+            # plain-text 500. The local OpenWebUI bridge expects bounded JSON
+            # and can then surface the failure accurately instead of claiming
+            # the dedicated GPU returned malformed JSON.
+            LOGGER.warning(
+                "Dedicated OpenWebUI completion rejected after gateway validation: %s",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                502,
+                "Dedicated Qwen rejected the normalized request. Retry once; if it persists, start a new chat.",
+            ) from exc
 
     @app.post("/v1/admin/wake-proof")
     async def admin_wake_proof(

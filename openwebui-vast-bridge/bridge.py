@@ -176,17 +176,67 @@ def _clip_message(message: dict[str, Any], token_budget: int) -> dict[str, Any]:
     return clipped
 
 
+def _message_content_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"].strip())
+            elif isinstance(item, str):
+                parts.append(item.strip())
+        return "\n".join(part for part in parts if part)
+    if content is None:
+        return ""
+    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_system_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    """Make saved Open WebUI chats valid for strict Qwen templates.
+
+    Open WebUI can inject a new system/developer record after earlier user and
+    assistant turns. The dedicated Qwen template permits exactly one system
+    instruction block and requires it to be the first message. Preserve every
+    instruction, but merge them into that single leading block for only this
+    outbound request; the stored Open WebUI transcript remains unchanged.
+    """
+
+    instructions: list[str] = []
+    conversation: list[dict[str, Any]] = []
+    for raw_message in messages:
+        if not isinstance(raw_message, dict):
+            continue
+        message = dict(raw_message)
+        role = str(message.get("role") or "").lower()
+        if role in {"system", "developer"}:
+            text = _message_content_text(message)
+            if text:
+                instructions.append(text)
+            continue
+        conversation.append(message)
+    if not instructions:
+        return conversation
+    return [
+        {"role": "system", "content": "\n\n".join(instructions)},
+        *conversation,
+    ]
+
+
 def _compact_messages(
     messages: list[Any],
     input_token_budget: int,
 ) -> tuple[list[dict[str, Any]], dict[str, int | bool]]:
-    normalized = [dict(message) for message in messages if isinstance(message, dict)]
-    before_tokens = sum(_estimate_message_tokens(message) for message in normalized)
-    if before_tokens <= input_token_budget:
+    original = [dict(message) for message in messages if isinstance(message, dict)]
+    normalized = _normalize_system_messages(original)
+    before_tokens = sum(_estimate_message_tokens(message) for message in original)
+    normalized_tokens = sum(_estimate_message_tokens(message) for message in normalized)
+    if normalized_tokens <= input_token_budget:
         return normalized, {
             "compacted": False,
             "before_tokens": before_tokens,
-            "after_tokens": before_tokens,
+            "after_tokens": normalized_tokens,
             "omitted_messages": 0,
         }
 
@@ -245,20 +295,23 @@ def _compact_messages(
             break
         digest_parts.append(part)
         digest_chars += len(part)
-    digest: dict[str, Any] | None = None
+    digest_text = ""
     if digest_parts:
-        digest = {
-            "role": "system",
-            "content": (
-                "[Local 32K context compaction: older raw turns were removed only from this outbound "
-                "model request; the complete conversation remains in Open WebUI history. Recent older "
-                "turn excerpts follow.]\n" + "\n".join(digest_parts)
-            ),
-        }
+        digest_text = (
+            "[Local 32K context compaction: older raw turns were removed only from this outbound "
+            "model request; the complete conversation remains in Open WebUI history. Recent older "
+            "turn excerpts follow.]\n" + "\n".join(digest_parts)
+        )
 
     compacted = [*retained_system]
-    if digest is not None:
-        compacted.append(digest)
+    if digest_text:
+        if compacted and compacted[0].get("role") == "system":
+            compacted[0] = {
+                "role": "system",
+                "content": f"{_message_content_text(compacted[0])}\n\n{digest_text}".strip(),
+            }
+        else:
+            compacted.insert(0, {"role": "system", "content": digest_text})
     compacted.extend(recent)
     while compacted and sum(_estimate_message_tokens(item) for item in compacted) > input_token_budget:
         removable = next(
@@ -346,7 +399,7 @@ async def _request_vast(payload: dict[str, Any], cost: int, *, stream: bool) -> 
                     document = response.json()
                 except Exception as exc:
                     raise RuntimeError(
-                        f"Dedicated Qwen returned invalid JSON (HTTP {response.status_code})"
+                        f"KREA2 gateway returned a non-JSON error (HTTP {response.status_code})"
                     ) from exc
                 if response.status_code >= 400:
                     detail = document.get("detail") if isinstance(document, dict) else None
